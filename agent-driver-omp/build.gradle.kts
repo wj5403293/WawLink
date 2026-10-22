@@ -30,6 +30,7 @@ android {
     namespace = "dev.wawlink.driver"
     compileSdk = 35
     defaultConfig { minSdk = 26 }
+    sourceSets["main"].resources.srcDir("src/jvmSharedMain/resources")
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
