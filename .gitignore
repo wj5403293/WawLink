@@ -1,0 +1,9 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.idea/
+*.iml
+app-android/src/main/jniLibs/
+app-android/src/debug/assets/
+*.hprof

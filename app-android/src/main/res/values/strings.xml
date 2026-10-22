@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WawLink</string>
+    <string name="container_channel">开发环境运行状态</string>
+    <string name="container_notification_title">WawLink 开发环境正在运行</string>
+    <string name="container_notification_text">本地容器、终端或 Agent 进程正在处理任务，点击返回。</string>
+</resources>

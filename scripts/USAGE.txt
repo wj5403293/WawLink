@@ -1,0 +1,139 @@
+WawLink verified binary inputs and rootfs builder
+==============================================
+
+Commands (run from the repository; neither command uses sudo or Docker):
+
+  ./scripts/fetch-android-binaries.sh
+  ./scripts/build-debug-rootfs.sh
+
+The first command provisions native executables/dependencies and the official UI
+fonts. It never executes downloaded Android executables. Python3, flock and
+dpkg-deb are required. Fonts are committed; generated native binaries are excluded
+from source control. The command recreates missing inputs and rejects wrong
+SHA256 values.
+
+The second command requires Linux x86_64 or arm64, Bash, Python3, curl, GNU tar,
+sha256sum, sha512sum, dpkg-deb, flock and normal GNU coreutils. Static QEMU and zstd
+are used from PATH when present; missing tools and dependencies are unpacked from
+Debian's official bookworm repository into build/host-tools without root.
+Host PRoot is always provisioned from pinned compatible inputs: official static
+PRoot5.5.0 on x86_64, Debian5.4.0-3 on arm64. Old system PRoot5.1 is never selected:
+it mishandles modern access syscalls and makes Noble dpkg falsely report its own
+database as unwritable. Only the aarch64 guest QEMU binary is retained from
+qemu-user-static. See assets.lock.json for versions, URLs and SHA256 values.
+Host libraries are under usr/lib/<host>-linux-gnu. The pinned dependency baseline
+is glibc2.34 on x86_64 and glibc2.38 on arm64. Unsupported hosts fail explicitly.
+
+Build behavior
+--------------
+Ubuntu Base 24.04.4 arm64 is downloaded directly from cdimage.ubuntu.com and checked
+against both the pinned SHA256 and the current official SHA256SUMS file. Bun1.3.14,
+Node22.22.2 and the OMP18.12.6 npm tarball have fixed upstream integrity values.
+Ubuntu packages are authenticated by apt using the included Ubuntu archive
+keyring. Tsinghua ubuntu-ports is used; HTTP is only used for signed apt bootstrap,
+then changed to HTTPS after CA certificates are installed. The build requires
+network access to these origins and npm's registry for OMP production dependencies.
+No local user authentication, providers or credentials are copied into the image.
+
+All initialization runs in proot; x86_64 hosts additionally use qemu-aarch64-static
+with QEMU_CPU=max. PROOT_NO_SECCOMP=1 supports hosts with restrictive tracing rules.
+Host builds deliberately use real hardlinks, not --link2symlink. The upstream
+extension can embed absolute host staging paths in .l2s links; these break dpkg
+self-upgrades and cannot survive renaming/extracting the portable rootfs archive.
+Android's runtime-specific link2symlink setting is independent of host construction.
+Bun is installed from the official arm64 Linux binary, Node includes npm/corepack,
+and OMP is extracted from the integrity-pinned npm package with its complete
+production and optional dependency graph. No standalone fake CLI is substituted.
+Installation uses bun install --omit dev so a missing published lockfile is saved;
+--production would imply frozen-lockfile and skip writing it. bun pm trust --all
+then executes the real blocked native dependency postinstalls using that lock.
+The exact manual Node distribution is marked in
+/usr/local/share/wawlink/preinstalled-node (v22.22.2), allowing the runtime to
+uninstall that known distribution without pretending apt owns /usr/local/bin/node.
+Git, curl, CA certificates, rg, fd, jq, unzip, xz, zstd and Python are installed.
+Build-only C/C++ tools are removed afterward. Apt, Bun and npm caches are cleaned;
+package licenses, OMP native modules and the generated dependency lock remain.
+
+The image contains a real /workspace JavaScript project and safe configuration:
+  /root/.omp/agent/config.yml: tools.approvalMode = always-ask
+  /root/.omp/agent/models.yml: providers = {}
+The app/provider UI must configure a real provider before an authenticated model
+request. No auth.json or dummy API key is generated.
+
+The script executes actual bun/node/omp/git/rg/fd/jq/xz/zstd version checks before
+publishing .wawlink-ready. A failure leaves only ubuntu-main.partial and exits
+nonzero; it cannot masquerade as a completed image. The completed tree is retained
+at build/debug-rootfs/ubuntu-main. An unchanged ready tree is reused and can be
+repacked. Existing trees with different/incomplete inputs are never deleted: move
+such a tree aside explicitly before rebuilding. Only the script-owned .partial
+directory is removed on a subsequent attempt; its downloaded apt archives are
+first preserved in build/downloads/ubuntu-apt and copied into the fresh staging
+tree, where apt still validates their hashes. Concurrent builds are serialized.
+
+A successful build atomically writes:
+  build/outputs/ubuntu-main-debug.tar.zst
+  build/outputs/ubuntu-main-debug.tar.zst.sha256
+  build/outputs/ubuntu-main-debug.tar.zst.sizes.json
+
+The final console report and sizes.json contain the real extracted and archive
+byte sizes and MiB values. There is deliberately no 150–220MB cap: complete runtime
+functionality takes precedence. No claimed final size is available until the
+builder has actually completed. No emulator/device or Docker is involved.
+
+Android native integration
+--------------------------
+The five official coderredlab/proroot1.2.8 files are kept byte-for-byte unchanged:
+  libproroot.so
+  libproroot-runtime.so
+  libproroot-bridge.so
+  libproroot-linker.so
+  libproroot-stub-loader.so
+
+Upstream: https://github.com/coderredlab/proroot/releases/tag/v1.2.8
+License: proprietary, free to use in projects; modified binary redistribution is
+not allowed. Proroot-upstream-notice.txt preserves the full pinned upstream notice.
+The app MUST disable native stripping (keepDebugSymbols **/*.so) and package all
+five side-by-side. Invoke libproroot.so -r ROOTFS -0 --link2symlink -w /workspace ...
+and set PROROOT_TMP_DIR to app filesDir. Other four libraries are auto-discovered.
+Do not use the obsolete libproroot_hook.so name or fictitious PROROOT_ROOTFS API.
+The runtime library uses guest glibc; do not load it with Android System.loadLibrary.
+
+Termux packages provide genuine Android aarch64 proot, its loader, libtalloc and
+libandroid-shmem. For proot, set PROOT_LOADER=nativeDir/libproot_loader.so and
+LD_LIBRARY_PATH=nativeDir. Set LD_PRELOAD to absolute libtalloc.so and
+libandroid-shmem.so paths: preloading satisfies libtalloc's original SONAME
+libtalloc.so.2 while preserving binary bytes and Android's *.so packaging rule.
+There is intentionally no 32-bit loader in the arm64-only APK.
+
+The native zstd CLI is named libzstd.so to allow Android executable extraction;
+its separate shared library is libzstd_shared.so (original SONAME libzstd.so.1).
+Preload absolute libzstd_shared.so, liblzma.so and libz.so paths when invoking the
+zstd CLI. Those preserve SONAMEs liblzma.so.5 and libz.so.1 unmodified. libzstd.so
+is an executable, not a library for System.loadLibrary. No patchelf is applied.
+
+Termux package checksums/versions are pinned in assets.lock.json; exact copied
+binary SHA256 values and sizes are in composeResources/files/native-binaries.json.
+Original package license notices are in composeResources/files/native-licenses.
+The archives remain cached in build/downloads, and extracted packages under
+build/vendor/termux preserve all upstream notices/source references.
+
+Font provenance
+---------------
+Official Noto Sans SC variable TTF, JetBrains Mono Regular TTF and Material Symbols
+Rounded variable TTF, with exact icon codepoints and license notices, live under
+agent-ui/src/commonMain/composeResources/{font,files}. Names are:
+  noto_sans_sc.ttf
+  jetbrains_mono.ttf
+  material_symbols_rounded.ttf
+  material_symbols_filled.ttf
+  files/material_symbols_rounded.codepoints
+
+The filled font is a deterministic static instance of the original Material
+Symbols variable font: FILL=1, GRAD=0, opsz=24, wght=400. It was created with
+fontTools4.61.1 with recalcTimestamp=False. It is committed, so fontTools is not a
+normal download prerequisite. Regeneration of a missing filled font requires
+python3 fonttools==4.61.1; a byte mismatch fails explicitly. Original source URLs,
+revisions, SHA256s and the derived-font axes are in font-provenance.json and
+scripts/assets.lock.json. Noto/JetBrains licenses are OFL; Material Symbols is
+Apache2.0. Icon names must be converted to the supplied codepoints, never rendered
+as visible fallback strings or emoji.

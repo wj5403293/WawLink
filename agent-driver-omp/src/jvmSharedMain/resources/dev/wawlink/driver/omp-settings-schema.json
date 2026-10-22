@@ -1,0 +1,6143 @@
+{
+  "upstream": "@oh-my-pi/pi-coding-agent@18.12.6",
+  "prototype": "ref-plan/ref-agent-setting.html SCHEMA; appearance and excluded terminal settings removed",
+  "notes": "def preserves prototype defaults (enum values translated using source values); sourceDefault is the effective upstream reset default. No host config is used.",
+  "categories": [
+    {
+      "id": "model",
+      "name": "模型",
+      "icon": "neurology",
+      "groups": [
+        {
+          "id": "mod-base",
+          "name": "思考与角色",
+          "icon": "psychology",
+          "items": [
+            {
+              "id": "modelRoleStorage",
+              "name": "角色配置存储范围",
+              "type": "enum",
+              "def": "global",
+              "opts": [
+                "全局",
+                "当前项目"
+              ],
+              "icon": "folder_special",
+              "sourceDefault": "global",
+              "wireOptions": [
+                "global",
+                "project"
+              ],
+              "prototypeDefault": "全局",
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "defaultThinkingLevel",
+              "name": "默认思考强度",
+              "type": "enum",
+              "def": "high",
+              "opts": [
+                "极低",
+                "低",
+                "中",
+                "高",
+                "超高",
+                "最大",
+                "自动"
+              ],
+              "icon": "lightbulb",
+              "sourceDefault": "high",
+              "wireOptions": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "auto"
+              ],
+              "prototypeDefault": "高",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.autoThinkingMaxEffort",
+              "name": "自动思考最高档位",
+              "type": "enum",
+              "def": "xhigh",
+              "opts": [
+                "超高",
+                "最大"
+              ],
+              "icon": "bolt",
+              "sourceDefault": "xhigh",
+              "wireOptions": [
+                "xhigh",
+                "max"
+              ],
+              "prototypeDefault": "超高",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "hideThinkingBlock",
+              "name": "隐藏思考过程区块",
+              "type": "bool",
+              "def": false,
+              "icon": "visibility_off",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "expandThinkingBlocks",
+              "name": "默认展开思考过程",
+              "type": "bool",
+              "def": false,
+              "icon": "unfold_more",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "proseOnlyThinking",
+              "name": "纯文本段落思考模式",
+              "type": "bool",
+              "def": true,
+              "icon": "subject",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "omitThinking",
+              "name": "请求时省略历史思考",
+              "type": "bool",
+              "def": false,
+              "icon": "filter_alt_off",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "externalThinking",
+              "name": "使用外部思考引导",
+              "type": "bool",
+              "def": false,
+              "icon": "psychology_alt",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "personality",
+              "name": "助手性格风格",
+              "type": "enum",
+              "def": "default",
+              "opts": [
+                "默认",
+                "亲切",
+                "务实",
+                "无"
+              ],
+              "icon": "mood",
+              "sourceDefault": "default",
+              "wireOptions": [
+                "default",
+                "friendly",
+                "pragmatic",
+                "none"
+              ],
+              "prototypeDefault": "默认",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "textVerbosity",
+              "name": "回复详略程度",
+              "type": "enum",
+              "def": "medium",
+              "opts": [
+                "低",
+                "中",
+                "高"
+              ],
+              "icon": "short_text",
+              "sourceDefault": "medium",
+              "wireOptions": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "prototypeDefault": "中",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "skillful",
+              "name": "启用技能主动感知",
+              "type": "bool",
+              "def": true,
+              "icon": "auto_fix_high",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "includeModelInPrompt",
+              "name": "系统提示词注入模型名",
+              "type": "bool",
+              "def": true,
+              "icon": "badge",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "includeWorkspaceTree",
+              "name": "系统提示词注入目录树",
+              "type": "bool",
+              "def": false,
+              "icon": "account_tree",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "inlineToolDescriptors",
+              "name": "内联工具结构描述",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "开启",
+                "关闭"
+              ],
+              "icon": "integration_instructions",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "on",
+                "off"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "images.describeForTextModels",
+              "name": "为纯文本模型转述图片",
+              "type": "bool",
+              "def": true,
+              "icon": "image_search",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "mod-sample",
+          "name": "生成采样参数",
+          "icon": "tune",
+          "items": [
+            {
+              "id": "temperature",
+              "name": "采样随机度 Temperature",
+              "type": "num",
+              "def": -1,
+              "icon": "thermostat",
+              "sourceDefault": -1,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "topP",
+              "name": "核采样阈值 Top P",
+              "type": "num",
+              "def": -1,
+              "icon": "filter_tilt_shift",
+              "sourceDefault": -1,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "topK",
+              "name": "候选采样数 Top K",
+              "type": "num",
+              "def": -1,
+              "icon": "format_list_numbered",
+              "sourceDefault": -1,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "minP",
+              "name": "最小概率阈值 Min P",
+              "type": "num",
+              "def": -1,
+              "icon": "low_priority",
+              "sourceDefault": -1,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "presencePenalty",
+              "name": "话题新鲜度惩罚",
+              "type": "num",
+              "def": -1,
+              "icon": "new_releases",
+              "sourceDefault": -1,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "repetitionPenalty",
+              "name": "文本重复度惩罚",
+              "type": "num",
+              "def": -1,
+              "icon": "repeat",
+              "sourceDefault": -1,
+              "source": "src/session/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "mod-prewalk",
+          "name": "预扫描与顾问审查",
+          "icon": "explore",
+          "items": [
+            {
+              "id": "prewalk.enabled",
+              "name": "启用任务前预扫描",
+              "type": "bool",
+              "def": false,
+              "icon": "Radar",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "prewalk.auto",
+              "name": "自动触发预扫描",
+              "type": "enum",
+              "def": "off",
+              "opts": [
+                "关闭",
+                "仅建议",
+                "开启"
+              ],
+              "icon": "hdr_auto",
+              "sourceDefault": "off",
+              "wireOptions": [
+                "off",
+                "suggest",
+                "on"
+              ],
+              "prototypeDefault": "关闭",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "prewalk.autoTarget",
+              "name": "预扫描目标模型角色",
+              "type": "str",
+              "def": "@smol",
+              "icon": "neurology",
+              "sourceDefault": "@smol",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "advisor.enabled",
+              "name": "启用顾问后台审查",
+              "type": "bool",
+              "def": false,
+              "icon": "fact_check",
+              "sourceDefault": false,
+              "source": "src/advisor/settings.ts"
+            },
+            {
+              "id": "advisor.syncBacklog",
+              "name": "顾问同步积压阈值",
+              "type": "enum",
+              "def": "off",
+              "opts": [
+                "关闭",
+                "1",
+                "3",
+                "5",
+                "严格"
+              ],
+              "icon": "sync_Lock",
+              "sourceDefault": "off",
+              "wireOptions": [
+                "off",
+                "1",
+                "3",
+                "5",
+                "strict"
+              ],
+              "prototypeDefault": "关闭",
+              "source": "src/advisor/settings.ts"
+            },
+            {
+              "id": "advisor.immuneTurns",
+              "name": "初始豁免审查轮数",
+              "type": "num",
+              "def": 3,
+              "icon": "shield",
+              "sourceDefault": 3,
+              "source": "src/advisor/settings.ts"
+            },
+            {
+              "id": "advisor.continueSeverity",
+              "name": "触发打断严重级别",
+              "type": "enum",
+              "def": "concern",
+              "opts": [
+                "提示",
+                "关注",
+                "阻断"
+              ],
+              "icon": "warning",
+              "sourceDefault": "concern",
+              "wireOptions": [
+                "nit",
+                "concern",
+                "blocker"
+              ],
+              "prototypeDefault": "关注",
+              "source": "src/advisor/settings.ts"
+            },
+            {
+              "id": "advisor.reviewMode",
+              "name": "顾问审查触发时机",
+              "type": "enum",
+              "def": "turn",
+              "opts": [
+                "每轮结束",
+                "任务结束"
+              ],
+              "icon": "schedule",
+              "sourceDefault": "turn",
+              "wireOptions": [
+                "turn",
+                "agent-end"
+              ],
+              "prototypeDefault": "每轮结束",
+              "source": "src/advisor/settings.ts"
+            },
+            {
+              "id": "advisor.reviewInterval",
+              "name": "审查间隔轮次数",
+              "type": "num",
+              "def": 1,
+              "icon": "timelapse",
+              "sourceDefault": 1,
+              "source": "src/advisor/settings.ts"
+            },
+            {
+              "id": "advisor.maxNotesPerUpdate",
+              "name": "单次最多注入建议数",
+              "type": "num",
+              "def": 4,
+              "icon": "sticky_note_2",
+              "sourceDefault": 4,
+              "source": "src/advisor/settings.ts"
+            },
+            {
+              "id": "advisor.evictStaleResults",
+              "name": "自动清理过期审查建议",
+              "type": "bool",
+              "def": true,
+              "icon": "Cleaning_services",
+              "sourceDefault": true,
+              "source": "src/advisor/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "mod-guard",
+          "name": "防死循环保护",
+          "icon": "Gpp_good",
+          "items": [
+            {
+              "id": "model.loopGuard.enabled",
+              "name": "启用回复死循环守卫",
+              "type": "bool",
+              "def": true,
+              "icon": "security",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "model.loopGuard.checkAssistantContent",
+              "name": "检测助手重复文本",
+              "type": "bool",
+              "def": true,
+              "icon": "find_replace",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "model.loopGuard.toolCallReminder",
+              "name": "注入工具调用循环提醒",
+              "type": "bool",
+              "def": true,
+              "icon": "notifications_active",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "model.toolCallLoopGuard.enabled",
+              "name": "启用工具重复调用拦截",
+              "type": "bool",
+              "def": true,
+              "icon": "block",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "model.toolCallLoopGuard.threshold",
+              "name": "工具连续重复触发次数",
+              "type": "num",
+              "def": 5,
+              "icon": "counter_5",
+              "sourceDefault": 5,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "model.toolCallLoopGuard.exemptTools",
+              "name": "免拦截工具白名单",
+              "type": "arr",
+              "def": [
+                "wait"
+              ],
+              "icon": "verified",
+              "sourceDefault": [
+                "wait"
+              ],
+              "source": "src/session/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "mod-tier",
+          "name": "服务队列与故障转移",
+          "icon": "swap_horiz",
+          "items": [
+            {
+              "id": "tier.openai",
+              "name": "OpenAI 服务队列等级",
+              "type": "enum",
+              "def": "none",
+              "opts": [
+                "无",
+                "自动",
+                "默认",
+                "弹性",
+                "规模",
+                "优先",
+                "极速"
+              ],
+              "icon": "bolt",
+              "sourceDefault": "none",
+              "wireOptions": [
+                "none",
+                "auto",
+                "default",
+                "flex",
+                "scale",
+                "priority",
+                "ultrafast"
+              ],
+              "prototypeDefault": "无",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "tier.anthropic",
+              "name": "Anthropic 服务队列等级",
+              "type": "enum",
+              "def": "none",
+              "opts": [
+                "无",
+                "优先"
+              ],
+              "icon": "bolt",
+              "sourceDefault": "none",
+              "wireOptions": [
+                "none",
+                "priority"
+              ],
+              "prototypeDefault": "无",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "tier.google",
+              "name": "Google 服务队列等级",
+              "type": "enum",
+              "def": "none",
+              "opts": [
+                "无",
+                "弹性",
+                "优先"
+              ],
+              "icon": "bolt",
+              "sourceDefault": "none",
+              "wireOptions": [
+                "none",
+                "flex",
+                "priority"
+              ],
+              "prototypeDefault": "无",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "tier.subagent",
+              "name": "子代理服务队列等级",
+              "type": "enum",
+              "def": "inherit",
+              "opts": [
+                "继承",
+                "无",
+                "自动",
+                "默认",
+                "弹性",
+                "规模",
+                "优先",
+                "极速"
+              ],
+              "icon": "hub",
+              "sourceDefault": "inherit",
+              "wireOptions": [
+                "inherit",
+                "none",
+                "auto",
+                "default",
+                "flex",
+                "scale",
+                "priority",
+                "ultrafast"
+              ],
+              "prototypeDefault": "继承",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "tier.advisor",
+              "name": "顾问服务队列等级",
+              "type": "enum",
+              "def": "none",
+              "opts": [
+                "继承",
+                "无",
+                "自动",
+                "默认",
+                "弹性",
+                "规模",
+                "优先",
+                "极速"
+              ],
+              "icon": "fact_check",
+              "sourceDefault": "none",
+              "wireOptions": [
+                "inherit",
+                "none",
+                "auto",
+                "default",
+                "flex",
+                "scale",
+                "priority",
+                "ultrafast"
+              ],
+              "prototypeDefault": "无",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.maxRetries",
+              "name": "请求失败最大重试次数",
+              "type": "num",
+              "def": 10,
+              "icon": "replay",
+              "sourceDefault": 10,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.maxDelayMs",
+              "name": "重试最大退避等待毫秒",
+              "type": "num",
+              "def": 300000,
+              "icon": "timer",
+              "sourceDefault": 300000,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.waitForUsageReset",
+              "name": "配额耗尽等待自动重置",
+              "type": "bool",
+              "def": false,
+              "icon": "hourglass_empty",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.modelFallback",
+              "name": "启用备用模型自动切换",
+              "type": "bool",
+              "def": true,
+              "icon": "alt_route",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.fallbackOn",
+              "name": "备用模型切换触发条件",
+              "type": "enum",
+              "def": "any",
+              "opts": [
+                "任意错误",
+                "仅配额超限",
+                "除配额超限外"
+              ],
+              "icon": "rule",
+              "sourceDefault": "any",
+              "wireOptions": [
+                "any",
+                "usage-limit",
+                "except-usage-limit"
+              ],
+              "prototypeDefault": "任意错误",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.usageAwareFallback",
+              "name": "基于剩余配额提前切换",
+              "type": "bool",
+              "def": false,
+              "icon": "battery_Alert",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.usageReservePct",
+              "name": "触发切换配额预留百分比",
+              "type": "num",
+              "def": 10,
+              "icon": "percent",
+              "sourceDefault": 10,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.usageReservePolicy",
+              "name": "触及预留配额处理策略",
+              "type": "enum",
+              "def": "confirm",
+              "opts": [
+                "询问确认",
+                "自动切换",
+                "直接中止"
+              ],
+              "icon": "policy",
+              "sourceDefault": "confirm",
+              "wireOptions": [
+                "confirm",
+                "auto",
+                "fail-closed"
+              ],
+              "prototypeDefault": "询问确认",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.fallbackChains",
+              "name": "自定义模型替补链",
+              "type": "rec",
+              "def": {},
+              "icon": "link",
+              "sourceDefault": {},
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.fallbackRevertPolicy",
+              "name": "切回主模型恢复策略",
+              "type": "enum",
+              "def": "cooldown-expiry",
+              "opts": [
+                "冷却结束后",
+                "不切回"
+              ],
+              "icon": "undo",
+              "sourceDefault": "cooldown-expiry",
+              "wireOptions": [
+                "cooldown-expiry",
+                "never"
+              ],
+              "prototypeDefault": "冷却结束后",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.anthropic.serverSideFallback",
+              "name": "Anthropic 服务端降级",
+              "type": "bool",
+              "def": false,
+              "icon": "cloud_sync",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "mod-imgurl",
+          "name": "图片外链托管",
+          "icon": "cloud_upload",
+          "items": [
+            {
+              "id": "images.urls.enabled",
+              "name": "启用本地图片转外链",
+              "type": "bool",
+              "def": false,
+              "icon": "cloud_upload",
+              "sourceDefault": false,
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "images.urls.backends",
+              "name": "外链图床后端顺序",
+              "type": "arr",
+              "def": [
+                "provider-files",
+                "tailscale",
+                "cloudflared",
+                "litterbox"
+              ],
+              "icon": "dns",
+              "sourceDefault": [
+                "provider-files",
+                "tailscale",
+                "cloudflared",
+                "litterbox"
+              ],
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "images.urls.command",
+              "name": "自定义上传脚本命令",
+              "type": "str",
+              "def": "",
+              "icon": "terminal",
+              "sourceDefault": null,
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "images.urls.publicBaseUrl",
+              "name": "外链公网基础地址",
+              "type": "str",
+              "def": "",
+              "icon": "public",
+              "sourceDefault": null,
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "images.urls.ttlHours",
+              "name": "外链缓存有效小时数",
+              "type": "num",
+              "def": 72,
+              "icon": "schedule",
+              "sourceDefault": 72,
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "images.urls.bindHost",
+              "name": "本地文件服务监听地址",
+              "type": "str",
+              "def": "127.0.0.1",
+              "icon": "lan",
+              "sourceDefault": "127.0.0.1",
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "images.urls.sshTarget",
+              "name": "SSH 隧道远程主机",
+              "type": "str",
+              "def": "",
+              "icon": "vpn_key",
+              "sourceDefault": null,
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "images.urls.sshRemotePort",
+              "name": "SSH 隧道远程端口",
+              "type": "num",
+              "def": 8787,
+              "icon": "settings_ethernet",
+              "sourceDefault": 8787,
+              "source": "src/blob-broker/settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "interaction",
+      "name": "交互",
+      "icon": "touch_app",
+      "groups": [
+        {
+          "id": "int-flow",
+          "name": "会话控制与队列",
+          "icon": "play_circle",
+          "items": [
+            {
+              "id": "autoResume",
+              "name": "启动时恢复上次会话",
+              "type": "bool",
+              "def": false,
+              "icon": "restore",
+              "sourceDefault": false,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "git.enabled",
+              "name": "启用 Git 状态感知",
+              "type": "bool",
+              "def": true,
+              "icon": "commit",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "steeringMode",
+              "name": "运行中追加消息策略",
+              "type": "enum",
+              "def": "one-at-a-time",
+              "opts": [
+                "合并消费",
+                "逐条消费"
+              ],
+              "icon": "playlist_play",
+              "sourceDefault": "one-at-a-time",
+              "wireOptions": [
+                "all",
+                "one-at-a-time"
+              ],
+              "prototypeDefault": "逐条消费",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "followUpMode",
+              "name": "完成后排队消息策略",
+              "type": "enum",
+              "def": "one-at-a-time",
+              "opts": [
+                "合并消费",
+                "逐条消费"
+              ],
+              "icon": "queue_music",
+              "sourceDefault": "one-at-a-time",
+              "wireOptions": [
+                "all",
+                "one-at-a-time"
+              ],
+              "prototypeDefault": "逐条消费",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "interruptMode",
+              "name": "中途打断执行时机",
+              "type": "enum",
+              "def": "immediate",
+              "opts": [
+                "立即中止",
+                "等待当前步完成"
+              ],
+              "icon": "pan_tool",
+              "sourceDefault": "immediate",
+              "wireOptions": [
+                "immediate",
+                "wait"
+              ],
+              "prototypeDefault": "立即中止",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "loop.mode",
+              "name": "循环执行上下文模式",
+              "type": "enum",
+              "def": "prompt",
+              "opts": [
+                "追加提示",
+                "自动压缩",
+                "重置上下文"
+              ],
+              "icon": "loop",
+              "sourceDefault": "prompt",
+              "wireOptions": [
+                "prompt",
+                "compact",
+                "reset"
+              ],
+              "prototypeDefault": "追加提示",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "loop.conditionTimeoutMs",
+              "name": "循环判定超时毫秒",
+              "type": "num",
+              "def": 30000,
+              "icon": "timer",
+              "sourceDefault": 30000,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "treeFilterMode",
+              "name": "会话树节点筛选",
+              "type": "enum",
+              "def": "default",
+              "opts": [
+                "默认",
+                "隐藏工具",
+                "仅看用户",
+                "仅看标记",
+                "显示全部"
+              ],
+              "icon": "filter_list",
+              "sourceDefault": "default",
+              "wireOptions": [
+                "default",
+                "no-tools",
+                "user-only",
+                "labeled-only",
+                "all"
+              ],
+              "prototypeDefault": "默认",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "features.unexpectedStopDetection",
+              "name": "异常中断自动检测",
+              "type": "enum",
+              "def": "mechanical",
+              "opts": [
+                "关闭",
+                "规则判定",
+                "智能分析"
+              ],
+              "icon": "troubleshoot",
+              "sourceDefault": "mechanical",
+              "wireOptions": [
+                "none",
+                "mechanical",
+                "smart"
+              ],
+              "prototypeDefault": "规则判定",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "power.sleepPrevention",
+              "name": "任务运行防系统休眠",
+              "type": "enum",
+              "def": "idle",
+              "opts": [
+                "关闭",
+                "空闲唤醒",
+                "保持亮屏",
+                "系统常驻"
+              ],
+              "icon": "coffee",
+              "sourceDefault": "idle",
+              "wireOptions": [
+                "off",
+                "idle",
+                "display",
+                "system"
+              ],
+              "prototypeDefault": "空闲唤醒",
+              "source": "src/session/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "int-input",
+          "name": "键盘与智能补全",
+          "icon": "keyboard",
+          "items": [
+            {
+              "id": "composer.recallClearedDrafts",
+              "name": "允许找回已清空草稿",
+              "type": "bool",
+              "def": true,
+              "icon": "history",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "input.bareSlashCommands",
+              "name": "免斜杠直接触发命令",
+              "type": "bool",
+              "def": false,
+              "icon": "slash_forward",
+              "sourceDefault": false,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "autocompleteMaxVisible",
+              "name": "补全菜单最大显示行数",
+              "type": "num",
+              "def": 10,
+              "icon": "list",
+              "sourceDefault": 10,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "spelling.typoDetection",
+              "name": "输入拼写错误检查",
+              "type": "bool",
+              "def": true,
+              "icon": "spellcheck",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "spelling.autocomplete",
+              "name": "单词补全引擎",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "关闭",
+                "自动",
+                "N-gram",
+                "SmolLM",
+                "Apple"
+              ],
+              "icon": "text_ad",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "off",
+                "auto",
+                "ngram",
+                "smollm",
+                "apple"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "composer.predictions",
+              "name": "显示整句输入预测",
+              "type": "bool",
+              "def": false,
+              "icon": "online_prediction",
+              "sourceDefault": false,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "spelling.autocorrect",
+              "name": "自动修正拼写错误",
+              "type": "bool",
+              "def": false,
+              "icon": "auto_fix_normal",
+              "sourceDefault": false,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "emojiAutocomplete",
+              "name": "启用表情符号补全",
+              "type": "bool",
+              "def": true,
+              "icon": "sentiment_satisfied",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "paste.largeMenuThreshold",
+              "name": "大文本粘贴折叠行数阈值",
+              "type": "num",
+              "def": 100,
+              "icon": "content_paste",
+              "sourceDefault": 100,
+              "source": "src/modes/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "int-magic",
+          "name": "魔法触发词",
+          "icon": "auto_awesome",
+          "items": [
+            {
+              "id": "magicKeywords.enabled",
+              "name": "启用自然语言魔法词",
+              "type": "bool",
+              "def": true,
+              "icon": "auto_awesome",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "magicKeywords.ultrathink",
+              "name": "深度思考触发词",
+              "type": "bool",
+              "def": true,
+              "icon": "psychology",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts (dynamic magicKeywords)"
+            },
+            {
+              "id": "magicKeywords.orchestrate",
+              "name": "多代理编排触发词",
+              "type": "bool",
+              "def": true,
+              "icon": "hub",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts (dynamic magicKeywords)"
+            },
+            {
+              "id": "magicKeywords.workflow",
+              "name": "结构化工作流触发词",
+              "type": "bool",
+              "def": true,
+              "icon": "route",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts (dynamic magicKeywords)"
+            },
+            {
+              "id": "magicKeywords.jevify",
+              "name": "极简输出触发词",
+              "type": "bool",
+              "def": true,
+              "icon": "compress",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts (dynamic magicKeywords)"
+            }
+          ]
+        },
+        {
+          "id": "int-perm",
+          "name": "审批与通知提醒",
+          "icon": "notifications",
+          "items": [
+            {
+              "id": "tools.approvalMode",
+              "name": "工具执行默认审批模式",
+              "type": "enum",
+              "def": "yolo",
+              "opts": [
+                "每次询问",
+                "同类记住批准",
+                "仅写入时询问",
+                "全自动执行"
+              ],
+              "icon": "verified_user",
+              "sourceDefault": "yolo",
+              "wireOptions": [
+                "always-ask",
+                "always-ask-cached",
+                "write",
+                "yolo"
+              ],
+              "prototypeDefault": "全自动执行",
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.approval",
+              "name": "指定工具专属审批策略",
+              "type": "rec",
+              "def": {},
+              "icon": "rule_folder",
+              "sourceDefault": {},
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "completion.notify",
+              "name": "任务完成系统通知",
+              "type": "enum",
+              "def": "on",
+              "opts": [
+                "开启",
+                "关闭"
+              ],
+              "icon": "notifications_active",
+              "sourceDefault": "on",
+              "wireOptions": [
+                "on",
+                "off"
+              ],
+              "prototypeDefault": "开启",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "error.notify",
+              "name": "运行出错系统通知",
+              "type": "enum",
+              "def": "off",
+              "opts": [
+                "开启",
+                "关闭"
+              ],
+              "icon": "notification_important",
+              "sourceDefault": "off",
+              "wireOptions": [
+                "on",
+                "off"
+              ],
+              "prototypeDefault": "关闭",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "ask.notify",
+              "name": "等待回答系统通知",
+              "type": "enum",
+              "def": "on",
+              "opts": [
+                "开启",
+                "关闭"
+              ],
+              "icon": "help",
+              "sourceDefault": "on",
+              "wireOptions": [
+                "on",
+                "off"
+              ],
+              "prototypeDefault": "开启",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "ask.timeout",
+              "name": "等待回答自动超时秒数",
+              "type": "num",
+              "def": 0,
+              "icon": "hourglass_bottom",
+              "sourceDefault": 0,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "recap.enabled",
+              "name": "空闲归来生成进度回顾",
+              "type": "bool",
+              "def": true,
+              "icon": "summarize",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "recap.idleSeconds",
+              "name": "触发进度回顾空闲秒数",
+              "type": "num",
+              "def": 240,
+              "icon": "snooze",
+              "sourceDefault": 240,
+              "source": "src/modes/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "int-start",
+          "name": "启动与版本更新",
+          "icon": "system_update",
+          "items": [
+            {
+              "id": "startup.quiet",
+              "name": "静默启动不显示横幅",
+              "type": "bool",
+              "def": false,
+              "icon": "volume_off",
+              "sourceDefault": false,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "startup.showSplash",
+              "name": "显示启动开屏动画",
+              "type": "bool",
+              "def": false,
+              "icon": "Rocket_launch",
+              "sourceDefault": false,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "startup.setupWizard",
+              "name": "首次运行打开配置向导",
+              "type": "bool",
+              "def": true,
+              "icon": "assistant_direction",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "startup.checkUpdate",
+              "name": "启动时自动检查新版本",
+              "type": "bool",
+              "def": true,
+              "icon": "update",
+              "sourceDefault": true,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "update.channel",
+              "name": "软件更新发布通道",
+              "type": "enum",
+              "def": "stable",
+              "opts": [
+                "稳定版",
+                "预览版"
+              ],
+              "icon": "new_releases",
+              "sourceDefault": "stable",
+              "wireOptions": [
+                "stable",
+                "canary"
+              ],
+              "prototypeDefault": "稳定版",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "marketplace.autoUpdate",
+              "name": "扩展市场自动更新策略",
+              "type": "enum",
+              "def": "notify",
+              "opts": [
+                "关闭",
+                "仅提醒",
+                "自动安装"
+              ],
+              "icon": "storefront",
+              "sourceDefault": "notify",
+              "wireOptions": [
+                "off",
+                "notify",
+                "auto"
+              ],
+              "prototypeDefault": "仅提醒",
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "startup.changelogMode",
+              "name": "更新后日志展示方式",
+              "type": "enum",
+              "def": "summary",
+              "opts": [
+                "摘要",
+                "完整内容",
+                "隐藏"
+              ],
+              "icon": "article",
+              "sourceDefault": "summary",
+              "wireOptions": [
+                "summary",
+                "expanded",
+                "hidden"
+              ],
+              "prototypeDefault": "摘要",
+              "source": "src/modes/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "int-collab",
+          "name": "语音输入与远程协作",
+          "icon": "share",
+          "items": [
+            {
+              "id": "skills.registryUrl",
+              "name": "技能包中心仓库地址",
+              "type": "str",
+              "def": "https://skills.omp.sh",
+              "icon": "extension",
+              "sourceDefault": "https://skills.omp.sh",
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "stt.enabled",
+              "name": "启用语音转文字输入",
+              "type": "bool",
+              "def": false,
+              "icon": "mic",
+              "sourceDefault": false,
+              "source": "src/stt/settings.ts"
+            },
+            {
+              "id": "stt.submitTrigger",
+              "name": "语音识别后自动发送",
+              "type": "enum",
+              "def": "never",
+              "opts": [
+                "从不",
+                "松开按键即发",
+                "识别完成后发送",
+                "说出指令词发送"
+              ],
+              "icon": "send",
+              "sourceDefault": "never",
+              "wireOptions": [
+                "never",
+                "release",
+                "release-complete",
+                "say-submit"
+              ],
+              "prototypeDefault": "从不",
+              "source": "src/stt/settings.ts"
+            },
+            {
+              "id": "collab.relayUrl",
+              "name": "实时协作中继服务器",
+              "type": "str",
+              "def": "wss://my.omp.sh",
+              "icon": "cell_tower",
+              "sourceDefault": "wss://my.omp.sh",
+              "source": "src/collab/settings.ts"
+            },
+            {
+              "id": "collab.webUrl",
+              "name": "实时协作网页端地址",
+              "type": "str",
+              "def": "",
+              "icon": "language",
+              "sourceDefault": "",
+              "source": "src/collab/settings.ts"
+            },
+            {
+              "id": "collab.displayName",
+              "name": "协作会话显示昵称",
+              "type": "str",
+              "def": "",
+              "icon": "person",
+              "sourceDefault": "",
+              "source": "src/collab/settings.ts"
+            },
+            {
+              "id": "collab.autoStart",
+              "name": "新会话自动开启协作",
+              "type": "enum",
+              "def": "off",
+              "opts": [
+                "关闭",
+                "仅允许观看",
+                "允许远程控制"
+              ],
+              "icon": "group_add",
+              "sourceDefault": "off",
+              "wireOptions": [
+                "off",
+                "view",
+                "control"
+              ],
+              "prototypeDefault": "关闭",
+              "source": "src/collab/settings.ts"
+            },
+            {
+              "id": "share.serverUrl",
+              "name": "会话快照分享服务器",
+              "type": "str",
+              "def": "https://my.omp.sh/s",
+              "icon": "ios_share",
+              "sourceDefault": "https://my.omp.sh/s",
+              "source": "src/commands/settings.ts"
+            },
+            {
+              "id": "share.store",
+              "name": "分享数据存储后端",
+              "type": "enum",
+              "def": "blob",
+              "opts": [
+                "云端对象",
+                "GitHub Gist"
+              ],
+              "icon": "cloud_done",
+              "sourceDefault": "blob",
+              "wireOptions": [
+                "blob",
+                "gist"
+              ],
+              "prototypeDefault": "云端对象",
+              "source": "src/commands/settings.ts"
+            },
+            {
+              "id": "share.redactSecrets",
+              "name": "分享时自动抹除敏感密钥",
+              "type": "bool",
+              "def": true,
+              "icon": "enhanced_encryption",
+              "sourceDefault": true,
+              "source": "src/commands/settings.ts"
+            },
+            {
+              "id": "stream.serverUrl",
+              "name": "终端直播推流服务器",
+              "type": "str",
+              "def": "https://live.omp.sh",
+              "icon": "live_tv",
+              "sourceDefault": "https://live.omp.sh",
+              "source": "src/stream/settings.ts"
+            },
+            {
+              "id": "stream.redactPatterns",
+              "name": "直播内容脱敏正则规则",
+              "type": "arr",
+              "def": [],
+              "icon": "visibility_off",
+              "sourceDefault": [],
+              "source": "src/stream/settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "name": "上下文",
+      "icon": "layers",
+      "groups": [
+        {
+          "id": "ctx-work",
+          "name": "工作区与附加源",
+          "icon": "folder_open",
+          "items": [
+            {
+              "id": "workspace.additionalDirectories",
+              "name": "附加关联工作区目录",
+              "type": "arr",
+              "def": [],
+              "icon": "create_new_folder",
+              "sourceDefault": [],
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "contextFiles.extra",
+              "name": "全局常驻上下文文件",
+              "type": "arr",
+              "def": [],
+              "icon": "description",
+              "sourceDefault": [],
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "contextPromotion.enabled",
+              "name": "高频内容自动提升权重",
+              "type": "bool",
+              "def": false,
+              "icon": "trending_up",
+              "sourceDefault": false,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "extendedContext",
+              "name": "开启超长上下文窗口",
+              "type": "bool",
+              "def": false,
+              "icon": "width_full",
+              "sourceDefault": false,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "tools.format",
+              "name": "工具调用协议格式",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "原生",
+                "GLM",
+                "Hermes",
+                "Kimi",
+                "XML",
+                "Anthropic",
+                "DeepSeek",
+                "Harmony",
+                "Qwen3",
+                "Gemini",
+                "Gemma",
+                "MiniMax"
+              ],
+              "icon": "code",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "native",
+                "glm",
+                "hermes",
+                "kimi",
+                "xml",
+                "anthropic",
+                "deepseek",
+                "harmony",
+                "qwen3",
+                "gemini",
+                "gemma",
+                "minimax"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "branchSummary.enabled",
+              "name": "切换分支自动生成摘要",
+              "type": "bool",
+              "def": false,
+              "icon": "fork_right",
+              "sourceDefault": false,
+              "source": "src/session/context-settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "ctx-compact",
+          "name": "自动压缩管理",
+          "icon": "compress",
+          "items": [
+            {
+              "id": "compaction.enabled",
+              "name": "启用上下文自动压缩",
+              "type": "bool",
+              "def": true,
+              "icon": "compress",
+              "sourceDefault": true,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.experimentalContextManagement",
+              "name": "实验性智能上下文裁剪",
+              "type": "bool",
+              "def": false,
+              "icon": "science",
+              "sourceDefault": false,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.midTurnEnabled",
+              "name": "允许单轮执行中途压缩",
+              "type": "bool",
+              "def": true,
+              "icon": "swap_vert",
+              "sourceDefault": true,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.methodOrder",
+              "name": "压缩算法优先级顺序",
+              "type": "arr",
+              "def": [
+                "remote",
+                "snapcompact",
+                "handoff",
+                "shake",
+                "soft"
+              ],
+              "icon": "sort",
+              "sourceDefault": [
+                "remote",
+                "snapcompact",
+                "handoff",
+                "shake",
+                "soft"
+              ],
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.thresholdPercent",
+              "name": "触发压缩容量百分比",
+              "type": "num",
+              "def": -1,
+              "icon": "percent",
+              "sourceDefault": -1,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.thresholdTokens",
+              "name": "触发压缩绝对词元数",
+              "type": "num",
+              "def": -1,
+              "icon": "token",
+              "sourceDefault": -1,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.handoffSaveToDisk",
+              "name": "交接摘要持久化到磁盘",
+              "type": "bool",
+              "def": false,
+              "icon": "save",
+              "sourceDefault": false,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.remoteStreamingV2Enabled",
+              "name": "启用流式远程压缩协议",
+              "type": "bool",
+              "def": true,
+              "icon": "cloud_sync",
+              "sourceDefault": true,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.asyncEnabled",
+              "name": "后台异步预压缩上下文",
+              "type": "bool",
+              "def": true,
+              "icon": "sync",
+              "sourceDefault": true,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.idleEnabled",
+              "name": "会话空闲时自动压缩",
+              "type": "bool",
+              "def": false,
+              "icon": "bedtime",
+              "sourceDefault": false,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.idleThresholdTokens",
+              "name": "空闲压缩最低词元数",
+              "type": "num",
+              "def": 200000,
+              "icon": "data_usage",
+              "sourceDefault": 200000,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.idleTimeoutSeconds",
+              "name": "触发空闲压缩等待秒数",
+              "type": "num",
+              "def": 300,
+              "icon": "timer",
+              "sourceDefault": 300,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.supersedeReads",
+              "name": "新读取自动替换旧文件块",
+              "type": "bool",
+              "def": true,
+              "icon": "find_replace",
+              "sourceDefault": true,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.dropUseless",
+              "name": "压缩时丢弃无效探测记录",
+              "type": "bool",
+              "def": true,
+              "icon": "delete_sweep",
+              "sourceDefault": true,
+              "source": "src/session/context-settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "ctx-snap",
+          "name": "视觉快照压缩",
+          "icon": "grid_view",
+          "items": [
+            {
+              "id": "snapcompact.systemPrompt",
+              "name": "快照压缩保留系统提示",
+              "type": "enum",
+              "def": "none",
+              "opts": [
+                "不保留",
+                "仅项目规则",
+                "全部保留"
+              ],
+              "icon": "assignment",
+              "sourceDefault": "none",
+              "wireOptions": [
+                "none",
+                "agents-md",
+                "all"
+              ],
+              "prototypeDefault": "不保留",
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "snapcompact.toolResults",
+              "name": "将工具输出渲染为快照",
+              "type": "bool",
+              "def": false,
+              "icon": "screenshot_monitor",
+              "sourceDefault": false,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "snapcompact.shape",
+              "name": "快照点阵排版规格",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "8x8r-bw",
+                "8x8r-sent",
+                "8x8u-bw",
+                "8x8u-sent",
+                "6x6u-bw",
+                "6x6u-sent",
+                "5x8-bw",
+                "5x8-sent",
+                "6x12-dim",
+                "8x13-bw",
+                "8on16-bw",
+                "8on22-bw",
+                "11on16-bw",
+                "silver16-bw",
+                "doc-8on16-bw",
+                "doc-8on16-sent",
+                "doc-8on16-sent-dim"
+              ],
+              "icon": "aspect_ratio",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "8x8r-bw",
+                "8x8r-sent",
+                "8x8u-bw",
+                "8x8u-sent",
+                "6x6u-bw",
+                "6x6u-sent",
+                "5x8-bw",
+                "5x8-sent",
+                "6x12-dim",
+                "8x13-bw",
+                "8on16-bw",
+                "8on22-bw",
+                "11on16-bw",
+                "silver16-bw",
+                "doc-8on16-bw",
+                "doc-8on16-sent",
+                "doc-8on16-sent-dim"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/context-settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "ctx-ttsr",
+          "name": "实时流规则修正 TTSR",
+          "icon": "rule",
+          "items": [
+            {
+              "id": "ttsr.enabled",
+              "name": "启用输出流实时规则监控",
+              "type": "bool",
+              "def": true,
+              "icon": "radar",
+              "sourceDefault": true,
+              "source": "src/export/ttsr-settings.ts"
+            },
+            {
+              "id": "ttsr.judge",
+              "name": "违规二次确认裁判模型",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "始终开启",
+                "关闭"
+              ],
+              "icon": "gavel",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "on",
+                "off"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/export/ttsr-settings.ts"
+            },
+            {
+              "id": "ttsr.contextMode",
+              "name": "违规片段上下文处理",
+              "type": "enum",
+              "def": "discard",
+              "opts": [
+                "丢弃重写",
+                "保留标记"
+              ],
+              "icon": "auto_delete",
+              "sourceDefault": "discard",
+              "wireOptions": [
+                "discard",
+                "keep"
+              ],
+              "prototypeDefault": "丢弃重写",
+              "source": "src/export/ttsr-settings.ts"
+            },
+            {
+              "id": "ttsr.interruptMode",
+              "name": "流式拦截打断范围",
+              "type": "enum",
+              "def": "always",
+              "opts": [
+                "从不打断",
+                "仅正文打断",
+                "仅工具打断",
+                "始终打断"
+              ],
+              "icon": "Cancel_presentation",
+              "sourceDefault": "always",
+              "wireOptions": [
+                "never",
+                "prose-only",
+                "tool-only",
+                "always"
+              ],
+              "prototypeDefault": "始终打断",
+              "source": "src/export/ttsr-settings.ts"
+            },
+            {
+              "id": "ttsr.repeatMode",
+              "name": "同一规则重复触发策略",
+              "type": "enum",
+              "def": "once",
+              "opts": [
+                "仅触发一次",
+                "间隔轮次后触发"
+              ],
+              "icon": "repeat_one",
+              "sourceDefault": "once",
+              "wireOptions": [
+                "once",
+                "after-gap"
+              ],
+              "prototypeDefault": "仅触发一次",
+              "source": "src/export/ttsr-settings.ts"
+            },
+            {
+              "id": "ttsr.repeatGap",
+              "name": "允许再次触发间隔轮数",
+              "type": "num",
+              "def": 10,
+              "icon": "space_bar",
+              "sourceDefault": 10,
+              "source": "src/export/ttsr-settings.ts"
+            },
+            {
+              "id": "ttsr.builtinRules",
+              "name": "加载内置安全与质量规则",
+              "type": "bool",
+              "def": true,
+              "icon": "verified",
+              "sourceDefault": true,
+              "source": "src/export/ttsr-settings.ts"
+            },
+            {
+              "id": "ttsr.disabledRules",
+              "name": "禁用规则标识列表",
+              "type": "arr",
+              "def": [],
+              "icon": "block",
+              "sourceDefault": [],
+              "source": "src/export/ttsr-settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "name": "记忆",
+      "icon": "psychology",
+      "groups": [
+        {
+          "id": "mem-core",
+          "name": "记忆后端与自学习",
+          "icon": "memory",
+          "items": [
+            {
+              "id": "memory.backend",
+              "name": "长期记忆存储引擎",
+              "type": "enum",
+              "def": "off",
+              "opts": [
+                "关闭",
+                "本地存储",
+                "Hindsight",
+                "Mnemopi",
+                "Sharpshooter"
+              ],
+              "icon": "database",
+              "sourceDefault": "off",
+              "wireOptions": [
+                "off",
+                "local",
+                "hindsight",
+                "mnemopi",
+                "sharpshooter"
+              ],
+              "prototypeDefault": "关闭",
+              "source": "src/memory-backend/settings.ts"
+            },
+            {
+              "id": "sharpshooter.model",
+              "name": "Sharpshooter 检索模型",
+              "type": "str",
+              "def": "",
+              "icon": "neurology",
+              "sourceDefault": null,
+              "source": "src/sharpshooter/settings.ts"
+            },
+            {
+              "id": "autolearn.enabled",
+              "name": "从任务中自主总结经验",
+              "type": "bool",
+              "def": false,
+              "icon": "school",
+              "sourceDefault": false,
+              "source": "src/autolearn/settings.ts"
+            },
+            {
+              "id": "autolearn.autoContinue",
+              "name": "经验总结后自动继续任务",
+              "type": "bool",
+              "def": false,
+              "icon": "fast_forward",
+              "sourceDefault": false,
+              "source": "src/autolearn/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "mem-mnemo",
+          "name": "Mnemopi 向量记忆",
+          "icon": "hub",
+          "items": [
+            {
+              "id": "mnemopi.dbPath",
+              "name": "本地向量数据库路径",
+              "type": "str",
+              "def": "",
+              "icon": "folder",
+              "sourceDefault": null,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.bank",
+              "name": "指定记忆分库名称",
+              "type": "str",
+              "def": "",
+              "icon": "inventory_2",
+              "sourceDefault": null,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.scoping",
+              "name": "记忆隔离作用域",
+              "type": "enum",
+              "def": "per-project",
+              "opts": [
+                "全局共享",
+                "按项目隔离",
+                "按项目与标签"
+              ],
+              "icon": "workspaces",
+              "sourceDefault": "per-project",
+              "wireOptions": [
+                "global",
+                "per-project",
+                "per-project-tagged"
+              ],
+              "prototypeDefault": "按项目隔离",
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.embeddingVariant",
+              "name": "向量嵌入语言模型",
+              "type": "enum",
+              "def": "en",
+              "opts": [
+                "英文",
+                "多语言"
+              ],
+              "icon": "translate",
+              "sourceDefault": "en",
+              "wireOptions": [
+                "en",
+                "multilingual"
+              ],
+              "prototypeDefault": "英文",
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.autoRecall",
+              "name": "每轮对话前自动检索记忆",
+              "type": "bool",
+              "def": true,
+              "icon": "search_insights",
+              "sourceDefault": true,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.autoRetain",
+              "name": "对话结束后自动提炼记忆",
+              "type": "bool",
+              "def": true,
+              "icon": "bookmark_add",
+              "sourceDefault": true,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.polyphonicRecall",
+              "name": "启用多维并发联想检索",
+              "type": "bool",
+              "def": false,
+              "icon": "call_split",
+              "sourceDefault": false,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.enhancedRecall",
+              "name": "启用重排序深度检索",
+              "type": "bool",
+              "def": false,
+              "icon": "manage_search",
+              "sourceDefault": false,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.proactiveLinking",
+              "name": "自动构建记忆关联图谱",
+              "type": "bool",
+              "def": false,
+              "icon": "share",
+              "sourceDefault": false,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.noEmbeddings",
+              "name": "纯关键词模式不生成向量",
+              "type": "bool",
+              "def": false,
+              "icon": "text_snippet",
+              "sourceDefault": false,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.embeddingModel",
+              "name": "自定义向量模型名称",
+              "type": "str",
+              "def": "",
+              "icon": "model_training",
+              "sourceDefault": null,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.embeddingApiUrl",
+              "name": "自定义向量接口地址",
+              "type": "str",
+              "def": "",
+              "icon": "link",
+              "sourceDefault": null,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.embeddingApiKey",
+              "name": "自定义向量接口密钥",
+              "type": "str",
+              "def": "",
+              "icon": "key",
+              "sourceDefault": null,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.llmMode",
+              "name": "记忆提炼所使用的模型",
+              "type": "enum",
+              "def": "smol",
+              "opts": [
+                "不使用",
+                "轻量模型",
+                "远程独立接口"
+              ],
+              "icon": "memory_alt",
+              "sourceDefault": "smol",
+              "wireOptions": [
+                "none",
+                "smol",
+                "remote"
+              ],
+              "prototypeDefault": "轻量模型",
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.llmBaseUrl",
+              "name": "记忆提炼远程接口地址",
+              "type": "str",
+              "def": "",
+              "icon": "dns",
+              "sourceDefault": null,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.llmApiKey",
+              "name": "记忆提炼远程接口密钥",
+              "type": "str",
+              "def": "",
+              "icon": "password",
+              "sourceDefault": null,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.llmModel",
+              "name": "记忆提炼指定模型名",
+              "type": "str",
+              "def": "",
+              "icon": "smart_toy",
+              "sourceDefault": null,
+              "source": "src/mnemopi/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "mem-hind",
+          "name": "Hindsight 心智记忆",
+          "icon": "history_edu",
+          "items": [
+            {
+              "id": "hindsight.apiUrl",
+              "name": "Hindsight 服务地址",
+              "type": "str",
+              "def": "http://localhost:8888",
+              "icon": "dns",
+              "sourceDefault": "http://localhost:8888",
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.apiToken",
+              "name": "Hindsight 访问令牌",
+              "type": "str",
+              "def": "",
+              "icon": "vpn_key",
+              "sourceDefault": null,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.bankId",
+              "name": "绑定记忆库编号",
+              "type": "str",
+              "def": "",
+              "icon": "tag",
+              "sourceDefault": null,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.scoping",
+              "name": "记忆共享范围",
+              "type": "enum",
+              "def": "per-project-tagged",
+              "opts": [
+                "全局共享",
+                "按项目隔离",
+                "按项目与标签"
+              ],
+              "icon": "layers",
+              "sourceDefault": "per-project-tagged",
+              "wireOptions": [
+                "global",
+                "per-project",
+                "per-project-tagged"
+              ],
+              "prototypeDefault": "按项目与标签",
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.autoRecall",
+              "name": "自动召回历史经验",
+              "type": "bool",
+              "def": true,
+              "icon": "history",
+              "sourceDefault": true,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.autoRetain",
+              "name": "自动归档重要决策",
+              "type": "bool",
+              "def": true,
+              "icon": "archive",
+              "sourceDefault": true,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.retainMode",
+              "name": "归档扫描对话范围",
+              "type": "enum",
+              "def": "full-session",
+              "opts": [
+                "完整会话",
+                "仅最新一轮"
+              ],
+              "icon": "Select_all",
+              "sourceDefault": "full-session",
+              "wireOptions": [
+                "full-session",
+                "last-turn"
+              ],
+              "prototypeDefault": "完整会话",
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.mentalModelsEnabled",
+              "name": "维护项目心智模型文档",
+              "type": "bool",
+              "def": true,
+              "icon": "psychology_alt",
+              "sourceDefault": true,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.mentalModelAutoSeed",
+              "name": "新项目自动初始化心智模型",
+              "type": "bool",
+              "def": true,
+              "icon": "auto_awesome",
+              "sourceDefault": true,
+              "source": "src/hindsight/settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "files",
+      "name": "文件",
+      "icon": "folder",
+      "groups": [
+        {
+          "id": "fil-edit",
+          "name": "代码修改与校验",
+          "icon": "edit_document",
+          "items": [
+            {
+              "id": "edit.mode",
+              "name": "代码修改工具模式",
+              "type": "enum",
+              "def": "hashline",
+              "opts": [
+                "应用补丁",
+                "哈希行定位",
+                "差异补丁",
+                "精确替换",
+                "宽松替换"
+              ],
+              "icon": "difference",
+              "sourceDefault": "hashline",
+              "wireOptions": [
+                "apply_patch",
+                "hashline",
+                "patch",
+                "replace",
+                "sloppy"
+              ],
+              "prototypeDefault": "哈希行定位",
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "edit.fuzzyMatch",
+              "name": "允许上下文模糊定位",
+              "type": "bool",
+              "def": true,
+              "icon": "blur_on",
+              "sourceDefault": true,
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "edit.fuzzyThreshold",
+              "name": "模糊定位最低相似度",
+              "type": "num",
+              "def": 0.95,
+              "icon": "percent",
+              "sourceDefault": 0.95,
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "edit.streamingAbort",
+              "name": "流式生成补丁出错立即中止",
+              "type": "bool",
+              "def": false,
+              "icon": "cancel",
+              "sourceDefault": false,
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "edit.recoverInlineEdits",
+              "name": "自动修复格式损坏的内联修改",
+              "type": "bool",
+              "def": true,
+              "icon": "build",
+              "sourceDefault": true,
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "edit.blockAutoGenerated",
+              "name": "禁止修改自动生成的代码文件",
+              "type": "bool",
+              "def": true,
+              "icon": "lock",
+              "sourceDefault": true,
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "edit.enforceSeenLines",
+              "name": "强制要求先读取文件再修改",
+              "type": "bool",
+              "def": true,
+              "icon": "visibility",
+              "sourceDefault": true,
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "edit.blackbox.enabled",
+              "name": "使用独立黑盒代理执行修改",
+              "type": "bool",
+              "def": false,
+              "icon": "inbox",
+              "sourceDefault": false,
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "edit.autoRepair.enabled",
+              "name": "补丁应用失败时自动重试修复",
+              "type": "bool",
+              "def": false,
+              "icon": "healing",
+              "sourceDefault": false,
+              "source": "src/edit/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "fil-read",
+          "name": "文件读取与智能大纲",
+          "icon": "menu_book",
+          "items": [
+            {
+              "id": "readLineNumbers",
+              "name": "读取结果附带行号",
+              "type": "bool",
+              "def": false,
+              "icon": "format_list_numbered",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.defaultLimit",
+              "name": "单次默认读取最大行数",
+              "type": "num",
+              "def": 300,
+              "icon": "height",
+              "sourceDefault": 300,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.renderMarkdown",
+              "name": "终端内美化渲染 Markdown",
+              "type": "bool",
+              "def": false,
+              "icon": "markdown",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.toolResultPreview",
+              "name": "折叠状态显示读取内容预览",
+              "type": "bool",
+              "def": false,
+              "icon": "preview",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.summarize.enabled",
+              "name": "大文件自动折叠为语法大纲",
+              "type": "bool",
+              "def": true,
+              "icon": "account_tree",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.summarize.prose",
+              "name": "对普通文本文档生成摘要",
+              "type": "bool",
+              "def": false,
+              "icon": "notes",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.summarize.minBodyLines",
+              "name": "函数体触发折叠最小行数",
+              "type": "num",
+              "def": 4,
+              "icon": "functions",
+              "sourceDefault": 4,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.summarize.minCommentLines",
+              "name": "注释块触发折叠最小行数",
+              "type": "num",
+              "def": 6,
+              "icon": "comment",
+              "sourceDefault": 6,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.summarize.minTotalLines",
+              "name": "文件启用大纲折叠总行数",
+              "type": "num",
+              "def": 100,
+              "icon": "description",
+              "sourceDefault": 100,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.summarize.unfoldUntil",
+              "name": "文件头部默认完整展开行数",
+              "type": "num",
+              "def": 50,
+              "icon": "vertical_align_top",
+              "sourceDefault": 50,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "read.summarize.unfoldLimit",
+              "name": "单次展开语法节点最大行数",
+              "type": "num",
+              "def": 100,
+              "icon": "unfold_more",
+              "sourceDefault": 100,
+              "source": "src/tools/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "fil-lsp",
+          "name": "语言服务器 LSP",
+          "icon": "code",
+          "items": [
+            {
+              "id": "lsp.enabled",
+              "name": "启用 LSP 代码智能分析",
+              "type": "bool",
+              "def": true,
+              "icon": "code_blocks",
+              "sourceDefault": true,
+              "source": "src/lsp/settings.ts"
+            },
+            {
+              "id": "lsp.lazy",
+              "name": "遇到对应源码时按需启动",
+              "type": "bool",
+              "def": true,
+              "icon": "bolt",
+              "sourceDefault": true,
+              "source": "src/lsp/settings.ts"
+            },
+            {
+              "id": "lsp.shared",
+              "name": "多个会话共享同一语言服务",
+              "type": "bool",
+              "def": true,
+              "icon": "hub",
+              "sourceDefault": true,
+              "source": "src/lsp/settings.ts"
+            },
+            {
+              "id": "lsp.formatOnWrite",
+              "name": "写入文件后自动调用格式化",
+              "type": "bool",
+              "def": false,
+              "icon": "format_align_left",
+              "sourceDefault": false,
+              "source": "src/lsp/settings.ts"
+            },
+            {
+              "id": "lsp.diagnosticsOnWrite",
+              "name": "保存文件后立即检查语法错误",
+              "type": "bool",
+              "def": true,
+              "icon": "bug_report",
+              "sourceDefault": true,
+              "source": "src/lsp/settings.ts"
+            },
+            {
+              "id": "lsp.diagnosticsOnEdit",
+              "name": "每次编辑后实时检查语法错误",
+              "type": "bool",
+              "def": false,
+              "icon": "troubleshoot",
+              "sourceDefault": false,
+              "source": "src/lsp/settings.ts"
+            },
+            {
+              "id": "lsp.diagnosticsDeduplicate",
+              "name": "合并重复的编译器告警信息",
+              "type": "bool",
+              "def": true,
+              "icon": "filter_alt",
+              "sourceDefault": true,
+              "source": "src/lsp/settings.ts"
+            },
+            {
+              "id": "lsp.requestTimeout",
+              "name": "语言服务响应超时秒数",
+              "type": "num",
+              "def": 10,
+              "icon": "timer",
+              "sourceDefault": 10,
+              "source": "src/lsp/settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "shell",
+      "name": "终端",
+      "icon": "terminal",
+      "groups": [
+        {
+          "id": "sh-bash",
+          "name": "Bash 命令执行",
+          "icon": "terminal",
+          "items": [
+            {
+              "id": "bash.enabled",
+              "name": "允许执行终端命令",
+              "type": "bool",
+              "def": true,
+              "icon": "terminal",
+              "sourceDefault": true,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bash.allowCompoundCommands",
+              "name": "允许管道与多命令拼接",
+              "type": "bool",
+              "def": false,
+              "icon": "mediation",
+              "sourceDefault": false,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bash.autoBackground.enabled",
+              "name": "长耗时命令自动转入后台",
+              "type": "bool",
+              "def": true,
+              "icon": "schedule_send",
+              "sourceDefault": true,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bash.gitGuard",
+              "name": "拦截危险的 Git 历史覆写命令",
+              "type": "bool",
+              "def": false,
+              "icon": "shield_lock",
+              "sourceDefault": false,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bash.patterns",
+              "name": "允许直接执行的命令模式",
+              "type": "arr",
+              "def": [],
+              "icon": "Check_box",
+              "sourceDefault": [],
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bashInterceptor.enabled",
+              "name": "拦截低效命令并引导专用工具",
+              "type": "bool",
+              "def": false,
+              "icon": "alt_route",
+              "sourceDefault": false,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bash.direnv",
+              "name": "自动加载项目 Direnv 环境",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "关闭"
+              ],
+              "icon": "tune",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "off"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bash.direnvLoadTimeoutMs",
+              "name": "加载环境变量超时毫秒",
+              "type": "num",
+              "def": 30000,
+              "icon": "timer",
+              "sourceDefault": 30000,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "shellMinimizer.enabled",
+              "name": "自动折叠冗余命令输出日志",
+              "type": "bool",
+              "def": true,
+              "icon": "compress",
+              "sourceDefault": true,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "shellMinimizer.sourceOutlineLevel",
+              "name": "日志精简过滤强度",
+              "type": "enum",
+              "def": "default",
+              "opts": [
+                "默认",
+                "强力精简"
+              ],
+              "icon": "filter_list",
+              "sourceDefault": "default",
+              "wireOptions": [
+                "default",
+                "aggressive"
+              ],
+              "prototypeDefault": "默认",
+              "source": "src/exec/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "sh-eval",
+          "name": "内置代码解释器",
+          "icon": "data_object",
+          "items": [
+            {
+              "id": "eval.py",
+              "name": "启用 Python 沙盒执行",
+              "type": "bool",
+              "def": true,
+              "icon": "code",
+              "sourceDefault": true,
+              "source": "src/eval/settings.ts"
+            },
+            {
+              "id": "eval.js",
+              "name": "启用 JavaScript 沙盒执行",
+              "type": "bool",
+              "def": true,
+              "icon": "javascript",
+              "sourceDefault": true,
+              "source": "src/eval/settings.ts"
+            },
+            {
+              "id": "eval.autoProvision",
+              "name": "缺失依赖包时自动安装配置",
+              "type": "bool",
+              "def": true,
+              "icon": "download",
+              "sourceDefault": true,
+              "source": "src/eval/settings.ts"
+            },
+            {
+              "id": "eval.tools.enabled",
+              "name": "允许脚本内反向调用内置工具",
+              "type": "bool",
+              "def": true,
+              "icon": "construction",
+              "sourceDefault": true,
+              "source": "src/eval/settings.ts"
+            },
+            {
+              "id": "eval.workpool.freshAgents",
+              "name": "工作池每次分配全新子代理",
+              "type": "bool",
+              "def": false,
+              "icon": "autorenew",
+              "sourceDefault": false,
+              "source": "src/eval/settings.ts"
+            },
+            {
+              "id": "eval.autoBackground.enabled",
+              "name": "长耗时脚本自动转入后台",
+              "type": "bool",
+              "def": false,
+              "icon": " move_to_inbox",
+              "sourceDefault": false,
+              "source": "src/eval/settings.ts"
+            },
+            {
+              "id": "python.kernelMode",
+              "name": "Python 内核生命周期",
+              "type": "enum",
+              "def": "session",
+              "opts": [
+                "会话常驻",
+                "单次执行销毁"
+              ],
+              "icon": "memory",
+              "sourceDefault": "session",
+              "wireOptions": [
+                "session",
+                "per-call"
+              ],
+              "prototypeDefault": "会话常驻",
+              "source": "src/eval/settings.ts"
+            },
+            {
+              "id": "python.interpreter",
+              "name": "指定 Python 解释器可执行路径",
+              "type": "str",
+              "def": "",
+              "icon": "folder_code",
+              "sourceDefault": "",
+              "source": "src/eval/settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "name": "任务",
+      "icon": "checklist",
+      "groups": [
+        {
+          "id": "tsk-iso",
+          "name": "工作树与沙盒隔离",
+          "icon": "account_tree",
+          "items": [
+            {
+              "id": "task.isolation.enabled",
+              "name": "子任务在独立文件沙盒中运行",
+              "type": "bool",
+              "def": false,
+              "icon": "security",
+              "sourceDefault": false,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "isolation.backend",
+              "name": "写时复制文件系统后端",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "APFS",
+                "Btrfs",
+                "ZFS",
+                "Reflink",
+                "OverlayFS",
+                "ProjFS",
+                "块克隆",
+                "完整复制"
+              ],
+              "icon": "hard_drive",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "apfs",
+                "btrfs",
+                "zfs",
+                "reflink",
+                "overlayfs",
+                "projfs",
+                "block-clone",
+                "rcopy"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "worktree.clone",
+              "name": "使用 Git 工作树克隆隔离",
+              "type": "bool",
+              "def": true,
+              "icon": "call_split",
+              "sourceDefault": true,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "worktree.cleanSource",
+              "name": "克隆前清理未跟踪临时文件",
+              "type": "bool",
+              "def": false,
+              "icon": "cleaning_services",
+              "sourceDefault": false,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "worktree.onStart",
+              "name": "启动会话时创建独立工作树",
+              "type": "enum",
+              "def": "off",
+              "opts": [
+                "关闭",
+                "每次询问",
+                "自动创建"
+              ],
+              "icon": "play_arrow",
+              "sourceDefault": "off",
+              "wireOptions": [
+                "off",
+                "ask",
+                "create"
+              ],
+              "prototypeDefault": "关闭",
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "worktree.onExit",
+              "name": "结束会话时工作树保留策略",
+              "type": "enum",
+              "def": "keep",
+              "opts": [
+                "保留",
+                "每次询问",
+                "自动删除"
+              ],
+              "icon": "delete_forever",
+              "sourceDefault": "keep",
+              "wireOptions": [
+                "keep",
+                "ask",
+                "remove"
+              ],
+              "prototypeDefault": "保留",
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.isolation.apply",
+              "name": "子任务完成后自动应用改动",
+              "type": "bool",
+              "def": true,
+              "icon": "done_all",
+              "sourceDefault": true,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.isolation.merge",
+              "name": "沙盒改动合并回主分支方式",
+              "type": "enum",
+              "def": "patch",
+              "opts": [
+                "补丁合并",
+                "Git 分支合并"
+              ],
+              "icon": "merge",
+              "sourceDefault": "patch",
+              "wireOptions": [
+                "patch",
+                "branch"
+              ],
+              "prototypeDefault": "补丁合并",
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.isolation.commits",
+              "name": "自动生成提交信息格式",
+              "type": "enum",
+              "def": "generic",
+              "opts": [
+                "标准格式",
+                "附带 AI 署名"
+              ],
+              "icon": "commit",
+              "sourceDefault": "generic",
+              "wireOptions": [
+                "generic",
+                "ai"
+              ],
+              "prototypeDefault": "标准格式",
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "worktree.base",
+              "name": "工作树临时存放根目录",
+              "type": "str",
+              "def": "",
+              "icon": "folder_open",
+              "sourceDefault": null,
+              "source": "src/task/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "tsk-sub",
+          "name": "子代理并发调度",
+          "icon": "hub",
+          "items": [
+            {
+              "id": "task.eager",
+              "name": "派发子代理积极程度",
+              "type": "enum",
+              "def": "default",
+              "opts": [
+                "默认",
+                "优先派发",
+                "始终派发"
+              ],
+              "icon": "rocket_launch",
+              "sourceDefault": "default",
+              "wireOptions": [
+                "default",
+                "preferred",
+                "always"
+              ],
+              "prototypeDefault": "默认",
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.batch",
+              "name": "支持批量并行启动子任务",
+              "type": "bool",
+              "def": true,
+              "icon": "view_module",
+              "sourceDefault": true,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.structured",
+              "name": "强制子代理返回结构化结果",
+              "type": "bool",
+              "def": false,
+              "icon": "data_Array",
+              "sourceDefault": false,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.speculativeLaunch",
+              "name": "预测性提前预热子代理",
+              "type": "bool",
+              "def": true,
+              "icon": "bolt",
+              "sourceDefault": true,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.enableEffort",
+              "name": "允许动态指定子代理思考强度",
+              "type": "bool",
+              "def": false,
+              "icon": "tune",
+              "sourceDefault": false,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.maxEffort",
+              "name": "子代理允许的最高思考强度",
+              "type": "enum",
+              "def": "max",
+              "opts": [
+                "极低",
+                "低",
+                "中",
+                "高",
+                "超高",
+                "最大"
+              ],
+              "icon": "lightbulb",
+              "sourceDefault": "max",
+              "wireOptions": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "prototypeDefault": "最大",
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.maxConcurrency",
+              "name": "同时运行的最大子任务数量",
+              "type": "num",
+              "def": 32,
+              "icon": "groups",
+              "sourceDefault": 32,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.enableLsp",
+              "name": "允许子代理使用 LSP 服务",
+              "type": "bool",
+              "def": false,
+              "icon": "code",
+              "sourceDefault": false,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.maxRecursionDepth",
+              "name": "子代理嵌套派发最大层级",
+              "type": "num",
+              "def": 2,
+              "icon": "layers",
+              "sourceDefault": 2,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.maxRuntimeMs",
+              "name": "单个子任务超时限制毫秒",
+              "type": "num",
+              "def": 0,
+              "icon": "timer_off",
+              "sourceDefault": 0,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.completionProbe",
+              "name": "主动探测子任务是否真正完成",
+              "type": "bool",
+              "def": true,
+              "icon": "fact_check",
+              "sourceDefault": true,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.agentIdleTtlMs",
+              "name": "空闲子代理保活回收毫秒",
+              "type": "num",
+              "def": 420000,
+              "icon": "hourglass_Disabled",
+              "sourceDefault": 420000,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.softRequestBudget",
+              "name": "单任务模型请求次数软上限",
+              "type": "num",
+              "def": 200,
+              "icon": "Paid",
+              "sourceDefault": 200,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.softRequestBudgetNotice",
+              "name": "接近请求上限时注入提醒",
+              "type": "bool",
+              "def": true,
+              "icon": "notification_add",
+              "sourceDefault": true,
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.prewalk",
+              "name": "子任务启动前先执行预扫描",
+              "type": "bool",
+              "def": false,
+              "icon": "explore",
+              "sourceDefault": false,
+              "source": "src/task/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "tsk-plan",
+          "name": "规划、目标与快捷命令",
+          "icon": "flag",
+          "items": [
+            {
+              "id": "plan.enabled",
+              "name": "启用分步计划管理工具",
+              "type": "bool",
+              "def": true,
+              "icon": "checklist",
+              "sourceDefault": true,
+              "source": "src/plan-mode/settings.ts"
+            },
+            {
+              "id": "plan.defaultOnStartup",
+              "name": "新建会话默认进入规划模式",
+              "type": "bool",
+              "def": false,
+              "icon": "architecture",
+              "sourceDefault": false,
+              "source": "src/plan-mode/settings.ts"
+            },
+            {
+              "id": "plan.autosave",
+              "name": "将执行计划自动保存为文档",
+              "type": "bool",
+              "def": false,
+              "icon": "save_as",
+              "sourceDefault": false,
+              "source": "src/plan-mode/settings.ts"
+            },
+            {
+              "id": "plan.autosaveDir",
+              "name": "计划文档导出保存目录",
+              "type": "str",
+              "def": "",
+              "icon": "folder_special",
+              "sourceDefault": null,
+              "source": "src/plan-mode/settings.ts"
+            },
+            {
+              "id": "goal.enabled",
+              "name": "启用最终目标完成度追踪",
+              "type": "bool",
+              "def": true,
+              "icon": "flag",
+              "sourceDefault": true,
+              "source": "src/goals/settings.ts"
+            },
+            {
+              "id": "goal.statusInFooter",
+              "name": "在底栏常驻显示当前目标",
+              "type": "bool",
+              "def": true,
+              "icon": "subtitles",
+              "sourceDefault": true,
+              "source": "src/goals/settings.ts"
+            },
+            {
+              "id": "goal.continuationModes",
+              "name": "未达目标时自动推进模式",
+              "type": "arr",
+              "def": [
+                "interactive"
+              ],
+              "icon": "autorenew",
+              "sourceDefault": [
+                "interactive"
+              ],
+              "source": "src/goals/settings.ts"
+            },
+            {
+              "id": "title.generator",
+              "name": "会话标题自动生成方式",
+              "type": "enum",
+              "def": "fork",
+              "opts": [
+                "派生请求",
+                "本地小模型"
+              ],
+              "icon": "title",
+              "sourceDefault": "fork",
+              "wireOptions": [
+                "fork",
+                "tiny"
+              ],
+              "prototypeDefault": "派生请求",
+              "source": "src/utils/title-settings.ts"
+            },
+            {
+              "id": "title.refreshOnReplan",
+              "name": "更新计划时重新生成标题",
+              "type": "bool",
+              "def": true,
+              "icon": "refresh",
+              "sourceDefault": true,
+              "source": "src/utils/title-settings.ts"
+            },
+            {
+              "id": "skills.enableSkillCommands",
+              "name": "将已加载技能注册为斜杠命令",
+              "type": "bool",
+              "def": true,
+              "icon": "terminal",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "commands.enableClaudeUser",
+              "name": "加载用户级 Claude 命令集",
+              "type": "bool",
+              "def": false,
+              "icon": "person",
+              "sourceDefault": false,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "commands.enableClaudeProject",
+              "name": "加载项目级 Claude 命令集",
+              "type": "bool",
+              "def": true,
+              "icon": "folder",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "commands.enableOpencodeUser",
+              "name": "加载用户级 OpenCode 命令集",
+              "type": "bool",
+              "def": false,
+              "icon": "person_outline",
+              "sourceDefault": false,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "commands.enableOpencodeProject",
+              "name": "加载项目级 OpenCode 命令集",
+              "type": "bool",
+              "def": true,
+              "icon": "folder_open",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tools",
+      "name": "工具",
+      "icon": "construction",
+      "groups": [
+        {
+          "id": "tl-out",
+          "name": "大输出截断与转存",
+          "icon": "content_cut",
+          "items": [
+            {
+              "id": "tools.artifactSpillThreshold",
+              "name": "触发转存文件的输出千字节",
+              "type": "num",
+              "def": 50,
+              "icon": "save",
+              "sourceDefault": 50,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.artifactHeadBytes",
+              "name": "截断时保留头部预览千字节",
+              "type": "num",
+              "def": 20,
+              "icon": "vertical_align_top",
+              "sourceDefault": 20,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.artifactTailBytes",
+              "name": "截断时保留尾部预览千字节",
+              "type": "num",
+              "def": 20,
+              "icon": "vertical_align_bottom",
+              "sourceDefault": 20,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.artifactTailLines",
+              "name": "截断时保留尾部最大行数",
+              "type": "num",
+              "def": 500,
+              "icon": "format_list_numbered",
+              "sourceDefault": 500,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.artifactMaxBytes",
+              "name": "单次转存文件最大兆字节",
+              "type": "num",
+              "def": 16,
+              "icon": "hard_drive",
+              "sourceDefault": 16,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.outputMaxColumns",
+              "name": "单行文本最大保留字符列数",
+              "type": "num",
+              "def": 768,
+              "icon": "wrap_text",
+              "sourceDefault": 768,
+              "source": "src/tools/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "tl-search",
+          "name": "待办与代码检索",
+          "icon": "manage_search",
+          "items": [
+            {
+              "id": "todo.enabled",
+              "name": "启用待办事项勾选工具",
+              "type": "bool",
+              "def": true,
+              "icon": "task_alt",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "todo.reminders",
+              "name": "遗漏待办事项时自动提醒",
+              "type": "bool",
+              "def": true,
+              "icon": "notifications",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "todo.remindersMax",
+              "name": "单次任务最大待办提醒次数",
+              "type": "num",
+              "def": 3,
+              "icon": "repeat",
+              "sourceDefault": 3,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "todo.eager",
+              "name": "主动建立待办清单积极度",
+              "type": "enum",
+              "def": "default",
+              "opts": [
+                "默认",
+                "优先建立",
+                "始终建立"
+              ],
+              "icon": "playlist_add_check",
+              "sourceDefault": "default",
+              "wireOptions": [
+                "default",
+                "preferred",
+                "always"
+              ],
+              "prototypeDefault": "默认",
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tasks.todoClearDelay",
+              "name": "全部完成后自动收起秒数",
+              "type": "num",
+              "def": 60,
+              "icon": "auto_delete",
+              "sourceDefault": 60,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "glob.enabled",
+              "name": "启用文件路径通配搜索 Glob",
+              "type": "bool",
+              "def": true,
+              "icon": "folder_managed",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "grep.enabled",
+              "name": "启用代码正则内容搜索 Grep",
+              "type": "bool",
+              "def": true,
+              "icon": "find_in_page",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "grep.contextBefore",
+              "name": "搜索命中行附带前文行数",
+              "type": "num",
+              "def": 1,
+              "icon": "expand_less",
+              "sourceDefault": 1,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "grep.contextAfter",
+              "name": "搜索命中行附带后文行数",
+              "type": "num",
+              "def": 3,
+              "icon": "expand_more",
+              "sourceDefault": 3,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "astGrep.enabled",
+              "name": "启用抽象语法树结构搜索",
+              "type": "bool",
+              "def": false,
+              "icon": "account_tree",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "astEdit.enabled",
+              "name": "启用抽象语法树结构重构",
+              "type": "bool",
+              "def": true,
+              "icon": "transform",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "find.enabled",
+              "name": "启用目录文件查找工具",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "开启",
+                "关闭"
+              ],
+              "icon": "search",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "on",
+                "off"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/tools/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "tl-builtin",
+          "name": "内置能力模块",
+          "icon": "extension",
+          "items": [
+            {
+              "id": "debug.enabled",
+              "name": "启用断点调试器工具",
+              "type": "bool",
+              "def": true,
+              "icon": "bug_report",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "launch.enabled",
+              "name": "启用应用构建与启动工具",
+              "type": "bool",
+              "def": true,
+              "icon": "rocket",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "speechgen.enabled",
+              "name": "启用语音音频生成工具",
+              "type": "bool",
+              "def": false,
+              "icon": "graphic_eq",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "generate_image.enabled",
+              "name": "启用图像绘制生成工具",
+              "type": "bool",
+              "def": false,
+              "icon": "brush",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "archive.enabled",
+              "name": "启用压缩包读写解压工具",
+              "type": "bool",
+              "def": true,
+              "icon": "folder_zip",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "checkpoint.enabled",
+              "name": "启用工作区状态检查点",
+              "type": "bool",
+              "def": false,
+              "icon": "restore_page",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "fetch.enabled",
+              "name": "启用网页内容抓取工具",
+              "type": "bool",
+              "def": true,
+              "icon": "Http",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "vault.enabled",
+              "name": "启用加密凭据保险箱工具",
+              "type": "bool",
+              "def": false,
+              "icon": "enhanced_encryption",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "web_search.enabled",
+              "name": "启用互联网实时搜索工具",
+              "type": "bool",
+              "def": true,
+              "icon": "travel_explore",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "security.enabled",
+              "name": "启用代码安全漏洞扫描工具",
+              "type": "bool",
+              "def": false,
+              "icon": "policy",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "ask.enabled",
+              "name": "允许向用户发起选择题提问",
+              "type": "bool",
+              "def": true,
+              "icon": "live_help",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "ratchet.enabled",
+              "name": "启用测试指标防退化棘轮",
+              "type": "bool",
+              "def": false,
+              "icon": "trending_up",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "github.enabled",
+              "name": "启用 GitHub 仓库与议题工具",
+              "type": "bool",
+              "def": false,
+              "icon": "code_blocks",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "github.cache.enabled",
+              "name": "缓存 GitHub 接口响应数据",
+              "type": "bool",
+              "def": true,
+              "icon": "cached",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "github.cache.softTtlSec",
+              "name": "GitHub 缓存刷新间隔秒数",
+              "type": "num",
+              "def": 300,
+              "icon": "schedule",
+              "sourceDefault": 300,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "github.cache.hardTtlSec",
+              "name": "GitHub 缓存失效上限秒数",
+              "type": "num",
+              "def": 604800,
+              "icon": "event_busy",
+              "sourceDefault": 604800,
+              "source": "src/tools/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "tl-exec",
+          "name": "桌面控制与执行引擎",
+          "icon": "desktop_windows",
+          "items": [
+            {
+              "id": "computer.enabled",
+              "name": "启用桌面屏幕观察与键鼠控制",
+              "type": "bool",
+              "def": false,
+              "icon": "computer",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "computer.display",
+              "name": "受控显示器屏幕标识",
+              "type": "str",
+              "def": "active",
+              "icon": "monitor",
+              "sourceDefault": "active",
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "computer.maxWidth",
+              "name": "桌面截图最大水平像素",
+              "type": "num",
+              "def": 3840,
+              "icon": "width_wide",
+              "sourceDefault": 3840,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "computer.maxHeight",
+              "name": "桌面截图最大垂直像素",
+              "type": "num",
+              "def": 2400,
+              "icon": "height",
+              "sourceDefault": 2400,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "computer.backgroundFallback",
+              "name": "窗口在后台时操作策略",
+              "type": "enum",
+              "def": "takeover",
+              "opts": [
+                "前置接管",
+                "拒绝操作"
+              ],
+              "icon": "flip_to_front",
+              "sourceDefault": "takeover",
+              "wireOptions": [
+                "takeover",
+                "refuse"
+              ],
+              "prototypeDefault": "前置接管",
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "images.questionTimeoutMs",
+              "name": "视觉问答解析超时毫秒",
+              "type": "num",
+              "def": 300000,
+              "icon": "timer",
+              "sourceDefault": 300000,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.intentTracing",
+              "name": "记录每次工具调用意图说明",
+              "type": "bool",
+              "def": true,
+              "icon": "track_changes",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.abortOnFabricatedResult",
+              "name": "检测到模型伪造工具结果立即中止",
+              "type": "bool",
+              "def": true,
+              "icon": "gpp_bad",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.speculativeExecution.enabled",
+              "name": "开启只读工具预测性并行执行",
+              "type": "bool",
+              "def": false,
+              "icon": "fast_forward",
+              "sourceDefault": false,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.speculativeExecution.maxInFlight",
+              "name": "预测执行最大并行数量",
+              "type": "num",
+              "def": 2,
+              "icon": "Dynamic_feed",
+              "sourceDefault": 2,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.maxTimeout",
+              "name": "所有工具全局超时上限毫秒",
+              "type": "num",
+              "def": 0,
+              "icon": "alarm_off",
+              "sourceDefault": 0,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "async.enabled",
+              "name": "允许工具转入后台异步执行",
+              "type": "bool",
+              "def": true,
+              "icon": "sync",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "async.widgets",
+              "name": "显示后台异步工具状态卡片",
+              "type": "bool",
+              "def": true,
+              "icon": "widgets",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.xdev",
+              "name": "启用跨设备嵌入式硬件调试",
+              "type": "bool",
+              "def": true,
+              "icon": "developer_board",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.xdevDocs",
+              "name": "硬件开发文档注入方式",
+              "type": "enum",
+              "def": "catalog",
+              "opts": [
+                "完整内联",
+                "仅内置库",
+                "目录索引"
+              ],
+              "icon": "menu_book",
+              "sourceDefault": "catalog",
+              "wireOptions": [
+                "inline",
+                "builtins",
+                "catalog"
+              ],
+              "prototypeDefault": "目录索引",
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "tools.xdevInlineDevices",
+              "name": "常驻内联硬件设备列表",
+              "type": "arr",
+              "def": [],
+              "icon": "memory",
+              "sourceDefault": [],
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "dev.autoqa",
+              "name": "启用自动化质量检测上报",
+              "type": "bool",
+              "def": true,
+              "icon": "verified",
+              "sourceDefault": true,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "dev.autoqaPush.endpoint",
+              "name": "质量检测报告接收地址",
+              "type": "str",
+              "def": "https://qa.omp.sh/v1/grievances",
+              "icon": "cloud_upload",
+              "sourceDefault": "https://qa.omp.sh/v1/grievances",
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "extensionHandlers.toolCallTimeoutMs",
+              "name": "第三方扩展工具调用超时毫秒",
+              "type": "num",
+              "def": 30000,
+              "icon": "extension",
+              "sourceDefault": 30000,
+              "source": "src/extensibility/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "tl-ext",
+          "name": "浏览器、IDA 与 MCP",
+          "icon": "public",
+          "items": [
+            {
+              "id": "browser.enabled",
+              "name": "启用自动化无头浏览器工具",
+              "type": "bool",
+              "def": true,
+              "icon": "web",
+              "sourceDefault": true,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.cdpUrl",
+              "name": "外部浏览器远程调试地址 CDP",
+              "type": "str",
+              "def": "",
+              "icon": "link",
+              "sourceDefault": null,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.relay",
+              "name": "通过浏览器插件中继操控标签页",
+              "type": "bool",
+              "def": false,
+              "icon": "cast_connected",
+              "sourceDefault": false,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.relayUrl",
+              "name": "浏览器插件中继监听地址",
+              "type": "str",
+              "def": "",
+              "icon": "router",
+              "sourceDefault": null,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.headless",
+              "name": "以无界面静默方式运行浏览器",
+              "type": "bool",
+              "def": true,
+              "icon": "visibility_off",
+              "sourceDefault": true,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.cmux",
+              "name": "启用浏览器连接多路复用",
+              "type": "bool",
+              "def": true,
+              "icon": "hub",
+              "sourceDefault": true,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.tern",
+              "name": "启用页面可访问性结构提炼",
+              "type": "bool",
+              "def": true,
+              "icon": "account_tree",
+              "sourceDefault": true,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.freezeOnTurnEnd",
+              "name": "每轮对话结束冻结网页活动",
+              "type": "bool",
+              "def": true,
+              "icon": "ac_unit",
+              "sourceDefault": true,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.idleCloseSec",
+              "name": "浏览器空闲自动关闭秒数",
+              "type": "num",
+              "def": 1800,
+              "icon": "power_settings_new",
+              "sourceDefault": 1800,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "browser.screenshotDir",
+              "name": "网页截图默认保存路径",
+              "type": "str",
+              "def": "",
+              "icon": "photo_library",
+              "sourceDefault": null,
+              "source": "src/tools/browser/settings.ts"
+            },
+            {
+              "id": "ida.enabled",
+              "name": "启用 IDA Pro 二进制逆向工具",
+              "type": "bool",
+              "def": true,
+              "icon": "memory",
+              "sourceDefault": true,
+              "source": "src/ida/settings.ts"
+            },
+            {
+              "id": "ida.python",
+              "name": "IDA 绑定 Python 环境路径",
+              "type": "str",
+              "def": "",
+              "icon": "code",
+              "sourceDefault": "",
+              "source": "src/ida/settings.ts"
+            },
+            {
+              "id": "ida.installDir",
+              "name": "IDA Pro 程序安装根目录",
+              "type": "str",
+              "def": "",
+              "icon": "folder",
+              "sourceDefault": "",
+              "source": "src/ida/settings.ts"
+            },
+            {
+              "id": "ida.maxOpen",
+              "name": "最多同时打开二进制数据库数",
+              "type": "num",
+              "def": 4,
+              "icon": "layers",
+              "sourceDefault": 4,
+              "source": "src/ida/settings.ts"
+            },
+            {
+              "id": "ida.idleCloseSec",
+              "name": "逆向实例空闲回收秒数",
+              "type": "num",
+              "def": 900,
+              "icon": "timer",
+              "sourceDefault": 900,
+              "source": "src/ida/settings.ts"
+            },
+            {
+              "id": "mcp.enableProjectConfig",
+              "name": "自动加载项目目录内 MCP 配置",
+              "type": "bool",
+              "def": true,
+              "icon": " electrical_services",
+              "sourceDefault": true,
+              "source": "src/mcp/settings.ts"
+            },
+            {
+              "id": "mcp.startupTimeoutMs",
+              "name": "MCP 服务进程启动超时毫秒",
+              "type": "num",
+              "def": 250,
+              "icon": "bolt",
+              "sourceDefault": 250,
+              "source": "src/mcp/settings.ts"
+            },
+            {
+              "id": "mcp.renderMarkdownResults",
+              "name": "以富文本渲染 MCP 返回内容",
+              "type": "bool",
+              "def": true,
+              "icon": "article",
+              "sourceDefault": true,
+              "source": "src/mcp/settings.ts"
+            },
+            {
+              "id": "mcp.notifications",
+              "name": "显示 MCP 服务端推送通知",
+              "type": "bool",
+              "def": false,
+              "icon": "notifications",
+              "sourceDefault": false,
+              "source": "src/mcp/settings.ts"
+            },
+            {
+              "id": "mcp.notificationDebounceMs",
+              "name": "MCP 通知合并防抖毫秒",
+              "type": "num",
+              "def": 500,
+              "icon": "filter_list",
+              "sourceDefault": 500,
+              "source": "src/mcp/settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "providers",
+      "name": "服务",
+      "icon": "cloud",
+      "groups": [
+        {
+          "id": "prv-net",
+          "name": "模型网关与检索服务",
+          "icon": "dns",
+          "items": [
+            {
+              "id": "providers.maxInFlightRequests",
+              "name": "各服务商最大并发请求限制",
+              "type": "rec",
+              "def": {},
+              "icon": "speed",
+              "sourceDefault": {},
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.ollama-cloud.maxConcurrency",
+              "name": "Ollama 云端接口最大并发数",
+              "type": "num",
+              "def": 3,
+              "icon": "cloud_queue",
+              "sourceDefault": 3,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.webSearchTimeoutSeconds",
+              "name": "联网搜索请求超时秒数",
+              "type": "num",
+              "def": 60,
+              "icon": "travel_explore",
+              "sourceDefault": 60,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.antigravityEndpoint",
+              "name": "Antigravity 接口接入环境",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "生产环境",
+                "沙盒环境"
+              ],
+              "icon": "public",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "production",
+                "sandbox"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.fireworksTier",
+              "name": "Fireworks 推理服务等级",
+              "type": "enum",
+              "def": "standard",
+              "opts": [
+                "标准",
+                "优先"
+              ],
+              "icon": "local_fire_department",
+              "sourceDefault": "standard",
+              "wireOptions": [
+                "standard",
+                "priority"
+              ],
+              "prototypeDefault": "标准",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.kimiApiFormat",
+              "name": "Kimi 接口协议兼容格式",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "OpenAI",
+                "Anthropic"
+              ],
+              "icon": "swap_horiz",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "openai",
+                "anthropic"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.openaiWebsockets",
+              "name": "OpenAI 启用实时长连接",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "关闭",
+                "开启"
+              ],
+              "icon": "cable",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "off",
+                "on"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.openaiLiveSteering",
+              "name": "OpenAI 支持生成途中实时引导",
+              "type": "bool",
+              "def": true,
+              "icon": "navigation",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.muse-code.storeResponses",
+              "name": "Muse Code 服务端保存生成记录",
+              "type": "bool",
+              "def": false,
+              "icon": "save",
+              "sourceDefault": false,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.openrouterVariant",
+              "name": "OpenRouter 路由偏好后缀",
+              "type": "enum",
+              "def": "default",
+              "opts": [
+                "默认",
+                "极速 Nitro",
+                "低价 Floor",
+                "联网 Online",
+                "精准 Exacto"
+              ],
+              "icon": "alt_route",
+              "sourceDefault": "default",
+              "wireOptions": [
+                "default",
+                "nitro",
+                "floor",
+                "online",
+                "exacto"
+              ],
+              "prototypeDefault": "默认",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.fetch",
+              "name": "网页正文提取解析引擎",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "原生",
+                "Trafilatura",
+                "Lynx",
+                "Parallel",
+                "Firecrawl",
+                "Jina"
+              ],
+              "icon": "article",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "native",
+                "trafilatura",
+                "lynx",
+                "parallel",
+                "firecrawl",
+                "jina"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "exa.enabled",
+              "name": "启用 Exa 语义搜索引擎",
+              "type": "bool",
+              "def": true,
+              "icon": "search",
+              "sourceDefault": true,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "exa.searchDelayMs",
+              "name": "Exa 搜索请求间隔毫秒",
+              "type": "num",
+              "def": 1000,
+              "icon": "schedule",
+              "sourceDefault": 1000,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "searxng.endpoint",
+              "name": "自建 SearXNG 聚合搜索地址",
+              "type": "str",
+              "def": "",
+              "icon": "dns",
+              "sourceDefault": null,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "secrets.enabled",
+              "name": "启用云端密钥托管同步服务",
+              "type": "bool",
+              "def": false,
+              "icon": "key",
+              "sourceDefault": false,
+              "source": "src/secrets/settings.ts"
+            },
+            {
+              "id": "telemetry.otlpExportEnabled",
+              "name": "导出 OTLP 标准性能遥测数据",
+              "type": "bool",
+              "def": true,
+              "icon": "monitoring",
+              "sourceDefault": true,
+              "source": "src/telemetry-settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "prv-cache",
+          "name": "提示词缓存与本地推理",
+          "icon": "memory_alt",
+          "items": [
+            {
+              "id": "providers.cacheRetention",
+              "name": "提示词缓存存活周期",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "短期",
+                "长期",
+                "不缓存"
+              ],
+              "icon": "cached",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "short",
+                "long",
+                "none"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.cacheWarming",
+              "name": "自动发送心跳保持缓存温热",
+              "type": "enum",
+              "def": "idle",
+              "opts": [
+                "关闭",
+                "流式生成时",
+                "空闲时"
+              ],
+              "icon": "whatshot",
+              "sourceDefault": "idle",
+              "wireOptions": [
+                "off",
+                "streaming",
+                "idle"
+              ],
+              "prototypeDefault": "空闲时",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "provider.appendOnlyContext",
+              "name": "严格只追加上下文以提高命中率",
+              "type": "enum",
+              "def": "auto",
+              "opts": [
+                "自动",
+                "开启",
+                "关闭"
+              ],
+              "icon": "playlist_add",
+              "sourceDefault": "auto",
+              "wireOptions": [
+                "auto",
+                "on",
+                "off"
+              ],
+              "prototypeDefault": "自动",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.streamFirstEventTimeoutSeconds",
+              "name": "流式首包响应最大等待秒数",
+              "type": "num",
+              "def": -1,
+              "icon": "timer",
+              "sourceDefault": -1,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.streamIdleTimeoutSeconds",
+              "name": "流式传输中途静默超时秒数",
+              "type": "num",
+              "def": -1,
+              "icon": "hourglass_empty",
+              "sourceDefault": -1,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.tinyModelDevice",
+              "name": "本地小模型硬件加速后端",
+              "type": "enum",
+              "def": "default",
+              "opts": [
+                "默认",
+                "GPU",
+                "CPU",
+                "MLX",
+                "Metal",
+                "WebGPU",
+                "CUDA",
+                "DirectML",
+                "CoreML",
+                "自动",
+                "WASM",
+                "WebNN",
+                "WebNN GPU",
+                "WebNN CPU",
+                "WebNN NPU"
+              ],
+              "icon": "developer_board",
+              "sourceDefault": "default",
+              "wireOptions": [
+                "default",
+                "gpu",
+                "cpu",
+                "mlx",
+                "metal",
+                "webgpu",
+                "cuda",
+                "dml",
+                "coreml",
+                "auto",
+                "wasm",
+                "webnn",
+                "webnn-gpu",
+                "webnn-cpu",
+                "webnn-npu"
+              ],
+              "prototypeDefault": "默认",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.tinyModelDtype",
+              "name": "本地小模型权重精度格式",
+              "type": "enum",
+              "def": "default",
+              "opts": [
+                "默认",
+                "q4",
+                "q4f16",
+                "q8",
+                "fp16",
+                "fp32",
+                "int8",
+                "uint8",
+                "bnb4",
+                "q2",
+                "q2f16",
+                "q1",
+                "q1f16",
+                "自动"
+              ],
+              "icon": "Compress",
+              "sourceDefault": "default",
+              "wireOptions": [
+                "default",
+                "q4",
+                "q4f16",
+                "q8",
+                "fp16",
+                "fp32",
+                "int8",
+                "uint8",
+                "bnb4",
+                "q2",
+                "q2f16",
+                "q1",
+                "q1f16",
+                "auto"
+              ],
+              "prototypeDefault": "默认",
+              "source": "src/session/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "prv-voice",
+          "name": "语音合成与额度挽回",
+          "icon": "record_voice_over",
+          "items": [
+            {
+              "id": "live.voice",
+              "name": "实时语音通话音色",
+              "type": "enum",
+              "def": "sol",
+              "opts": [
+                "Arbor",
+                "Breeze",
+                "Cove",
+                "Ember",
+                "Juniper",
+                "Maple",
+                "Sol",
+                "Spruce",
+                "Vale"
+              ],
+              "icon": "spatial_audio_off",
+              "sourceDefault": "sol",
+              "wireOptions": [
+                "arbor",
+                "breeze",
+                "cove",
+                "ember",
+                "juniper",
+                "maple",
+                "sol",
+                "spruce",
+                "vale"
+              ],
+              "prototypeDefault": "Sol",
+              "source": "src/live/settings.ts"
+            },
+            {
+              "id": "tts.localVoice",
+              "name": "本地离线语音合成音色",
+              "type": "enum",
+              "def": "af_heart",
+              "opts": [
+                "af_heart",
+                "af_bella",
+                "af_nicole",
+                "af_aoede",
+                "af_kore",
+                "af_sarah",
+                "am_michael",
+                "am_fenrir",
+                "am_puck",
+                "bf_emma",
+                "bm_george",
+                "bm_fable"
+              ],
+              "icon": "speaker",
+              "sourceDefault": "af_heart",
+              "wireOptions": [
+                "af_heart",
+                "af_bella",
+                "af_nicole",
+                "af_aoede",
+                "af_kore",
+                "af_sarah",
+                "am_michael",
+                "am_fenrir",
+                "am_puck",
+                "bf_emma",
+                "bm_george",
+                "bm_fable"
+              ],
+              "prototypeDefault": "af_heart",
+              "source": "src/tts/settings.ts"
+            },
+            {
+              "id": "tts.localSpeed",
+              "name": "本地语音朗读语速倍率",
+              "type": "num",
+              "def": 1,
+              "icon": "speed",
+              "sourceDefault": 1,
+              "source": "src/tts/settings.ts"
+            },
+            {
+              "id": "speech.enabled",
+              "name": "开启助手回复自动语音朗读",
+              "type": "bool",
+              "def": false,
+              "icon": "volume_up",
+              "sourceDefault": false,
+              "source": "src/tts/settings.ts"
+            },
+            {
+              "id": "speech.mode",
+              "name": "自动语音朗读内容范围",
+              "type": "enum",
+              "def": "assistant",
+              "opts": [
+                "全部消息",
+                "仅助手回复",
+                "仅阶段总结"
+              ],
+              "icon": "Queue_music",
+              "sourceDefault": "assistant",
+              "wireOptions": [
+                "all",
+                "assistant",
+                "yield"
+              ],
+              "prototypeDefault": "仅助手回复",
+              "source": "src/tts/settings.ts"
+            },
+            {
+              "id": "speech.enhanced",
+              "name": "启用神经网络音质增强",
+              "type": "bool",
+              "def": false,
+              "icon": "high_quality",
+              "sourceDefault": false,
+              "source": "src/tts/settings.ts"
+            },
+            {
+              "id": "speech.voice",
+              "name": "自动朗读默认使用音色",
+              "type": "enum",
+              "def": "af_heart",
+              "opts": [
+                "af_heart",
+                "af_bella",
+                "af_nicole",
+                "af_aoede",
+                "af_kore",
+                "af_sarah",
+                "am_michael",
+                "am_fenrir",
+                "am_puck",
+                "bf_emma",
+                "bm_george",
+                "bm_fable"
+              ],
+              "icon": "record_voice_over",
+              "sourceDefault": "af_heart",
+              "wireOptions": [
+                "af_heart",
+                "af_bella",
+                "af_nicole",
+                "af_aoede",
+                "af_kore",
+                "af_sarah",
+                "am_michael",
+                "am_fenrir",
+                "am_puck",
+                "bf_emma",
+                "bm_george",
+                "bm_fable"
+              ],
+              "prototypeDefault": "af_heart",
+              "source": "src/tts/settings.ts"
+            },
+            {
+              "id": "speech.speed",
+              "name": "自动朗读语速倍率",
+              "type": "num",
+              "def": 1,
+              "icon": "fast_forward",
+              "sourceDefault": 1,
+              "source": "src/tts/settings.ts"
+            },
+            {
+              "id": "codexResets.autoRedeem",
+              "name": "Codex 限流时自动兑换重置包",
+              "type": "enum",
+              "def": "unset",
+              "opts": [
+                "未设置",
+                "开启",
+                "关闭"
+              ],
+              "icon": "redeem",
+              "sourceDefault": "unset",
+              "wireOptions": [
+                "unset",
+                "yes",
+                "no"
+              ],
+              "prototypeDefault": "未设置",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "codexResets.minBlockedMinutes",
+              "name": "Codex 触发兑换最短受阻分钟",
+              "type": "num",
+              "def": 60,
+              "icon": "schedule",
+              "sourceDefault": 60,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "codexResets.keepCredits",
+              "name": "Codex 账户最少保留兜底积分",
+              "type": "num",
+              "def": 0,
+              "icon": "savings",
+              "sourceDefault": 0,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "codexResets.salvageHorizonHours",
+              "name": "Codex 额度周期评估窗口小时",
+              "type": "num",
+              "def": 12,
+              "icon": "update",
+              "sourceDefault": 12,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "claudeResets.autoRedeem",
+              "name": "Claude 限流时自动兑换重置包",
+              "type": "enum",
+              "def": "unset",
+              "opts": [
+                "未设置",
+                "开启",
+                "关闭"
+              ],
+              "icon": "redeem",
+              "sourceDefault": "unset",
+              "wireOptions": [
+                "unset",
+                "yes",
+                "no"
+              ],
+              "prototypeDefault": "未设置",
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "claudeResets.minBlockedMinutes",
+              "name": "Claude 触发兑换最短受阻分钟",
+              "type": "num",
+              "def": 60,
+              "icon": "schedule",
+              "sourceDefault": 60,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "claudeResets.keepCredits",
+              "name": "Claude 账户最少保留兜底积分",
+              "type": "num",
+              "def": 0,
+              "icon": "savings",
+              "sourceDefault": 0,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "claudeResets.salvageHorizonHours",
+              "name": "Claude 额度周期评估窗口小时",
+              "type": "num",
+              "def": 12,
+              "icon": "update",
+              "sourceDefault": 12,
+              "source": "src/session/settings.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "internal",
+      "name": "系统",
+      "icon": "settings_suggest",
+      "groups": [
+        {
+          "id": "sys-auth",
+          "name": "认证、路由与状态栏模块",
+          "icon": "key",
+          "items": [
+            {
+              "id": "auth.broker.url",
+              "name": "企业统一认证代理地址",
+              "type": "str",
+              "def": "",
+              "icon": "admin_panel_settings",
+              "sourceDefault": null,
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "auth.broker.token",
+              "name": "统一认证代理访问凭证",
+              "type": "str",
+              "def": "",
+              "icon": "password",
+              "sourceDefault": null,
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "auth.accountPolicies",
+              "name": "多账号负载均衡轮换策略",
+              "type": "arr",
+              "def": [],
+              "icon": "switch_account",
+              "sourceDefault": [],
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "enabledModels",
+              "name": "全局启用模型白名单",
+              "type": "arr",
+              "def": [],
+              "icon": "check_circle",
+              "sourceDefault": [],
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "enabledProviders",
+              "name": "已启用服务商标识列表",
+              "type": "arr",
+              "def": [],
+              "icon": "cloud_done",
+              "sourceDefault": [],
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "disabledProviders",
+              "name": "已禁用服务商标识列表",
+              "type": "arr",
+              "def": [],
+              "icon": "cloud_off",
+              "sourceDefault": [],
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "modelRoles",
+              "name": "功能角色绑定模型映射表",
+              "type": "rec",
+              "def": {
+                "default": "oc/gpt-6.1-sol:max"
+              },
+              "icon": "assignment_ind",
+              "sourceDefault": {},
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "modelPresets",
+              "name": "自定义模型参数组合预设",
+              "type": "rec",
+              "def": {},
+              "icon": "tune",
+              "sourceDefault": {},
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "modelTags",
+              "name": "模型自定义分类标签映射",
+              "type": "rec",
+              "def": {},
+              "icon": "label",
+              "sourceDefault": {},
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "modelProviderOrder",
+              "name": "同名模型服务商优先顺序",
+              "type": "arr",
+              "def": [],
+              "icon": "low_priority",
+              "sourceDefault": [],
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "cycleOrder",
+              "name": "快捷键切换模型角色顺序",
+              "type": "arr",
+              "def": [
+                "smol",
+                "default",
+                "slow"
+              ],
+              "icon": "cyclone",
+              "sourceDefault": [
+                "smol",
+                "default",
+                "slow"
+              ],
+              "source": "src/config/model-settings.ts"
+            },
+            {
+              "id": "setupVersion",
+              "name": "配置文件结构版本号",
+              "type": "num",
+              "def": 2,
+              "icon": "tag",
+              "sourceDefault": 0,
+              "source": "src/modes/settings.ts"
+            },
+            {
+              "id": "retry.enabled",
+              "name": "启用底层网络传输自动重试",
+              "type": "bool",
+              "def": true,
+              "icon": "sync",
+              "sourceDefault": true,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "retry.baseDelayMs",
+              "name": "网络重试初始退避间隔毫秒",
+              "type": "num",
+              "def": 500,
+              "icon": "timer",
+              "sourceDefault": 500,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "providers.anthropic.slowMode",
+              "name": "Anthropic 平滑速率节流模式",
+              "type": "enum",
+              "def": "off",
+              "opts": [
+                "关闭",
+                "自动"
+              ],
+              "icon": "slow_motion_video",
+              "sourceDefault": "off",
+              "wireOptions": [
+                "off",
+                "auto"
+              ],
+              "prototypeDefault": "关闭",
+              "source": "src/session/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "sys-budget",
+          "name": "思考词元预算与压缩阈值",
+          "icon": "data_usage",
+          "items": [
+            {
+              "id": "thinkingBudgets.minimal",
+              "name": "极低档位思考词元预算",
+              "type": "num",
+              "def": 1024,
+              "icon": "lightbulb_outline",
+              "sourceDefault": 1024,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "thinkingBudgets.low",
+              "name": "低档位思考词元预算",
+              "type": "num",
+              "def": 2048,
+              "icon": "lightbulb",
+              "sourceDefault": 2048,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "thinkingBudgets.medium",
+              "name": "中档位思考词元预算",
+              "type": "num",
+              "def": 8192,
+              "icon": "lightbulb",
+              "sourceDefault": 8192,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "thinkingBudgets.high",
+              "name": "高档位思考词元预算",
+              "type": "num",
+              "def": 16384,
+              "icon": "lightbulb",
+              "sourceDefault": 16384,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "thinkingBudgets.xhigh",
+              "name": "超高档位思考词元预算",
+              "type": "num",
+              "def": 32768,
+              "icon": "bolt",
+              "sourceDefault": 32768,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "thinkingBudgets.max",
+              "name": "最大档位思考词元预算",
+              "type": "num",
+              "def": 32768,
+              "icon": "auto_awesome",
+              "sourceDefault": 32768,
+              "source": "src/session/settings.ts"
+            },
+            {
+              "id": "compaction.modelThresholdsEnabled",
+              "name": "启用分模型差异化压缩阈值",
+              "type": "bool",
+              "def": true,
+              "icon": "tune",
+              "sourceDefault": true,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.modelThresholds",
+              "name": "各模型专属压缩触发词元表",
+              "type": "rec",
+              "def": {},
+              "icon": "table_chart",
+              "sourceDefault": {},
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.reserveTokens",
+              "name": "为生成回复固定预留词元数",
+              "type": "num",
+              "def": -1,
+              "icon": "bookmarks",
+              "sourceDefault": null,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.keepRecentTokens",
+              "name": "压缩时原样保留最近词元数",
+              "type": "num",
+              "def": 20000,
+              "icon": "history",
+              "sourceDefault": 20000,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.autoContinue",
+              "name": "完成上下文压缩后自动继续执行",
+              "type": "bool",
+              "def": true,
+              "icon": "play_circle",
+              "sourceDefault": true,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.remoteEndpoint",
+              "name": "自定义远程压缩服务节点地址",
+              "type": "str",
+              "def": "",
+              "icon": "dns",
+              "sourceDefault": null,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "compaction.v2RetainedMessageBudget",
+              "name": "新版压缩保留原文词元预算",
+              "type": "num",
+              "def": 64000,
+              "icon": "account_balance_wallet",
+              "sourceDefault": 64000,
+              "source": "src/session/context-settings.ts"
+            },
+            {
+              "id": "branchSummary.reserveTokens",
+              "name": "生成分支摘要预留词元预算",
+              "type": "num",
+              "def": 16384,
+              "icon": "fork_right",
+              "sourceDefault": 16384,
+              "source": "src/session/context-settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "sys-mem",
+          "name": "记忆管线与归档调优",
+          "icon": "storage",
+          "items": [
+            {
+              "id": "memories.enabled",
+              "name": "开启后台记忆抽取与整合管线",
+              "type": "bool",
+              "def": false,
+              "icon": "memory",
+              "sourceDefault": false,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.maxRolloutsPerStartup",
+              "name": "每次启动最多扫描历史会话数",
+              "type": "num",
+              "def": 64,
+              "icon": "manage_history",
+              "sourceDefault": 64,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.maxRolloutAgeDays",
+              "name": "纳入记忆提取的最大会话天数",
+              "type": "num",
+              "def": 30,
+              "icon": "date_range",
+              "sourceDefault": 30,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.minRolloutIdleHours",
+              "name": "会话闲置多少小时后提取记忆",
+              "type": "num",
+              "def": 12,
+              "icon": "hourglass_top",
+              "sourceDefault": 12,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.threadScanLimit",
+              "name": "单次扫描最大对话线程数量",
+              "type": "num",
+              "def": 300,
+              "icon": "format_list_numbered",
+              "sourceDefault": 300,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.maxRawMemoriesForGlobal",
+              "name": "全局汇总最大原始记忆条数",
+              "type": "num",
+              "def": 200,
+              "icon": "inventory",
+              "sourceDefault": 200,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.stage1Concurrency",
+              "name": "第一阶段记忆提炼并发任务数",
+              "type": "num",
+              "def": 8,
+              "icon": "speed",
+              "sourceDefault": 8,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.stage1LeaseSeconds",
+              "name": "第一阶段处理锁超时秒数",
+              "type": "num",
+              "def": 120,
+              "icon": "lock_clock",
+              "sourceDefault": 120,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.stage1RetryDelaySeconds",
+              "name": "第一阶段失败重试间隔秒数",
+              "type": "num",
+              "def": 120,
+              "icon": "replay",
+              "sourceDefault": 120,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.phase2LeaseSeconds",
+              "name": "第二阶段全局归纳锁超时秒数",
+              "type": "num",
+              "def": 180,
+              "icon": "lock_clock",
+              "sourceDefault": 180,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.phase2RetryDelaySeconds",
+              "name": "第二阶段失败重试间隔秒数",
+              "type": "num",
+              "def": 180,
+              "icon": "replay",
+              "sourceDefault": 180,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.phase2HeartbeatSeconds",
+              "name": "第二阶段任务保活心跳秒数",
+              "type": "num",
+              "def": 30,
+              "icon": "monitor_heart",
+              "sourceDefault": 30,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.rolloutPayloadPercent",
+              "name": "提取会话正文内容比例上限",
+              "type": "num",
+              "def": 0.7,
+              "icon": "pie_chart",
+              "sourceDefault": 0.7,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.phase1InputTokenLimit",
+              "name": "单次初步提炼最大输入词元",
+              "type": "num",
+              "def": 4000,
+              "icon": "input",
+              "sourceDefault": 4000,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.fallbackTokenLimit",
+              "name": "兜底截断模式最大词元上限",
+              "type": "num",
+              "def": 16000,
+              "icon": "vertical_align_Center",
+              "sourceDefault": 16000,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "memories.summaryInjectionTokenLimit",
+              "name": "注入系统提示词最大记忆词元",
+              "type": "num",
+              "def": 5000,
+              "icon": "output",
+              "sourceDefault": 5000,
+              "source": "src/memories/settings.ts"
+            },
+            {
+              "id": "sharpshooter.minPromptLength",
+              "name": "触发精准记忆检索最小字数",
+              "type": "num",
+              "def": 16,
+              "icon": "short_text",
+              "sourceDefault": 16,
+              "source": "src/sharpshooter/settings.ts"
+            },
+            {
+              "id": "sharpshooter.intervalMinutes",
+              "name": "精准记忆后台更新间隔分钟",
+              "type": "num",
+              "def": 5,
+              "icon": "update",
+              "sourceDefault": 5,
+              "source": "src/sharpshooter/settings.ts"
+            },
+            {
+              "id": "sharpshooter.injectionTokenLimit",
+              "name": "精准记忆单次最大注入词元",
+              "type": "num",
+              "def": 15000,
+              "icon": "publish",
+              "sourceDefault": 15000,
+              "source": "src/sharpshooter/settings.ts"
+            },
+            {
+              "id": "autolearn.minToolCalls",
+              "name": "触发自主总结的最少工具调用数",
+              "type": "num",
+              "def": 5,
+              "icon": "construction",
+              "sourceDefault": 5,
+              "source": "src/autolearn/settings.ts"
+            },
+            {
+              "id": "mnemopi.retainEveryNTurns",
+              "name": "每隔多少轮自动保存向量记忆",
+              "type": "num",
+              "def": 4,
+              "icon": "repeat",
+              "sourceDefault": 4,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.recallLimit",
+              "name": "单次检索召回向量记忆条数",
+              "type": "num",
+              "def": 8,
+              "icon": "format_list_bulleted",
+              "sourceDefault": 8,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.recallContextTurns",
+              "name": "生成检索词参考最近对话轮数",
+              "type": "num",
+              "def": 3,
+              "icon": "chat",
+              "sourceDefault": 3,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.recallMaxQueryChars",
+              "name": "向量检索查询语句最大字符数",
+              "type": "num",
+              "def": 4000,
+              "icon": "text_fields",
+              "sourceDefault": 4000,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.injectionTokenLimit",
+              "name": "向量记忆注入上下文最大词元",
+              "type": "num",
+              "def": 5000,
+              "icon": "token",
+              "sourceDefault": 5000,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "mnemopi.debug",
+              "name": "输出向量记忆检索调试信息",
+              "type": "bool",
+              "def": false,
+              "icon": "bug_report",
+              "sourceDefault": false,
+              "source": "src/mnemopi/settings.ts"
+            },
+            {
+              "id": "hindsight.bankIdPrefix",
+              "name": "心智记忆分库自动命名前缀",
+              "type": "str",
+              "def": "",
+              "icon": "label",
+              "sourceDefault": null,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.bankMission",
+              "name": "心智记忆库核心目标说明",
+              "type": "str",
+              "def": "",
+              "icon": "flag",
+              "sourceDefault": null,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.retainMission",
+              "name": "心智记忆提取重点筛选准则",
+              "type": "str",
+              "def": "",
+              "icon": "filter_alt",
+              "sourceDefault": null,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.retainEveryNTurns",
+              "name": "心智记忆自动归档间隔轮数",
+              "type": "num",
+              "def": 3,
+              "icon": "repeat",
+              "sourceDefault": 3,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.retainOverlapTurns",
+              "name": "相邻两次归档重叠上下文轮数",
+              "type": "num",
+              "def": 2,
+              "icon": "Compare_arrows",
+              "sourceDefault": 2,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.retainContext",
+              "name": "归档记录来源环境标识符",
+              "type": "str",
+              "def": "omp",
+              "icon": "badge",
+              "sourceDefault": "omp",
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.recallBudget",
+              "name": "心智记忆检索计算资源档位",
+              "type": "enum",
+              "def": "mid",
+              "opts": [
+                "低",
+                "中",
+                "高"
+              ],
+              "icon": "tune",
+              "sourceDefault": "mid",
+              "wireOptions": [
+                "low",
+                "mid",
+                "high"
+              ],
+              "prototypeDefault": "中",
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.recallMaxTokens",
+              "name": "心智记忆单次召回最大词元数",
+              "type": "num",
+              "def": 1024,
+              "icon": "data_usage",
+              "sourceDefault": 1024,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.recallContextTurns",
+              "name": "心智检索参考近期对话轮数",
+              "type": "num",
+              "def": 1,
+              "icon": "history",
+              "sourceDefault": 1,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.recallMaxQueryChars",
+              "name": "心智检索查询最大字符长度",
+              "type": "num",
+              "def": 800,
+              "icon": "short_text",
+              "sourceDefault": 800,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.recallTypes",
+              "name": "心智检索召回记忆类别集合",
+              "type": "arr",
+              "def": [
+                "world",
+                "experience"
+              ],
+              "icon": "category",
+              "sourceDefault": [
+                "world",
+                "experience"
+              ],
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.debug",
+              "name": "开启心智记忆引擎调试日志",
+              "type": "bool",
+              "def": false,
+              "icon": "bug_report",
+              "sourceDefault": false,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.requestTimeoutMs",
+              "name": "心智记忆常规请求超时毫秒",
+              "type": "num",
+              "def": 30000,
+              "icon": "timer",
+              "sourceDefault": 30000,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.reflectTimeoutMs",
+              "name": "心智模型深度反思超时毫秒",
+              "type": "num",
+              "def": 120000,
+              "icon": "psychology",
+              "sourceDefault": 120000,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.recallTimeoutMs",
+              "name": "心智记忆召回查询超时毫秒",
+              "type": "num",
+              "def": 30000,
+              "icon": "search",
+              "sourceDefault": 30000,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.retainTimeoutMs",
+              "name": "心智记忆写入归档超时毫秒",
+              "type": "num",
+              "def": 60000,
+              "icon": "save",
+              "sourceDefault": 60000,
+              "source": "src/hindsight/settings.ts"
+            },
+            {
+              "id": "hindsight.mentalModelMaxRenderChars",
+              "name": "心智模型文档最大注入字符数",
+              "type": "num",
+              "def": 16000,
+              "icon": "description",
+              "sourceDefault": 16000,
+              "source": "src/hindsight/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "sys-shell",
+          "name": "进程拦截、子代理覆盖与技能源",
+          "icon": "build_circle",
+          "items": [
+            {
+              "id": "edit.modelVariants",
+              "name": "不同模型专属代码修改策略表",
+              "type": "rec",
+              "def": {},
+              "icon": "edit_note",
+              "sourceDefault": {},
+              "source": "src/edit/settings.ts"
+            },
+            {
+              "id": "async.maxJobs",
+              "name": "后台最多同时驻留异步作业数",
+              "type": "num",
+              "def": 100,
+              "icon": "work_history",
+              "sourceDefault": 100,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "dev.autoqaPush.token",
+              "name": "质量反馈上报鉴权令牌",
+              "type": "str",
+              "def": "",
+              "icon": "key",
+              "sourceDefault": null,
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "dev.autoqaConsent",
+              "name": "质量数据上报用户授权状态",
+              "type": "enum",
+              "def": "granted",
+              "opts": [
+                "未设置",
+                "已授权",
+                "已拒绝"
+              ],
+              "icon": "privacy_tip",
+              "sourceDefault": "unset",
+              "wireOptions": [
+                "unset",
+                "granted",
+                "denied"
+              ],
+              "prototypeDefault": "已授权",
+              "source": "src/tools/settings.ts"
+            },
+            {
+              "id": "shellPath",
+              "name": "默认调用的终端程序路径",
+              "type": "str",
+              "def": "C:\\Program Files\\Git\\bin\\bash.exe",
+              "icon": "terminal",
+              "sourceDefault": null,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "shellCommandPrefix",
+              "name": "每条终端命令自动附加前置指令",
+              "type": "str",
+              "def": "",
+              "icon": "first_page",
+              "sourceDefault": null,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bashInterceptor.patterns",
+              "name": "终端命令拦截并转交工具规则表",
+              "type": "arr",
+              "def": [
+                "cat/head/tail",
+                "grep/rg",
+                "find/fd",
+                "sed -i",
+                "perl -i",
+                "awk inplace",
+                "echo/cat >",
+                "nohup/&",
+                "dev/start",
+                "--watch"
+              ],
+              "icon": "rule",
+              "sourceDefault": [
+                {
+                  "pattern": "^\\s*(cat|head|tail|less|more)\\s+",
+                  "tool": "read",
+                  "message": "Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files."
+                },
+                {
+                  "pattern": "^\\s*(grep|rg|ripgrep|ag|ack)\\s+",
+                  "tool": "grep",
+                  "message": "Use the `grep` tool instead of grep/rg. It respects .gitignore and provides structured output."
+                },
+                {
+                  "pattern": "^\\s*(find|fd|locate)\\s+.*(-name|-iname|-type|--type|-glob)",
+                  "tool": "glob",
+                  "message": "Use the `glob` tool instead of find/fd. It respects .gitignore and is faster for glob patterns."
+                },
+                {
+                  "pattern": "^\\s*sed\\s+(-i|--in-place)",
+                  "tool": "edit",
+                  "message": "Use the `edit` tool instead of sed -i. It provides diff preview and fuzzy matching."
+                },
+                {
+                  "pattern": "^\\s*perl\\s+.*-[pn]?i",
+                  "tool": "edit",
+                  "message": "Use the `edit` tool instead of perl -i. It provides diff preview and fuzzy matching."
+                },
+                {
+                  "pattern": "^\\s*awk\\s+.*-i\\s+inplace",
+                  "tool": "edit",
+                  "message": "Use the `edit` tool instead of awk -i inplace. It provides diff preview and fuzzy matching."
+                },
+                {
+                  "pattern": "^\\s*(echo|printf|cat\\s*<<)\\s+(?:(?:[^\"'>]|\"[^\"]*\"|'[^']*')|(?<!\\|)>{1,2}\\|?\\s*(?:\"/dev/(?:null|tty|stdout|stderr)\"|'/dev/(?:null|tty|stdout|stderr)'|/dev/(?:null|tty|stdout|stderr))(?:[\\s;&|]|$))*(?<!\\|)>{1,2}\\|?\\s*(?!(?:\"/dev/(?:null|tty|stdout|stderr)\"|'/dev/(?:null|tty|stdout|stderr)'|/dev/(?:null|tty|stdout|stderr))(?:[\\s;&|]|$))[$\\w./~\"'-]",
+                  "tool": "write",
+                  "message": "Use the `write` tool instead of echo/cat redirection. It handles encoding and provides confirmation."
+                },
+                {
+                  "pattern": "^\\s*nohup\\s+|(?<!&)\\&\\s*$",
+                  "tool": "bash",
+                  "message": "Use `bash` with `name` instead of nohup or background shell syntax so the service stays observable and managed."
+                },
+                {
+                  "pattern": "^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?(?:dev|start)(?:\\s|$)|(?:vite|next\\s+dev|nuxt\\s+dev|nodemon|lldb|gdb|tail\\s+-f)(?:\\s|$)|docker\\s+compose\\s+up(?!.*(?:\\s-d(?:\\s|$)|--detach))(?:\\s|$))",
+                  "tool": "bash",
+                  "message": "Use `bash` with `name` for services, watchers, and debuggers; inspect with `read proc://<name>`."
+                },
+                {
+                  "pattern": "^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?\\S+|cargo\\s+watch|watchexec|pytest|vitest|jest|tsc)(?:.|\\n)*(?:--watch|-w)(?:\\s|$)",
+                  "tool": "bash",
+                  "message": "Use `bash` with `name` for watch mode so its output, input, and lifecycle stay managed."
+                }
+              ],
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "shellMinimizer.settingsPath",
+              "name": "自定义输出精简规则文件路径",
+              "type": "str",
+              "def": "",
+              "icon": "tune",
+              "sourceDefault": null,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "shellMinimizer.only",
+              "name": "仅对指定命令列表启用输出精简",
+              "type": "arr",
+              "def": [],
+              "icon": "filter_alt",
+              "sourceDefault": [],
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "shellMinimizer.except",
+              "name": "免除输出精简的命令白名单",
+              "type": "arr",
+              "def": [],
+              "icon": "filter_alt_off",
+              "sourceDefault": [],
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "shellMinimizer.maxCaptureBytes",
+              "name": "命令标准输出最大捕获字节数",
+              "type": "num",
+              "def": 4194304,
+              "icon": "memory",
+              "sourceDefault": 4194304,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "shellMinimizer.legacyFilters",
+              "name": "启用旧版正则日志清洗过滤器",
+              "type": "bool",
+              "def": false,
+              "icon": "history",
+              "sourceDefault": null,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "bash.autoBackground.thresholdMs",
+              "name": "终端命令自动转后台等待毫秒",
+              "type": "num",
+              "def": 60000,
+              "icon": "schedule_send",
+              "sourceDefault": 60000,
+              "source": "src/exec/settings.ts"
+            },
+            {
+              "id": "eval.autoBackground.thresholdMs",
+              "name": "代码解释器自动转后台等待毫秒",
+              "type": "num",
+              "def": 60000,
+              "icon": "schedule_send",
+              "sourceDefault": 60000,
+              "source": "src/eval/settings.ts"
+            },
+            {
+              "id": "task.agentSoftRequestBudget",
+              "name": "各子代理专属请求次数上限覆盖",
+              "type": "rec",
+              "def": {},
+              "icon": "paid",
+              "sourceDefault": {},
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.disabledAgents",
+              "name": "全局禁用子代理类型列表",
+              "type": "arr",
+              "def": [
+                "reviewer",
+                "scout",
+                "security-reviewer",
+                "sonic",
+                "task"
+              ],
+              "icon": "person_off",
+              "sourceDefault": [],
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.agentModelOverrides",
+              "name": "各子代理指定使用模型覆盖表",
+              "type": "rec",
+              "def": {},
+              "icon": "neurology",
+              "sourceDefault": {},
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.agentServiceTierOverrides",
+              "name": "各子代理服务队列等级覆盖表",
+              "type": "rec",
+              "def": {},
+              "icon": "bolt",
+              "sourceDefault": {},
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.agentCompactionThresholdOverrides",
+              "name": "各子代理上下文压缩阈值覆盖表",
+              "type": "rec",
+              "def": {},
+              "icon": "compress",
+              "sourceDefault": {},
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.agentAccountPools",
+              "name": "各子代理绑定专属账号池映射",
+              "type": "rec",
+              "def": {},
+              "icon": "group",
+              "sourceDefault": {},
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.agentPrewalk",
+              "name": "各子代理预扫描独立配置表",
+              "type": "rec",
+              "def": {},
+              "icon": "explore",
+              "sourceDefault": {},
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "task.agentAdvisor",
+              "name": "各子代理顾问审查独立配置表",
+              "type": "rec",
+              "def": {},
+              "icon": "fact_check",
+              "sourceDefault": {},
+              "source": "src/task/settings.ts"
+            },
+            {
+              "id": "extensions",
+              "name": "已启用插件扩展包列表",
+              "type": "arr",
+              "def": [],
+              "icon": "extension",
+              "sourceDefault": [],
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "disabledExtensions",
+              "name": "已停用插件扩展包列表",
+              "type": "arr",
+              "def": [],
+              "icon": "extension_off",
+              "sourceDefault": [],
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.enabled",
+              "name": "全局启用外部技能包系统",
+              "type": "bool",
+              "def": true,
+              "icon": "auto_fix_high",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.enableCodexUser",
+              "name": "加载用户目录 Codex 技能包",
+              "type": "bool",
+              "def": false,
+              "icon": "folder_shared",
+              "sourceDefault": false,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.enableClaudeUser",
+              "name": "加载用户目录 Claude 技能包",
+              "type": "bool",
+              "def": false,
+              "icon": "folder_shared",
+              "sourceDefault": false,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.enableClaudeProject",
+              "name": "加载当前项目 Claude 技能包",
+              "type": "bool",
+              "def": true,
+              "icon": "folder_special",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.enablePiUser",
+              "name": "加载用户目录 Pi 技能包",
+              "type": "bool",
+              "def": true,
+              "icon": "folder_shared",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.enablePiProject",
+              "name": "加载当前项目 Pi 技能包",
+              "type": "bool",
+              "def": true,
+              "icon": "folder_special",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.enableAgentsUser",
+              "name": "加载用户目录通用 Agents 技能包",
+              "type": "bool",
+              "def": true,
+              "icon": "folder_shared",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.enableAgentsProject",
+              "name": "加载当前项目通用 Agents 技能包",
+              "type": "bool",
+              "def": true,
+              "icon": "folder_special",
+              "sourceDefault": true,
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.customDirectories",
+              "name": "自定义附加技能包扫描目录",
+              "type": "arr",
+              "def": [],
+              "icon": "create_new_folder",
+              "sourceDefault": [],
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.ignoredSkills",
+              "name": "忽略跳过加载的技能名称列表",
+              "type": "arr",
+              "def": [],
+              "icon": "block",
+              "sourceDefault": [],
+              "source": "src/extensibility/settings.ts"
+            },
+            {
+              "id": "skills.includeSkills",
+              "name": "强制指定加载的技能名称列表",
+              "type": "arr",
+              "def": [],
+              "icon": "check_circle",
+              "sourceDefault": [],
+              "source": "src/extensibility/settings.ts"
+            }
+          ]
+        },
+        {
+          "id": "sys-gc",
+          "name": "搜索凭据、提交归纳与存储回收",
+          "icon": "cleaning_services",
+          "items": [
+            {
+              "id": "searxng.token",
+              "name": "SearXNG 搜索引擎访问密钥",
+              "type": "str",
+              "def": "",
+              "icon": "key",
+              "sourceDefault": null,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "searxng.basicUsername",
+              "name": "SearXNG 基础认证用户名",
+              "type": "str",
+              "def": "",
+              "icon": "person",
+              "sourceDefault": null,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "searxng.basicPassword",
+              "name": "SearXNG 基础认证密码",
+              "type": "str",
+              "def": "",
+              "icon": "password",
+              "sourceDefault": null,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "searxng.categories",
+              "name": "SearXNG 默认检索分类标签",
+              "type": "str",
+              "def": "",
+              "icon": "category",
+              "sourceDefault": null,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "searxng.engines",
+              "name": "SearXNG 指定聚合上游引擎",
+              "type": "str",
+              "def": "",
+              "icon": "travel_explore",
+              "sourceDefault": null,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "searxng.language",
+              "name": "SearXNG 搜索结果偏好语言",
+              "type": "str",
+              "def": "",
+              "icon": "language",
+              "sourceDefault": null,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "searxng.safesearch",
+              "name": "SearXNG 安全搜索过滤等级",
+              "type": "num",
+              "def": 0,
+              "icon": "shield",
+              "sourceDefault": null,
+              "source": "src/web/settings.ts"
+            },
+            {
+              "id": "images.urls.options",
+              "name": "图床服务附加请求参数表",
+              "type": "rec",
+              "def": {},
+              "icon": "tune",
+              "sourceDefault": {},
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "images.urls.credentials",
+              "name": "图床服务认证密钥存储表",
+              "type": "rec",
+              "def": {
+                "default": "********"
+              },
+              "icon": "lock",
+              "sourceDefault": {},
+              "source": "src/blob-broker/settings.ts"
+            },
+            {
+              "id": "stt.language",
+              "name": "语音识别默认语种代码",
+              "type": "str",
+              "def": "en",
+              "icon": "record_voice_over",
+              "sourceDefault": "en",
+              "source": "src/stt/settings.ts"
+            },
+            {
+              "id": "commit.mapReduceEnabled",
+              "name": "大改动提交信息分块映射归纳",
+              "type": "bool",
+              "def": true,
+              "icon": "account_tree",
+              "sourceDefault": true,
+              "source": "src/commit/settings.ts"
+            },
+            {
+              "id": "commit.mapReduceThreshold",
+              "name": "触发分块归纳的差异字符阈值",
+              "type": "num",
+              "def": 5000,
+              "icon": "difference",
+              "sourceDefault": 5000,
+              "source": "src/commit/settings.ts"
+            },
+            {
+              "id": "commit.mapBatchTokenBudget",
+              "name": "分块归纳单批次最大词元预算",
+              "type": "num",
+              "def": 16000,
+              "icon": "token",
+              "sourceDefault": 16000,
+              "source": "src/commit/settings.ts"
+            },
+            {
+              "id": "commit.cacheEnabled",
+              "name": "缓存已生成的代码差异摘要",
+              "type": "bool",
+              "def": true,
+              "icon": "cached",
+              "sourceDefault": true,
+              "source": "src/commit/settings.ts"
+            },
+            {
+              "id": "commit.cacheTtlDays",
+              "name": "提交摘要缓存保留有效天数",
+              "type": "num",
+              "def": 14,
+              "icon": "event_available",
+              "sourceDefault": 14,
+              "source": "src/commit/settings.ts"
+            },
+            {
+              "id": "commit.changelogMaxDiffChars",
+              "name": "生成变更日志最大读取差异字符",
+              "type": "num",
+              "def": 120000,
+              "icon": "article",
+              "sourceDefault": 120000,
+              "source": "src/commit/settings.ts"
+            },
+            {
+              "id": "gc.blobs",
+              "name": "自动回收孤立二进制大对象缓存",
+              "type": "bool",
+              "def": true,
+              "icon": "delete_sweep",
+              "sourceDefault": true,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.archive",
+              "name": "自动归档旧会话冷数据",
+              "type": "bool",
+              "def": true,
+              "icon": "inventory_2",
+              "sourceDefault": true,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.wal",
+              "name": "自动截断清理数据库预写日志 WAL",
+              "type": "bool",
+              "def": true,
+              "icon": "storage",
+              "sourceDefault": true,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.coldArchiveAfterDays",
+              "name": "会话转入冷归档的闲置天数",
+              "type": "num",
+              "def": 30,
+              "icon": "ac_unit",
+              "sourceDefault": 30,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.retainNewestGlobal",
+              "name": "全局始终保留最新活跃会话数",
+              "type": "num",
+              "def": 20,
+              "icon": "keep",
+              "sourceDefault": 20,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.retainNewestPerCwd",
+              "name": "每个工作目录保留最新会话数",
+              "type": "num",
+              "def": 10,
+              "icon": "folder",
+              "sourceDefault": 10,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.stale",
+              "name": "定期清理过期无用的历史会话",
+              "type": "bool",
+              "def": false,
+              "icon": "auto_delete",
+              "sourceDefault": false,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.staleRetainNewest",
+              "name": "清理过期会话时最少保留条数",
+              "type": "num",
+              "def": 20,
+              "icon": "shield",
+              "sourceDefault": 20,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.staleRetainDays",
+              "name": "判定会话过期的未访问天数",
+              "type": "num",
+              "def": 30,
+              "icon": "history_toggle_off",
+              "sourceDefault": 30,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.compress",
+              "name": "对历史会话存储启用高倍率压缩",
+              "type": "bool",
+              "def": false,
+              "icon": "folder_zip",
+              "sourceDefault": false,
+              "source": "src/cli/gc-settings.ts"
+            },
+            {
+              "id": "gc.compressAfterDays",
+              "name": "会话创建多少天后执行压缩",
+              "type": "num",
+              "def": 7,
+              "icon": "schedule",
+              "sourceDefault": 7,
+              "source": "src/cli/gc-settings.ts"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

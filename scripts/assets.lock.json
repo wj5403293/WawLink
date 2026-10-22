@@ -1,0 +1,269 @@
+{
+  "schema": 1,
+  "prorootVersion": "1.2.8",
+  "prorootSource": "c01039ab017448263a4ddbd9221ecb88e737553c",
+  "prorootLicense": {
+    "url": "https://raw.githubusercontent.com/coderredlab/proroot/c01039ab017448263a4ddbd9221ecb88e737553c/README.md",
+    "sha256": "2828473d074c326fce46bad4269627a133f1e70c808acb940a6cf102aece4236"
+  },
+  "proroot": [
+    {
+      "sha256": "1c5bc9537a270e8bf8b1c70222813f57b60b828bfb5503ddf8fe37685092de2f",
+      "destination": "libproroot-bridge.so",
+      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot-bridge.so"
+    },
+    {
+      "sha256": "51a0ec5bfed00e572a0de09e22d9057e2befc386b78e426613d3e0ab03f4ecee",
+      "destination": "libproroot-linker.so",
+      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot-linker.so"
+    },
+    {
+      "sha256": "8c47a0a7db32d84c179ebb5bf3640f655a3181860ece5886ae44d92858730c34",
+      "destination": "libproroot-runtime.so",
+      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot-runtime.so"
+    },
+    {
+      "sha256": "06c6624db3bdc45b9ced151cd781df439a37b47731d244b93e9d6a58cd48cde0",
+      "destination": "libproroot-stub-loader.so",
+      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot-stub-loader.so"
+    },
+    {
+      "sha256": "a4e74d75b66cdc02b080adfe863dbf9951c3b30610d77beddc95488d5fe5de01",
+      "destination": "libproroot.so",
+      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot.so"
+    }
+  ],
+  "termux": [
+    {
+      "Package": "proot",
+      "Version": "5.1.107.98",
+      "Filename": "pool/main/p/proot/proot_5.1.107.98_aarch64.deb",
+      "SHA256": "29de40efea4daa2a6168b617915206511c63e8d46bf5f4b07d48723441ef7f3b"
+    },
+    {
+      "Package": "libandroid-shmem",
+      "Version": "0.7",
+      "Filename": "pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb",
+      "SHA256": "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6"
+    },
+    {
+      "Package": "libtalloc",
+      "Version": "2.5.0",
+      "Filename": "pool/main/libt/libtalloc/libtalloc_2.5.0_aarch64.deb",
+      "SHA256": "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7"
+    },
+    {
+      "Package": "zstd",
+      "Version": "1.5.7-1",
+      "Filename": "pool/main/z/zstd/zstd_1.5.7-1_aarch64.deb",
+      "SHA256": "e1b4a5113648da8de189620ba1fce74c48b2d0833d9043391b9a1c91fb606fd3"
+    },
+    {
+      "Package": "liblzma",
+      "Version": "5.8.4",
+      "Filename": "pool/main/libl/liblzma/liblzma_5.8.4_aarch64.deb",
+      "SHA256": "44e95e6e60dddb3705e60a344a4f009a1085a210797342b721eaff41b44033c0"
+    },
+    {
+      "Package": "zlib",
+      "Version": "1.3.2",
+      "Filename": "pool/main/z/zlib/zlib_1.3.2_aarch64.deb",
+      "SHA256": "75e7d0af17fcc3b40004309fdc00a1ddb9ae08346dce5e269902c34ac3966ac9"
+    }
+  ],
+  "nativeFiles": [
+    {
+      "package": "proot",
+      "source": "bin/proot",
+      "destination": "libproot.so"
+    },
+    {
+      "package": "proot",
+      "source": "libexec/proot/loader",
+      "destination": "libproot_loader.so"
+    },
+    {
+      "package": "libtalloc",
+      "source": "lib/libtalloc.so",
+      "destination": "libtalloc.so"
+    },
+    {
+      "package": "libandroid-shmem",
+      "source": "lib/libandroid-shmem.so",
+      "destination": "libandroid-shmem.so"
+    },
+    {
+      "package": "zstd",
+      "source": "bin/zstd",
+      "destination": "libzstd.so"
+    },
+    {
+      "package": "zstd",
+      "source": "lib/libzstd.so",
+      "destination": "libzstd_shared.so"
+    },
+    {
+      "package": "liblzma",
+      "source": "lib/liblzma.so",
+      "destination": "liblzma.so"
+    },
+    {
+      "package": "zlib",
+      "source": "lib/libz.so",
+      "destination": "libz.so"
+    }
+  ],
+  "fonts": [
+    {
+      "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+      "destination": "font/noto_sans_sc.ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
+    },
+    {
+      "sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+      "destination": "files/NotoSansSC-OFL.txt",
+      "url": "https://raw.githubusercontent.com/google/fonts/45e3d5269e4a17d823f6d84470bc084dc5ae46f6/ofl/notosanssc/OFL.txt"
+    },
+    {
+      "sha256": "e6fd0d7e91550b3ed2b735d4312474362c4716edc4fc0577a0f61ed782d5aed1",
+      "destination": "font/jetbrains_mono.ttf",
+      "url": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/19371302b95d218af43299bce79ddbddd0bc364d/fonts/ttf/JetBrainsMono-Regular.ttf"
+    },
+    {
+      "sha256": "a76abf002c49097d146e86740a3105a5d00450b1592e820a1109a8c5680cd697",
+      "destination": "files/JetBrainsMono-OFL.txt",
+      "url": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/19371302b95d218af43299bce79ddbddd0bc364d/OFL.txt"
+    },
+    {
+      "sha256": "32e4011709e055596eb8d2dd0f7cb547b47c1d40ac9ecb8fad54f7f7eac202e7",
+      "destination": "font/material_symbols_rounded.ttf",
+      "url": "https://raw.githubusercontent.com/google/material-design-icons/49d4db35df873165d6bd6ba09b063c7dafbac2f4/variablefont/MaterialSymbolsRounded%5BFILL,GRAD,opsz,wght%5D.ttf"
+    },
+    {
+      "sha256": "0c9dae3ed678a81549c3be046bc8045335e5f57f2cbe2287360fbf0c2cc1355f",
+      "destination": "files/material_symbols_rounded.codepoints",
+      "url": "https://raw.githubusercontent.com/google/material-design-icons/49d4db35df873165d6bd6ba09b063c7dafbac2f4/variablefont/MaterialSymbolsRounded%5BFILL,GRAD,opsz,wght%5D.codepoints"
+    },
+    {
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+      "destination": "files/MaterialSymbols-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/google/material-design-icons/49d4db35df873165d6bd6ba09b063c7dafbac2f4/LICENSE"
+    }
+  ],
+  "filledFont": {
+    "sha256": "e5d45cb44e0505243713279c3486128b3874d1d247055ce7025b1e947d01be4d",
+    "fontTools": "4.61.1"
+  },
+  "hostProot": {
+    "amd64": {
+      "version": "5.5.0",
+      "url": "https://github.com/proot-me/proot/releases/download/v5.5.0/proot",
+      "sha256": "db185300a9daabbce86aca7632d8c7fdc4249f6f153171954013b70c5f491ec0"
+    },
+    "arm64": {
+      "version": "5.4.0-3",
+      "url": "https://deb.debian.org/debian/pool/main/p/proot/proot_5.4.0-3_arm64.deb",
+      "sha256": "736269702ac3915af98a402d7646296273ede4ba58dafeb21243ff8d09429813"
+    },
+    "license": {
+      "url": "https://raw.githubusercontent.com/proot-me/proot/v5.5.0/COPYING",
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    }
+  },
+  "host": {
+    "amd64": [
+      {
+        "Package": "qemu-user-static",
+        "Version": "1:7.2+dfsg-7+deb12u18+b3",
+        "Filename": "pool/main/q/qemu/qemu-user-static_7.2+dfsg-7+deb12u18+b3_amd64.deb",
+        "SHA256": "c3e3ba2bd87f8c5b9a5da5ef21b5a3b82d7c63b89dd448d9ddaa4eabc5b6e402"
+      },
+      {
+        "Package": "zstd",
+        "Version": "1.5.4+dfsg2-5",
+        "Filename": "pool/main/libz/libzstd/zstd_1.5.4+dfsg2-5_amd64.deb",
+        "SHA256": "3f6f833ae2fd533a0c9238310aef1148f51a64aa5d5f1278451ddc793d4d6d15"
+      },
+      {
+        "Package": "liblz4-1",
+        "Version": "1.9.4-1",
+        "Filename": "pool/main/l/lz4/liblz4-1_1.9.4-1_amd64.deb",
+        "SHA256": "64cde86cef1deaf828bd60297839b59710b5cd8dc50efd4f12643caaee9389d3"
+      },
+      {
+        "Package": "liblzma5",
+        "Version": "5.4.1-1+deb12u1",
+        "Filename": "pool/main/x/xz-utils/liblzma5_5.4.1-1+deb12u1_amd64.deb",
+        "SHA256": "f96d8876b53ec89d76a992bc199679b818cf518225a768954d9451fb556a4eb7"
+      },
+      {
+        "Package": "libstdc++6",
+        "Version": "12.2.0-14+deb12u1",
+        "Filename": "pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_amd64.deb",
+        "SHA256": "5cd3171216d4ab0fc911cfe9c35509bf2dd8f47761c43b7f6a4296701551a24d"
+      },
+      {
+        "Package": "libgcc-s1",
+        "Version": "12.2.0-14+deb12u1",
+        "Filename": "pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_amd64.deb",
+        "SHA256": "3016e62cb4b7cd8038822870601f5ed131befe942774d0f745622cc77d8a88f7"
+      },
+      {
+        "Package": "zlib1g",
+        "Version": "1:1.2.13.dfsg-1",
+        "Filename": "pool/main/z/zlib/zlib1g_1.2.13.dfsg-1_amd64.deb",
+        "SHA256": "d7dd1d1411fedf27f5e27650a6eff20ef294077b568f4c8c5e51466dc7c08ce4"
+      }
+    ],
+    "arm64": [
+      {
+        "Package": "qemu-user-static",
+        "Version": "1:7.2+dfsg-7+deb12u18+b3",
+        "Filename": "pool/main/q/qemu/qemu-user-static_7.2+dfsg-7+deb12u18+b3_arm64.deb",
+        "SHA256": "e420c417c12b42ca774795b62888d5388da0e08c1ef263dea1490e5ce4e32a0b"
+      },
+      {
+        "Package": "libtalloc2",
+        "Version": "2.4.0-f2",
+        "Filename": "pool/main/t/talloc/libtalloc2_2.4.0-f2_arm64.deb",
+        "SHA256": "c472b4dedd969dd9f9a7c436a19651a573f4fd2672f874adc724866a3742f13c"
+      },
+      {
+        "Package": "zstd",
+        "Version": "1.5.4+dfsg2-5",
+        "Filename": "pool/main/libz/libzstd/zstd_1.5.4+dfsg2-5_arm64.deb",
+        "SHA256": "97a58383b0ad55cc8183e59cbb112f2eb55c3dc1e90de816fa5cfb983d5c2ff0"
+      },
+      {
+        "Package": "liblz4-1",
+        "Version": "1.9.4-1",
+        "Filename": "pool/main/l/lz4/liblz4-1_1.9.4-1_arm64.deb",
+        "SHA256": "f061216ce11aabba8f032dfd6c75c181e782fef7493033b9621a8c3b2953b87e"
+      },
+      {
+        "Package": "liblzma5",
+        "Version": "5.4.1-1+deb12u1",
+        "Filename": "pool/main/x/xz-utils/liblzma5_5.4.1-1+deb12u1_arm64.deb",
+        "SHA256": "647ce9d81e41c30071ce6ac0d3324579216a33aaa1d28971d6952315f6a95a75"
+      },
+      {
+        "Package": "libstdc++6",
+        "Version": "12.2.0-14+deb12u1",
+        "Filename": "pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_arm64.deb",
+        "SHA256": "26e138c677a985775331373828a6c286c551ff397cb735d00e2383cb273d1cb2"
+      },
+      {
+        "Package": "libgcc-s1",
+        "Version": "12.2.0-14+deb12u1",
+        "Filename": "pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_arm64.deb",
+        "SHA256": "576926b283613db80168ddf76380a3bd877602778cf0d226caa7bfbfa71eacf3"
+      },
+      {
+        "Package": "zlib1g",
+        "Version": "1:1.2.13.dfsg-1",
+        "Filename": "pool/main/z/zlib/zlib1g_1.2.13.dfsg-1_arm64.deb",
+        "SHA256": "52b8b8a145bbe1956bba82034f77022cbef0c3d0885c9e32d9817a7932fe1913"
+      }
+    ]
+  }
+}
