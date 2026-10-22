@@ -42,8 +42,6 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     val notice: StateFlow<HostNotice?> = notices.map { it.firstOrNull() }.stateIn(scope, SharingStarted.Eagerly, null)
     private val _busy = MutableStateFlow(0)
     val busy: StateFlow<Int> = _busy.asStateFlow()
-    private val _startup = MutableStateFlow<String?>(null)
-    val startup: StateFlow<String?> = _startup.asStateFlow()
     val sessions = combine(records, sessionStates) { items, states ->
         items.sortedByDescending { it.updatedAt }.map { item -> HomeSession(item, (states[item.id] ?: ChatSessionUiState(item.id)).copy(title = item.title, workspace = item.workspace)) }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
@@ -159,14 +157,6 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             }
         }
     }
-    suspend fun importBundledRootfs(source: File) {
-        if (runtime.containers.value.isNotEmpty()) return
-        _startup.value = "正在准备预置 Ubuntu 开发环境"
-        try {
-            runtime.importRootfs(source.absolutePath, "ubuntu-main", ContainerEngineType.PROOT)
-        } finally { _startup.value = null }
-    }
-    fun setStartup(message: String?) { _startup.value = message }
     private fun persistSessions() = synchronized(persistenceLock) {
         val p = Properties()
         val current = records.value

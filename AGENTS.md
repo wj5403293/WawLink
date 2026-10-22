@@ -18,7 +18,7 @@
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
-- `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择、后台会话保活和预置 Rootfs 导入。
+- `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
 - `scripts/`：免 Docker Rootfs、Android 原生二进制与验证脚本。
 - `ref-plan/`：用户提供的需求和视觉原型；不修改原型。
 - `README.md`：构建运行、独立 UI 接入、能力边界、产物与已验证范围。
@@ -37,4 +37,5 @@
 - 已确认：Rootfs 完整预装功能优先，不将 150–220 MB 作为硬上限；必须报告实际解压体积和归档体积。
 - 已确认：依上游真实能力提供引擎；Proroot 仅 Android arm64，桌面使用 PRoot/QEMU 或 chroot；强制只读绑定仅 chroot 支持，其他引擎必须明确拒绝，禁止静默变为可写。
 - 真实模型验收仅使用用户确认的 `oc/deepseek-v4.1-flash`；不得将开发机认证复制进代码、Rootfs、APK 或交付报告。
+- 已确认：APK 与 Rootfs 分开构建和交付；APK 不内置 Rootfs、不依赖 Rootfs 归档即可构建，首次启动不自动解包。保留独立 Rootfs 归档及校验文件，更新 APK 不要求重新下载或导入已有容器。
 

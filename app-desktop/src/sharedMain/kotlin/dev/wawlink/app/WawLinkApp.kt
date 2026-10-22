@@ -27,9 +27,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val appearance by app.appearance.collectAsState()
     val notice by app.notice.collectAsState()
     val busy by app.busy.collectAsState()
-    val startup by app.startup.collectAsState()
     val containers by app.runtime.containers.collectAsState()
-    val deployments by app.runtime.deployments.collectAsState()
     val pageStates = rememberSaveableStateHolder()
     var page by remember { mutableStateOf("home") }
     var selectedSession by remember { mutableStateOf<String?>(null) }
@@ -83,18 +81,6 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
             }
         }
         if (newSession) SessionEditor(app, null, { newSession = false }) { id -> selectedSession = id; newSession = false; page = "chat" }
-        if (startup != null) AlertDialog(onDismissRequest = {}, title = { Text("初始化开发环境") }, text = {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(startup!!)
-                val deployment = deployments.lastOrNull()
-                if (deployment == null) CircularProgressIndicator()
-                else {
-                    Text(deployment.error ?: deployment.phase, color = if (deployment.error == null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
-                    LinearProgressIndicator(progress = { deployment.progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth())
-                    Text("${(deployment.progress * 100).toInt()}%")
-                }
-            }
-        }, confirmButton = {})
         notice?.let { item ->
             AlertDialog(onDismissRequest = app::dismissNotice, title = { Text(if (item.error) "操作失败" else "提示") }, text = { Text(item.text, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) }, confirmButton = { TextButton(onClick = app::dismissNotice) { Text("知道了") } })
         }

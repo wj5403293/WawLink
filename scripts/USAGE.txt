@@ -80,6 +80,18 @@ byte sizes and MiB values. There is deliberately no 150–220MB cap: complete ru
 functionality takes precedence. No claimed final size is available until the
 builder has actually completed. No emulator/device or Docker is involved.
 
+APK and Rootfs are independent deliverables. Build the APK after provisioning
+native inputs with ./gradlew :app-android:assembleDebug; no Rootfs archive is
+required or embedded. Transfer ubuntu-main-debug.tar.zst to the device and select
+it under the container page's Rootfs import tab. Startup never unpacks an APK
+asset. Installing a same-signature APK update preserves existing containers;
+an unchanged Rootfs does not need to be downloaded or imported again.
+
+Archive extraction preserves native hardlinks where allowed. If the filesystem
+rejects hardlinks, it materializes regular files with the original permissions
+and modification times instead of substituting symlinks. Such files no longer
+share an inode and can require additional storage; archive path checks still apply.
+
 Android native integration
 --------------------------
 The five official coderredlab/proroot1.2.8 files are kept byte-for-byte unchanged:

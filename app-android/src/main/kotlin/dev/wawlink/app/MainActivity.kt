@@ -57,7 +57,6 @@ class MainActivity : ComponentActivity(), HostFiles {
             }
             androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing)) { WawLinkApp(app, this@MainActivity, navigation) }
         }
-        (application as WawLinkApplication).initializeBundledEnvironment()
         if (Build.VERSION.SDK_INT >= 33 && savedInstanceState == null) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
     override suspend fun pickAttachments(): List<AttachmentFile> {

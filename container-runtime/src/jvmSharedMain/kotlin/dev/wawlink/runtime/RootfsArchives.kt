@@ -7,10 +7,12 @@ import java.io.File
 import java.io.InputStream
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.FileSystemException
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.StandardCopyOption.COPY_ATTRIBUTES
 import java.nio.file.attribute.PosixFilePermission
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -55,7 +57,12 @@ internal object RootfsArchives {
         } catch (failure: Throwable) { input.close(); throw failure }
     }
 
-    fun extract(archive: File, destination: File, progress: (Long) -> Unit = {}) {
+    fun extract(
+        archive: File,
+        destination: File,
+        createHardLink: (Path, Path) -> Path = Files::createLink,
+        progress: (Long) -> Unit = {},
+    ) {
         val root = destination.toPath().toAbsolutePath().normalize()
         Files.createDirectories(root)
         require(!Files.isSymbolicLink(root)) { "解压目录不能是符号链接" }
@@ -103,6 +110,7 @@ internal object RootfsArchives {
                 }
             }
         }
+        var hardlinkFailure: Exception? = null
         while (hardlinks.isNotEmpty()) {
             var resolved = false
             val iterator = hardlinks.iterator()
@@ -113,7 +121,17 @@ internal object RootfsArchives {
                 if (!Files.exists(linked, NOFOLLOW_LINKS)) continue
                 require(Files.isRegularFile(linked, NOFOLLOW_LINKS)) { "硬链接目标不是普通文件：$linked" }
                 require(!Files.exists(target, NOFOLLOW_LINKS)) { "归档包含重复硬链接：$target" }
-                Files.createLink(target, linked)
+                if (hardlinkFailure == null) {
+                    try { createHardLink(target, linked) }
+                    catch (failure: FileSystemException) { hardlinkFailure = failure }
+                    catch (failure: UnsupportedOperationException) { hardlinkFailure = failure }
+                }
+                // App-private Android storage can reject link(2); materialize real files,
+                // not symlinks, and avoid repeating the rejected syscall for this import.
+                hardlinkFailure?.let { linkFailure ->
+                    try { Files.copy(linked, target, NOFOLLOW_LINKS, COPY_ATTRIBUTES) }
+                    catch (copyFailure: Exception) { copyFailure.addSuppressed(linkFailure); throw copyFailure }
+                }
                 iterator.remove()
                 resolved = true
             }

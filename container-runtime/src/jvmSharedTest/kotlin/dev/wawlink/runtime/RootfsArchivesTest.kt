@@ -1,7 +1,11 @@
 package dev.wawlink.runtime
 
 import java.io.File
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.FileSystemException
 import java.nio.file.Files
+import java.nio.file.attribute.FileTime
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -33,6 +37,78 @@ class RootfsArchivesTest {
         return file
     }
     private fun link(name: String, target: String) = TarArchiveEntry(name, TarConstants.LF_SYMLINK).apply { linkName = target } to ""
+    private fun hardlink(name: String, target: String) = TarArchiveEntry(name, TarConstants.LF_LINK).apply { linkName = target } to ""
+
+    @Test fun resolvesForwardHardlinkChainsWithoutCopyingWhenSupported() = fixture { directory ->
+        val image = archive(directory, listOf(
+            hardlink("first", "second"),
+            hardlink("second", "original"),
+            TarArchiveEntry("original") to "shared-content",
+        ))
+        val root = File(directory, "root")
+        RootfsArchives.extract(image, root)
+        assertEquals("shared-content", File(root, "first").readText())
+        assertTrue(Files.isSameFile(File(root, "first").toPath(), File(root, "original").toPath()))
+        assertTrue(Files.isSameFile(File(root, "second").toPath(), File(root, "original").toPath()))
+    }
+
+    @Test fun rejectedHardlinksBecomeRealFilesWithSourcePermissionsAndTimestamp() = fixture { directory ->
+        val timestamp = FileTime.fromMillis(1_700_000_000_000L)
+        val original = "opt/omp/node_modules/cliui/node_modules/string-width/index.js"
+        val alias = "opt/omp/node_modules/wrap-ansi/node_modules/string-width/index.js"
+        val image = archive(directory, listOf(
+            hardlink("chain.js", alias),
+            hardlink(alias, original),
+            TarArchiveEntry(original).apply { mode = 0b111101000; modTime = java.util.Date(timestamp.toMillis()) } to "export default 'width';",
+        ))
+        for (unsupported in listOf(false, true)) {
+            val root = File(directory, if (unsupported) "unsupported" else "denied")
+            RootfsArchives.extract(image, root, createHardLink = { target, linked ->
+                if (unsupported) throw UnsupportedOperationException("Hardlinks unsupported")
+                throw FileSystemException(target.toString(), linked.toString(), "Operation not permitted")
+            })
+            for (name in listOf(alias, "chain.js")) {
+                val path = File(root, name).toPath()
+                assertFalse(Files.isSymbolicLink(path))
+                assertFalse(Files.isSameFile(path, File(root, original).toPath()))
+                assertEquals("export default 'width';", path.toFile().readText())
+                assertEquals(PosixFilePermissions.fromString("rwxr-x---"), Files.getPosixFilePermissions(path))
+                assertEquals(timestamp, Files.getLastModifiedTime(path))
+            }
+        }
+    }
+
+    @Test fun hardlinkCopyNeverOverwritesAnExistingTarget() = fixture { directory ->
+        val image = archive(directory, listOf(TarArchiveEntry("original") to "source", hardlink("alias", "original")))
+        val root = File(directory, "root")
+        val denied = FileSystemException("alias", "original", "Operation not permitted")
+        val failure = assertFailsWith<FileAlreadyExistsException> {
+            RootfsArchives.extract(image, root, createHardLink = { target, _ ->
+                target.toFile().writeText("concurrent-file")
+                throw denied
+            })
+        }
+        assertEquals("concurrent-file", File(root, "alias").readText())
+        assertEquals("source", File(root, "original").readText())
+        assertTrue(failure.suppressed.contains(denied))
+    }
+
+    @Test fun rejectsUnsafeAndUnresolvedHardlinkTargets() = fixture { directory ->
+        val entries = listOf(
+            listOf(hardlink("alias", "../outside")),
+            listOf(hardlink("alias", "/outside")),
+            listOf(TarArchiveEntry("directory/") to "", hardlink("alias", "directory")),
+            listOf(hardlink("a", "b"), hardlink("b", "a")),
+            listOf(hardlink("alias", "missing")),
+            listOf(TarArchiveEntry("original") to "safe", hardlink("alias", "original"), TarArchiveEntry("alias") to "conflict"),
+            listOf(TarArchiveEntry("original") to "safe", link("symbol", "original"), hardlink("alias", "symbol")),
+        )
+        entries.forEachIndexed { index, members ->
+            val image = archive(directory, members)
+            assertFailsWith<IllegalArgumentException> { RootfsArchives.extract(image, File(directory, "root$index")) }
+        }
+        assertFalse(File(directory, "outside").exists())
+    }
 
     @Test fun rejectsParentTraversalWithoutWritingOutside() = fixture { directory ->
         val image = archive(directory, listOf(TarArchiveEntry("../escaped", true) to "bad"))
