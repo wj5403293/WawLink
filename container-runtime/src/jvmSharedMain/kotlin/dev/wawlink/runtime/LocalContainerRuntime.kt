@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,6 +20,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -44,6 +46,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     private val processes = mutableMapOf<String, MutableList<TrackedProcess>>()
     private val keepers = mutableMapOf<String, TrackedProcess>()
     private val errors = mutableMapOf<String, String>()
+    private val dnsErrors = mutableMapOf<String, String>()
     private val sizes = mutableMapOf<String, Long>()
     private val idleJobs = mutableMapOf<String, Job>()
     private val packageLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
@@ -80,6 +83,21 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             catch (failure: Exception) { errors[config.id] = "rootfs 不可访问：${failure.message}" }
         }
         publish()
+        paths.resolvConf?.let { resolver ->
+            scope.launch {
+                resolver.collect { content ->
+                    if (content != null) mutex.withLock {
+                        for (config in configurations.values) {
+                            if (keepers[config.id]?.process?.isAlive != true) continue
+                            try { updateDns(config, content) } catch (failure: Exception) {
+                                if (failure is CancellationException) throw failure
+                                // The affected container exposes the error; keep observing network changes.
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun ensureOpen() = check(!closed) { "容器运行时已关闭" }
@@ -94,13 +112,30 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         return RootfsArchives.size(root, excluded)
     }
     private fun publish() {
-        _containers.value = configurations.values.map { ContainerInfo(it, keepers[it.id]?.process?.isAlive == true, sizes[it.id] ?: 0, errors[it.id]) }
+        _containers.value = configurations.values.map { ContainerInfo(it, keepers[it.id]?.process?.isAlive == true, sizes[it.id] ?: 0, errors[it.id] ?: dnsErrors[it.id]) }
     }
     private fun persist() {
         val temp = File(paths.dataDir, "containers.json.tmp")
         FileOutputStream(temp).use { output -> output.write(json.encodeToString(SavedRuntime(configurations.values.toList(), debugRootfsRemoved)).toByteArray()); output.fd.sync() }
         try { Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
         catch (_: AtomicMoveNotSupportedException) { Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+    }
+
+    private fun updateDns(config: ContainerConfig, content: String) {
+        try {
+            val overridden = config.mounts.any { mount ->
+                val target = mount.target.trimEnd('/')
+                target == "/etc" || target == "/etc/resolv.conf"
+            }
+            if (!overridden) RuntimeDns.update(engines.validateRoot(config), content)
+            if (dnsErrors.remove(config.id) != null) publish()
+        } catch (failure: Exception) {
+            if (failure is CancellationException) throw failure
+            val message = "DNS 配置更新失败：${failure.message}"
+            dnsErrors[config.id] = message
+            publish()
+            throw IllegalStateException(message, failure)
+        }
     }
 
     override suspend fun register(config: ContainerConfig) = withContext(Dispatchers.IO) {
@@ -121,6 +156,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     override suspend fun start(id: String) = withContext(Dispatchers.IO) { mutex.withLock { ensureOpen(); startLocked(id) } }
     private suspend fun startLocked(id: String) {
         val config = config(id)
+        paths.resolvConf?.value?.let { updateDns(config, it) }
         if (keepers[id]?.process?.isAlive == true) return
         if (keepers.containsKey(id)) stopLocked(id)
         try {
@@ -220,6 +256,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         if (root.toPath().startsWith(rootfsDir.canonicalFile.toPath()) && root != rootfsDir.canonicalFile) RootfsArchives.deleteTree(root)
         configurations.remove(id)
         errors.remove(id)
+        dnsErrors.remove(id)
         sizes.remove(id)
         if (id == "ubuntu-main") debugRootfsRemoved = true
         if (configurations.isNotEmpty() && configurations.values.none { it.isDefault }) {

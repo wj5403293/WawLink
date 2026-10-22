@@ -102,7 +102,6 @@ if [[ "$REUSE" == 0 ]]; then
     fi
     chmod 1777 "$STAGING/tmp"
     rm -f "$STAGING/etc/resolv.conf"
-    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$STAGING/etc/resolv.conf"
     cp /etc/resolv.conf "$STAGING/etc/resolv.conf"
     cat > "$STAGING/etc/apt/sources.list.d/ubuntu.sources" <<'SOURCES'
 Types: deb
@@ -194,6 +193,8 @@ GUEST
     if [[ "$NEED_QEMU" == 1 ]]; then PROOT_ARGS+=(-q "$QEMU"); fi
     "$PROOT" "${PROOT_ARGS[@]}" /usr/bin/env -i HOME=/root TERM=xterm-256color LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin /bin/bash /tmp/wawlink-initialize.sh
     rm -f "$STAGING/tmp/wawlink-initialize.sh"
+    # The build host's systemd stub is not available on Android; runtime DNS follows the phone.
+    printf 'nameserver 223.5.5.5\nnameserver 1.1.1.1\n' > "$STAGING/etc/resolv.conf"
     # Store exact input provenance and license-bearing source manifests in the image.
     mkdir -p "$STAGING/usr/local/share/wawlink"
     cp "$ROOT/scripts/assets.lock.json" "$STAGING/usr/local/share/wawlink/assets.lock.json"

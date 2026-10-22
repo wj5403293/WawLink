@@ -23,7 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
 /** Owns only the RPC children it starts. Creating a controller never starts a container/process. */
-class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File) : AutoCloseable {
+class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private val resolvConf: StateFlow<String?>? = null) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessions = LinkedHashMap<String, OmpSession>()
     private val providerRepositories = LinkedHashMap<String, OmpProviderRepository>()
@@ -198,6 +198,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File) : AutoClo
         private val mutableState: MutableStateFlow<ChatSessionUiState>
         override val state: StateFlow<ChatSessionUiState>
         @Volatile private var process: Process? = null
+        private var startedResolvConf: String? = null
         @Volatile private var backendSettled = true
         private var processJob: Job? = null
         private var heartbeat: Job? = null
@@ -267,7 +268,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File) : AutoClo
                 val prepared = prepareAttachments(text, attachments)
                 if (state.value.isRunning || !backendSettled) enqueue(prepared.first, prepared.second, prepared.third)
                 else {
-                    if (restartRequired) park()
+                    if (restartRequired || (process != null && startedResolvConf != resolvConf?.value)) park()
                     ensureStarted()
                     if (promptGeneration != stopGeneration.get()) return@submit
                     if (state.value.isRunning || !backendSettled) {
@@ -290,7 +291,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File) : AutoClo
             submit {
                 val promptGeneration = stopGeneration.get()
                 if (!state.value.isRunning && backendSettled) {
-                    if (restartRequired) park()
+                    if (restartRequired || (process != null && startedResolvConf != resolvConf?.value)) park()
                     ensureStarted()
                     if (promptGeneration != stopGeneration.get()) return@submit
                     if (state.value.isRunning || !backendSettled) {
@@ -547,6 +548,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File) : AutoClo
             val startReady = CompletableDeferred<JsonObject>()
             ready = startReady
             synchronized(stderr) { stderr.clear() }
+            // Bun snapshots DNS servers; resume a fresh process on the next idle send after a network change.
+            startedResolvConf = resolvConf?.value
             val child = runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1"))
             process = child
             restartRequired = false

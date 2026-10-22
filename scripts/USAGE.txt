@@ -87,6 +87,15 @@ it under the container page's Rootfs import tab. Startup never unpacks an APK
 asset. Installing a same-signature APK update preserves existing containers;
 an unchanged Rootfs does not need to be downloaded or imported again.
 
+Android refreshes guest /etc/resolv.conf from the active default network before
+starting/executing commands and on live DNS changes. Offline periods retain the
+last valid configuration; explicit /etc or /etc/resolv.conf bind mounts take
+precedence. Existing archives with the builder's systemd stub DNS are fixed at
+runtime and do not need to be imported again. New images keep portable fallback
+DNS instead of the build host's stub resolver. Since Bun snapshots DNS servers,
+OMP restarts and resumes the same session on the next idle send after a DNS
+change, without interrupting an active task or automatically retrying a request.
+
 Archive extraction preserves native hardlinks where allowed. If the filesystem
 rejects hardlinks, it materializes regular files with the original permissions
 and modification times instead of substituting symlinks. Such files no longer

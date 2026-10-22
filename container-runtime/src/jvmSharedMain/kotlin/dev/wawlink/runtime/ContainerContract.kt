@@ -39,6 +39,8 @@ data class RuntimePaths(
     val hostProot: String = "proot",
     val qemuExecutable: String? = null,
     val debugRootfs: File? = null,
+    /** Active host resolver configuration; null values mean the network has no DNS configuration. */
+    val resolvConf: StateFlow<String?>? = null,
 )
 interface TerminalSession : AutoCloseable {
     val output: StateFlow<List<String>>
