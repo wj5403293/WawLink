@@ -35,6 +35,47 @@ class OmpConfigRepositoriesTest {
     }
 
     @Test
+    fun startupRepairPreservesConfigValuesAndLeavesStableFilesUntouched() = runBlocking {
+        withContainer { dir, _ ->
+            val models = File(dir, "models.yml").apply { writeText("""
+                # user model comment
+                providers: {
+                  custom: {
+                    api: anthropic-messages,
+                    apiKey: 'key: literal',
+                    headers: {X-Literal: 'true'},
+                    models: [
+                      {id: '001', maxTokens: 8192, futureModel: {keep: null}}
+                    ]
+                    ,
+                    futureProvider: [true, 'false', 17]
+                  }
+                }
+            """.trimIndent() + "\n") }
+            val config = File(dir, "config.yml").apply { writeText("""
+                # user setting comment
+                temperature: 0.2
+                futureSetting: {items: [
+                    'true', '001'
+                  ]
+                  , next: 'false'}
+            """.trimIndent() + "\n") }
+            val expected = listOf(load(models), load(config))
+            val auth = File(dir, "auth.json").apply { writeText("{\"external\":\"untouched\"}\n") }
+            val originalAuth = auth.readText()
+            prepareOmpConfiguration { dir }
+            assertEquals(expected, listOf(load(models), load(config)))
+            assertTrue(models.readText().contains("# user model comment"))
+            assertTrue(config.readText().contains("# user setting comment"))
+            assertEquals(originalAuth, auth.readText())
+            val timestamp = java.nio.file.attribute.FileTime.fromMillis(1_600_000_000_000)
+            listOf(models, config).forEach { Files.setLastModifiedTime(it.toPath(), timestamp) }
+            prepareOmpConfiguration { dir }
+            listOf(models, config).forEach { assertEquals(timestamp, Files.getLastModifiedTime(it.toPath())) }
+        }
+    }
+
+    @Test
     fun settingEnumRoundTripResetAndCommentsUseRealWireValues() = runBlocking {
         withContainer { dir, scope ->
             val file = File(dir, "config.yml")

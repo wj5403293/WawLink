@@ -15,6 +15,8 @@ Android / Linux Desktop 跨端 Coding Agent。Kotlin Multiplatform、Compose Mul
 
 `agent-driver-omp/src/jvmSharedMain/resources/` 中的模型预算扩展和 OMP 设置 Schema 同时供两端使用。Android 驱动显式将该目录接入 `main.resources`，使两份文件作为 Java 类路径资源进入驱动 AAR 和宿主 APK；仅声明 Kotlin 共享源码集依赖不足以打包这些资源。修复此类 APK 资源遗漏不需要重新生成或导入 Rootfs。
 
+OMP 启动前会将 `models.yml` 和主设置文件重新序列化为 Bun 可解析的 YAML，自动修复旧版本写出的 pretty-flow 格式；保留认证值、注释和未知字段，不改认证存储，也不重写内容已稳定的文件。Android PRoot 的版本化库名通过应用私有目录中的符号链接解析，不再把 Android `LD_PRELOAD` 传给第一个 Linux 程序。更新 APK 即可使用这些修复，无需重新导入 Rootfs。
+
 ## 构建与运行
 
 构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
@@ -116,7 +118,7 @@ node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
 
 已验证 Android 编译打包、独立 UI AAR/JAR、APK arm64-only 和 13 个上游原生程序逐字节校验。当前 APK 不含 Rootfs 归档，Rootfs 作为独立文件按 SHA256 校验。实际 Linux PRoot/QEMU 容器已验证发行版下载、三种归档导入、克隆、默认切换、Git 安装/卸载、绑定和环境变量、流式终端，以及停止时仅回收所属进程树。
 
-本次回归通过 52 项 Kotlin 测试与 4 项 Node 测试，覆盖并发部署更新顺序、父目录别名下的包内符号链接、真实越界拒绝、归档路径/硬链接边界、拒绝硬链接时的真实文件复制及元数据、配置同步、原生历史分支/迁移、终态事件幂等、模型 Message 请求预算和 Markdown 标记边界。真实原生日志离线回放确认：Todo 会话保持两个有实际工具的步骤组，未使用 Todo 的会话保持扁平；历史结果重发不会回退计划或新增空组。
+本次回归通过 53 项 Kotlin 测试与 4 项 Node 测试，覆盖并发部署更新顺序、父目录别名下的包内符号链接、真实越界拒绝、归档路径/硬链接边界、拒绝硬链接时的真实文件复制及元数据、配置同步与旧 YAML 修复幂等、原生历史分支/迁移、终态事件幂等、模型 Message 请求预算和 Markdown 标记边界。真实原生日志离线回放确认：Todo 会话保持两个有实际工具的步骤组，未使用 Todo 的会话保持扁平；历史结果重发不会回退计划或新增空组。
 
 真实模型验收仅使用用户确认的 `oc/deepseek-v4.1-flash`，已跑通双会话独立计时、Todo/扁平工具、审批、选择题、附件、排队编辑/删除、原生分支续聊和迁移续聊。桌面实际界面已检查主页展开/进展摘要、双层吸顶及回跳、工具详情、聊天标识符、容器终端和设置页；不把这些桌面结果替代为设备端验收。
 
@@ -125,5 +127,7 @@ node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
 部署列表与符号链接修复另通过实际桌面界面验证：两个部署项目交替更新时保持原位，两份完整交付归档经由父目录别名并发导入成功，完成后部署记录移除；两个新容器的 Node、OMP、Git 与 `mnemopi --help` 均实际运行通过。该修复仅需更新 APK，现有 Rootfs 归档不变，不涉及下载源或 DNS 调整。
 
 模型预算扩展及 Agent 设置闪退修复已验证 APK 与驱动 AAR 的两份资源逐字节匹配源码；隔离加载 AAR 的 Android 驱动类，并仅从实际 APK 读取资源，完成设置 Schema 初始化、开关状态修改及 YAML 持久化。由该 APK 安装出的预算脚本已通过 Node 执行真实请求参数转换与跨服务隔离检查，无计费请求；不将这些检查视为 Android 真机点击验收。
+
+OMP 启动修复已在完整 arm64 Rootfs 内验证：先复现旧格式解析失败，再由实际会话启动流程自动修复配置；真实 `oc/deepseek-v4.1-flash` 返回指定内容且会话进入 `DONE`。该次推理通过本地隔离网关使用既有宿主认证，未将开发机认证复制进 Rootfs。另用真实主机 ELF 的 `libtalloc.so.2` 依赖及 PRoot/QEMU 验证无预加载启动、失效 APK 库路径更新和客体环境隔离；这不等同于验证 Android Bionic/SELinux。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。

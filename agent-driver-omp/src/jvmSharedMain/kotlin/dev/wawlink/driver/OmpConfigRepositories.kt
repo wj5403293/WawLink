@@ -106,6 +106,14 @@ private fun repoAtomicWrite(file: File, content: String) {
     }
 }
 
+/** Re-emit legacy pretty-flow documents before Bun reads them; credentials and YAML nodes stay intact. */
+internal suspend fun prepareOmpConfiguration(directory: () -> File) = ompConfigMutex.withLock {
+    val dir = agentDirectory(directory)
+    for (file in listOf(configFile(dir, "models.yml"), mainConfigFile(dir))) {
+        if (file.exists()) OmpYaml(file).write(file)
+    }
+}
+
 /** Mutate composed YAML nodes, not a load/dump map: comments, tags, unknown keys and scalar styles survive. */
 private class OmpYaml private constructor(private val yaml: Yaml, val root: MappingNode) {
     constructor(file: File) : this(newYaml(), file)
@@ -168,7 +176,10 @@ private class OmpYaml private constructor(private val yaml: Yaml, val root: Mapp
         val parent = if (path.size == 1) root else node(*path.dropLast(1).toTypedArray()) as? MappingNode ?: return
         set(parent, path.last(), null)
     }
-    fun write(file: File) = repoAtomicWrite(file, StringWriter().also { yaml.serialize(root, it) }.toString())
+    fun write(file: File) {
+        val content = StringWriter().also { yaml.serialize(root, it) }.toString()
+        if (!file.exists() || file.readText(Charsets.UTF_8) != content) repoAtomicWrite(file, content)
+    }
     fun represent(value: Any): Node = yaml.represent(value)
 
     companion object {
@@ -176,7 +187,8 @@ private class OmpYaml private constructor(private val yaml: Yaml, val root: Mapp
         fun scalar(value: String) = ScalarNode(Tag.STR, value, null, null, DumperOptions.ScalarStyle.PLAIN)
         private fun newYaml(): Yaml {
             val loader = LoaderOptions().apply { isProcessComments = true; isAllowDuplicateKeys = false }
-            val dumper = DumperOptions().apply { isProcessComments = true; defaultFlowStyle = DumperOptions.FlowStyle.BLOCK; isPrettyFlow = true }
+            // Bun rejects pretty-flow output when composed flow containers receive block-style children.
+            val dumper = DumperOptions().apply { isProcessComments = true; defaultFlowStyle = DumperOptions.FlowStyle.BLOCK }
             return Yaml(SafeConstructor(loader), Representer(dumper), dumper, loader)
         }
     }

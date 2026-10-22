@@ -112,10 +112,13 @@ The runtime library uses guest glibc; do not load it with Android System.loadLib
 
 Termux packages provide genuine Android aarch64 proot, its loader, libtalloc and
 libandroid-shmem. For proot, set PROOT_LOADER=nativeDir/libproot_loader.so and
-LD_LIBRARY_PATH=nativeDir. Set LD_PRELOAD to absolute libtalloc.so and
-libandroid-shmem.so paths: preloading satisfies libtalloc's original SONAME
-libtalloc.so.2 while preserving binary bytes and Android's *.so packaging rule.
-There is intentionally no 32-bit loader in the arm64-only APK.
+LD_LIBRARY_PATH=appDataDir/proot-libs:nativeDir. Create libtalloc.so.2 in that private
+alias directory as a symlink to the installed nativeDir/libtalloc.so; refresh the
+target after APK updates. This satisfies the original SONAME without copying or
+patching native binaries and respects Android's lib*.so extraction rule.
+Do not set LD_PRELOAD for PRoot: its first guest program is linked against glibc,
+not Android's loader. The guest bootstrap uses env -i before applying guest-only
+environment settings. There is no 32-bit loader in the arm64-only APK.
 
 The native zstd CLI is named libzstd.so to allow Android executable extraction;
 its separate shared library is libzstd_shared.so (original SONAME libzstd.so.1).

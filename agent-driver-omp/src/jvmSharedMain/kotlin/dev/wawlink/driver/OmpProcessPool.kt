@@ -538,6 +538,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File) : AutoClo
             sessionFile?.let { args += listOf("--resume", it) }
             // Pass only model identity already selected by the user; credentials stay in the container.
             if (state.value.providerId.isNotBlank() && state.value.modelId.isNotBlank()) args += listOf("--provider", state.value.providerId, "--model", state.value.modelId)
+            prepareOmpConfiguration { agentDirectory(containerId) }
             confined(agentDirectory(containerId), "wawlink-model-payload.mjs")
             args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId)))
             if (hasThinkingPreference) args += listOf("--thinking", thinkingWire(state.value.thinkingLevel))

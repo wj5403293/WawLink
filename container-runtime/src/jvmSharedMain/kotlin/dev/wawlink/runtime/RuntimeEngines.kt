@@ -39,6 +39,22 @@ internal object HostCommands {
 internal class RuntimeEngines(private val paths: RuntimePaths) {
     private val ownedMounts = mutableMapOf<String, MutableList<File>>()
     private val prootCapabilities = mutableMapOf<String, String>()
+    private val prootLibraryPath: String by lazy {
+        val native = paths.nativeLibraryDir ?: error("缺少 Android 原生库目录")
+        val directory = File(paths.dataDir, "proot-libs")
+        require(!Files.isSymbolicLink(directory.toPath())) { "原生依赖目录不能是符号链接" }
+        Files.createDirectories(directory.toPath())
+        // APK extraction only accepts lib*.so names, but PRoot needs this versioned SONAME.
+        // Resolve the installed library without preloading Android code into the first glibc guest.
+        val library = File(nativeBinary("libtalloc.so")).toPath()
+        val alias = File(directory, "libtalloc.so.2").toPath()
+        if (Files.exists(alias, NOFOLLOW_LINKS)) {
+            require(Files.isSymbolicLink(alias)) { "原生依赖别名已被其他文件占用" }
+            if (Files.readSymbolicLink(alias) != library) Files.delete(alias)
+        }
+        if (!Files.exists(alias, NOFOLLOW_LINKS)) Files.createSymbolicLink(alias, library)
+        "${directory.path}:${native.path}"
+    }
 
     fun validateRoot(config: ContainerConfig): File {
         val root = File(config.rootfsPath)
@@ -248,10 +264,9 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         env.remove("LD_PRELOAD")
         if (paths.isAndroid) {
             val native = paths.nativeLibraryDir ?: error("缺少 Android 原生库目录")
-            env["LD_LIBRARY_PATH"] = native.path
+            env["LD_LIBRARY_PATH"] = if (engine == ContainerEngineType.PROOT) prootLibraryPath else native.path
             if (engine == ContainerEngineType.PROOT) {
                 env["PROOT_LOADER"] = nativeBinary("libproot_loader.so")
-                env["LD_PRELOAD"] = listOf("libtalloc.so", "libandroid-shmem.so").joinToString(":") { File(native, it).absolutePath }
             }
             if (engine == ContainerEngineType.PROROOT) env["PROROOT_TMP_DIR"] = File(paths.dataDir, "tmp").apply { mkdirs() }.path
             env["PROOT_TMP_DIR"] = File(paths.dataDir, "tmp").apply { mkdirs() }.path
