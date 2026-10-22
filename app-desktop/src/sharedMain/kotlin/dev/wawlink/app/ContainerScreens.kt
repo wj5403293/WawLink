@@ -49,11 +49,13 @@ internal fun bytesLabel(bytes: Long): String = when {
         if (deployments.isNotEmpty()) {
             SectionLabel("正在部署", "progress_activity")
             deployments.forEach { task ->
-                Column(Modifier.fillMaxWidth().padding(bottom = 3.dp).background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(20.dp)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(task.name, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
-                    Text(task.error ?: task.phase, color = if (task.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-                    LinearProgressIndicator(progress = { task.progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(6.dp))
-                    Text("${(task.progress * 100).toInt()}%", color = MaterialTheme.colorScheme.primary)
+                key(task.id) {
+                    Column(Modifier.fillMaxWidth().padding(bottom = 3.dp).background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(20.dp)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(task.name, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+                        Text(task.error ?: task.phase, color = if (task.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                        LinearProgressIndicator(progress = { task.progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(6.dp))
+                        Text("${(task.progress * 100).toInt()}%", color = MaterialTheme.colorScheme.primary)
+                    }
                 }
             }
         }

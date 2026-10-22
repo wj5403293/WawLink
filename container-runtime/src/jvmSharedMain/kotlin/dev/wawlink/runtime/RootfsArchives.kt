@@ -63,9 +63,12 @@ internal object RootfsArchives {
         createHardLink: (Path, Path) -> Path = Files::createLink,
         progress: (Long) -> Unit = {},
     ) {
-        val root = destination.toPath().toAbsolutePath().normalize()
-        Files.createDirectories(root)
-        require(!Files.isSymbolicLink(root)) { "解压目录不能是符号链接" }
+        val requestedRoot = destination.toPath().toAbsolutePath().normalize()
+        Files.createDirectories(requestedRoot)
+        require(!Files.isSymbolicLink(requestedRoot)) { "解压目录不能是符号链接" }
+        // Android app-data paths can have aliased parents; compare all links against
+        // the same real root without permitting the destination itself to be a link.
+        val root = requestedRoot.toRealPath()
         val hardlinks = mutableListOf<Pair<Path, Path>>()
         val symlinks = mutableListOf<Pair<Path, String>>()
         val directoryModes = mutableListOf<Pair<Path, Int>>()
@@ -139,12 +142,13 @@ internal object RootfsArchives {
         }
         // Flatten the distributor wrapper BEFORE rebasing guest-absolute symlinks.
         var wrapperRoot: Path? = null
-        if (!File(destination, "etc").isDirectory) {
-            val children = destination.listFiles().orEmpty()
+        val extracted = root.toFile()
+        if (!File(extracted, "etc").isDirectory) {
+            val children = extracted.listFiles().orEmpty()
             if (children.size == 1 && children[0].isDirectory && File(children[0], "etc").isDirectory) {
                 val wrapper = children[0]
                 wrapperRoot = wrapper.toPath().toAbsolutePath().normalize()
-                wrapper.listFiles().orEmpty().forEach { Files.move(it.toPath(), destination.toPath().resolve(it.name)) }
+                wrapper.listFiles().orEmpty().forEach { Files.move(it.toPath(), root.resolve(it.name)) }
                 Files.delete(wrapper.toPath())
             }
         }

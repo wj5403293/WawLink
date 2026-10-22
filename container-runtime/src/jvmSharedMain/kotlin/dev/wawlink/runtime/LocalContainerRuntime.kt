@@ -252,7 +252,12 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     }
 
     private fun deployment(progress: DeploymentProgress) { synchronized(_deployments) {
-        _deployments.value = _deployments.value.filterNot { it.id == progress.id } + progress
+        val current = _deployments.value
+        val index = current.indexOfFirst { it.id == progress.id }
+        if (index >= 0 && current[index] == progress) return@synchronized
+        _deployments.value = current.toMutableList().apply {
+            if (index >= 0) this[index] = progress else add(progress)
+        }
     } }
     private fun finishDeployment(id: String) { synchronized(_deployments) { _deployments.value = _deployments.value.filterNot { it.id == id } } }
 

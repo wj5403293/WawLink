@@ -1,17 +1,23 @@
 package dev.wawlink.runtime
 
+import com.sun.net.httpserver.HttpServer
 import java.io.File
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileSystemException
 import java.nio.file.Files
+import java.net.InetSocketAddress
 import java.nio.file.attribute.FileTime
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.apache.commons.compress.archivers.tar.TarConstants
@@ -38,6 +44,88 @@ class RootfsArchivesTest {
     }
     private fun link(name: String, target: String) = TarArchiveEntry(name, TarConstants.LF_SYMLINK).apply { linkName = target } to ""
     private fun hardlink(name: String, target: String) = TarArchiveEntry(name, TarConstants.LF_LINK).apply { linkName = target } to ""
+
+    @Test fun concurrentDeploymentUpdatesPreserveOtherRowsAndInsertionOrder() = fixture { directory ->
+        val releases = listOf(CountDownLatch(1), CountDownLatch(1))
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val executor = Executors.newCachedThreadPool()
+        server.executor = executor
+        releases.forEachIndexed { index, release ->
+            server.createContext("/import$index") { exchange ->
+                exchange.use {
+                    val body = ByteArray(32 * 1024)
+                    exchange.sendResponseHeaders(200, body.size.toLong())
+                    exchange.responseBody.write(body, 0, 1024)
+                    exchange.responseBody.flush()
+                    check(release.await(10, TimeUnit.SECONDS)) { "Deployment was not released" }
+                    exchange.responseBody.write(body, 1024, body.size - 1024)
+                }
+            }
+        }
+        server.start()
+        val runtime = LocalContainerRuntime(RuntimePaths(File(directory, "data")))
+        try {
+            runBlocking {
+                withTimeout(10_000) {
+                    val first = async(Dispatchers.IO) { runCatching { runtime.importRootfs("http://127.0.0.1:${server.address.port}/import0", "first") } }
+                    runtime.deployments.first { it.size == 1 }
+                    val second = async(Dispatchers.IO) { runCatching { runtime.importRootfs("http://127.0.0.1:${server.address.port}/import1", "second") } }
+                    val initial = runtime.deployments.first { it.size == 2 }
+                    releases[0].countDown()
+                    val firstResult = first.await()
+                    val updated = runtime.deployments.value
+                    releases[1].countDown()
+                    val secondResult = second.await()
+                    assertTrue(firstResult.isFailure)
+                    assertTrue(secondResult.isFailure)
+                    assertEquals(initial.map { it.id }, updated.map { it.id })
+                    assertTrue(updated[0].error != null)
+                    assertEquals(initial[1], updated[1])
+                    assertEquals(initial.map { it.id }, runtime.deployments.value.map { it.id })
+                }
+            }
+        } finally {
+            releases.forEach { it.countDown() }
+            server.stop(0)
+            executor.shutdownNow()
+            runtime.close()
+        }
+    }
+
+    @Test fun packageBinLinksResolveThroughAliasedParentsWithAndWithoutWrapper() = fixture { directory ->
+        val storage = File(directory, "app-storage").apply { mkdirs() }
+        val alias = File(directory, "data-user-0")
+        Files.createSymbolicLink(alias.toPath(), storage.toPath())
+        for (wrapped in listOf(false, true)) {
+            val prefix = if (wrapped) "wrapped/" else ""
+            val image = archive(directory, listOf(
+                TarArchiveEntry("${prefix}etc/") to "",
+                TarArchiveEntry("${prefix}opt/omp/node_modules/@oh-my-pi/pi-mnemopi/src/cli.ts") to "console.log('mnemopi');",
+                link("${prefix}opt/omp/node_modules/.bin/mnemopi", "../@oh-my-pi/pi-mnemopi/src/cli.ts"),
+                link("${prefix}usr/bin/mnemopi", "/opt/omp/node_modules/.bin/mnemopi"),
+            ))
+            val root = File(alias, "wawlink/rootfs/$wrapped")
+            RootfsArchives.extract(image, root)
+            assertTrue(Files.isSymbolicLink(File(root, "opt/omp/node_modules/.bin/mnemopi").toPath()))
+            assertEquals("console.log('mnemopi');", File(root, "usr/bin/mnemopi").readText())
+            assertEquals(File(root, "opt/omp/node_modules/@oh-my-pi/pi-mnemopi/src/cli.ts").canonicalPath, File(root, "usr/bin/mnemopi").canonicalPath)
+            assertFalse(File(root, "wrapped").exists())
+        }
+    }
+
+    @Test fun rejectsSymlinkDestinationAndChainsThroughExistingExternalLinks() = fixture { directory ->
+        val outside = File(directory, "outside").apply { mkdirs() }
+        File(outside, "sentinel").writeText("unchanged")
+        val destinationLink = File(directory, "linked-root")
+        Files.createSymbolicLink(destinationLink.toPath(), outside.toPath())
+        val image = archive(directory, listOf(link("mnemopi", "existing/sentinel")))
+        assertFailsWith<IllegalArgumentException> { RootfsArchives.extract(image, destinationLink) }
+        val root = File(directory, "root").apply { mkdirs() }
+        Files.createSymbolicLink(File(root, "existing").toPath(), outside.toPath())
+        assertFailsWith<IllegalArgumentException> { RootfsArchives.extract(image, root) }
+        assertEquals("unchanged", File(outside, "sentinel").readText())
+        assertFalse(File(outside, "mnemopi").exists())
+    }
 
     @Test fun resolvesForwardHardlinkChainsWithoutCopyingWhenSupported() = fixture { directory ->
         val image = archive(directory, listOf(
