@@ -16,13 +16,13 @@
 - 思考节点可归入创建时正在执行的 Todo 子任务；没有活动 Todo 时保持扁平。流式更新、完整快照和历史重放保留同一节点的归属与 ID，不因任务切换迁移或重复。
 - 用户消息按发送时的 Todo 与前置节点固定位置；后续工具、思考、任务切换、排队消费、完整快照和历史重放不得重新归属或改变顺序。
 - 返回页面、进入设置或切换会话时保留滚动与展开状态；草稿按会话隔离。弹出菜单缩放/淡入淡出时保留外部阴影，选中背景覆盖完整列表项。
-- 模型列表、编辑页和输入区按钮共用模型品牌图标，保留原色；参照 Kelivo 的视觉资源，来源可核实的 MIT 图标与差异记录位于 `agent-ui/src/commonMain/composeResources/files/model-icons/`，不得复制许可来源未核实的资源。
+- 模型选择按钮始终显示当前模型图标，列表项显示各自模型图标，保留品牌原色；未匹配品牌时，以模型 ID 首字符的大写单字标识加圆形底色显示，底色按字母稳定生成，同字母同色，不得套用服务商图标或通用脑图标。品牌资源参照 Kelivo，来源可核实的 MIT 图标与差异记录位于 `agent-ui/src/commonMain/composeResources/files/model-icons/`，不得复制许可来源未核实的资源。
 - 模型资料仅按唯一 ID/规范化别名自动匹配，不模糊猜测；同步只追加新模型，已有编辑须显式应用匹配且保留手动字段。支持四项价格及独立的 `xhigh`、`max` 档位贯通 UI、配置和 RPC。
 
 ## 项目结构与索引
 
 - `agent-protocol/`：独立 Kotlin 领域模型、会话控制、模型服务与设置契约；仅使用协程状态流，不依赖驱动或容器。
-- `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonMain/kotlin/dev/wawlink/ui/ModelIcon.kt` 统一离线品牌图标，`src/commonMain/composeResources/files/model-icons/` 保存来源/许可，`src/commonTest/kotlin/dev/wawlink/ui/FeedExpansionStateTest.kt` 与 `MarkdownTest.kt` 覆盖展开状态保存和 Markdown 边界。
+- `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonMain/kotlin/dev/wawlink/ui/ModelIcon.kt` 统一离线品牌图标与 ID 字母标识，`src/commonMain/composeResources/files/model-icons/` 保存来源/许可，`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ModelIconTest.kt`、`FeedExpansionStateTest.kt` 和 `MarkdownTest.kt` 覆盖字母标识/颜色区分、展开状态和 Markdown 边界。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置及审批/执行模式边界。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端；`src/jvmSharedMain/kotlin/dev/wawlink/runtime/RuntimeDns.kt` 负责边界安全的原子 DNS 更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeDnsTest.kt` 覆盖链接边界与配置切换。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。

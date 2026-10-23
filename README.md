@@ -67,7 +67,7 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - 模型服务支持 Chat、Response、Message 接口、真实连通性测试与远端模型同步；模型可编辑显示名、推理/图片能力、上下文与最大输出，以及输入、输出、缓存读取、缓存写入四项美元/百万 token 价格。
 - 模型资料参考 ipmt 的目录匹配方式，联网读取主/备目录并缓存六小时；按唯一 ID 或规范化别名匹配，歧义或未知模型不猜测。新增模型可补全能力与价格；已保存模型须显式“应用匹配”，手动改过的字段保留。远端同步仅追加新模型，不覆盖既有编辑。
 - 思考强度包含无、低、中、高、超高（`xhigh`）和最大（`max`）；支持接口自定义 effort 与 Message 数值预算，预算须至少 1024 且小于最大输出。两个最高档分别贯通原生 RPC、配置和请求参数，不互相合并。
-- 模型列表与输入区按钮共用离线品牌图标并保留原色，选中背景覆盖整行，弹出菜单动画保留外部阴影。图标参照 Kelivo，DeepSeek 使用原蓝鲸；Codex、Kimi 因 Kelivo 对应资源的许可来源未能核实，使用 MIT 许可的 LobeHub 同品牌图标。来源与差异见 `agent-ui/src/commonMain/composeResources/files/model-icons/NOTICE.txt` 和 `provenance.json`。
+- 模型列表与输入区模型选择按钮共用离线品牌图标并保留原色；按钮随当前模型切换，列表项始终展示各自模型图标。未匹配品牌的模型显示 ID 首字符的大写单字标识及圆形底色，底色按字母稳定生成，同字母同色，不使用服务商图标或通用脑图标替代。选中背景覆盖整行，弹出菜单动画保留外部阴影。品牌图标参照 Kelivo，DeepSeek 使用原蓝鲸；Codex、Kimi 因 Kelivo 对应资源的许可来源未能核实，使用 MIT 许可的 LobeHub 同品牌图标。来源与差异见 `agent-ui/src/commonMain/composeResources/files/model-icons/NOTICE.txt` 和 `provenance.json`。
 - Agent 设置按 OMP Schema 展示，过滤外观及 TUI 专属项。外观独立保存在宿主设置中，不写回 TUI 配置。
 - `models.yml` / `config.yml` 位于容器用户的 `~/.omp/agent/`，支持应用写入和外部修改回流。模型服务配置可能含 API Key，应留在本地数据目录，不要提交版本控制。
 - Proroot 上游仅提供 Android arm64 版本；桌面使用真实 PRoot/QEMU 或具备 Root 权限的 chroot，不伪装支持 Proroot。
@@ -108,7 +108,7 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 | --- | ---: | ---: |
 | Rootfs 文件内容合计 | 1,543,298,008 | 1471.80 |
 | `build/outputs/ubuntu-main-debug.tar.zst` | 404,312,713 | 385.58 |
-| Android Debug APK（不含 Rootfs） | 33,854,897 | 32.29 |
+| Android Debug APK（不含 Rootfs） | 33,856,701 | 32.29 |
 
 按已确认的完整功能优先策略，不执行原计划的 150–220 MB 硬上限。每次构建会重新生成 `.sha256` 与 `.sizes.json`，以后者的实际输出为准。构建缓存、Rootfs、APK、原生二进制和本地会话均不纳入源码提交，准备脚本可重建缺失输入。
 
@@ -127,7 +127,7 @@ node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
 
 已验证 Android 编译打包、独立 UI AAR/JAR、APK arm64-only 和 13 个上游原生程序逐字节校验。当前 APK 不含 Rootfs 归档，Rootfs 作为独立文件按 SHA256 校验。实际 Linux PRoot/QEMU 容器已验证发行版下载、三种归档导入、克隆、默认切换、Git 安装/卸载、绑定和环境变量、流式终端，以及停止时仅回收所属进程树。
 
-本次回归通过 95 项 Kotlin 测试（容器 19、驱动 68、UI 8；无失败或跳过），覆盖即时消息与失败回撤、重复文本隔离、排队编辑/删除、审批持久化、用户消息定位、Todo 内思考归属及流式/终态重放、展开状态保存，以及现有 DNS、归档、配置同步、原生历史、模型参数与 Markdown 边界。4 项 Node 测试通过，验证 Message 请求预算与跨服务隔离。
+此前完整回归通过 95 项 Kotlin 测试（容器 19、驱动 68、UI 8；无失败或跳过），覆盖即时消息与失败回撤、重复文本隔离、排队编辑/删除、审批持久化、用户消息定位、Todo 内思考归属及流式/终态重放、展开状态保存，以及现有 DNS、归档、配置同步、原生历史、模型参数与 Markdown 边界。4 项 Node 测试通过，验证 Message 请求预算与跨服务隔离。
 
 真实模型验收仅使用用户确认的 `oc/deepseek-v4.1-flash`，已跑通双会话独立计时、Todo/扁平工具、审批、选择题、附件、排队编辑/删除、原生分支续聊和迁移续聊。桌面实际界面已检查主页展开/进展摘要、双层吸顶及回跳、工具详情、聊天标识符、容器终端和设置页；不把这些桌面结果替代为设备端验收。
 
@@ -144,5 +144,7 @@ DNS 修复已在完整交付 Rootfs 的 arm64 PRoot/QEMU 容器内验证：先�
 会话体验调整已在完整 arm64 PRoot/QEMU 环境用真实 `oc/deepseek-v4.1-flash` 验证：首条消息在原生进程启动前可见，手动模式等待后切到免审批，随后 5 个工具审批均自动放行，完成 Todo、文件写入与读取；默认免审批的新会话执行真实 Bash 命令成功。另验证实际启动失败撤回消息、会话模式及历史恢复、应用默认值与外观设置交叉保存和重启。真实桌面检查开关默认开启、关闭后新会话模式及重启保持；该轮模型未返回思考块，Todo 内思考通过原生格式事件回放与回归用例验证，不将回放标为模型实际生成。
 
 本轮另运行真实桌面界面：展开 Todo、思考与工具、滚动聊天并输入草稿，往返模型设置及切换另一个会话后，原会话消息区域截图逐像素一致；另一会话没有串入草稿。已检查菜单动画中的阴影、整行模型选中背景、品牌图标切换，以及模型编辑保存后的上下文、输出、四项价格和最大思考档位。真实目录联网匹配、唯一别名与未知 ID 行为通过独立烟测；原生 OMP RPC 分别设置 `xhigh`、`max` 并由 `get_state` 回读确认，未发送 prompt 或产生模型推理请求。历史 journal 回放及重复终态快照保持“前置工具 → 用户消息 → 思考 → 后置工具”的 ID、顺序与所属 Todo。Android APK 和 Desktop JAR 构建通过；不将这些结果标为 Android 真机交互验收。
+
+模型图标修正另通过实际桌面检查：在同一 OpenAI 服务下切换三个未知模型和 DeepSeek，按钮与列表按模型独立呈现；像素采样确认同首字母同底色、不同首字母不同底色。3 项新增回归覆盖 ID 首字符、大小写/后缀无关的配色、26 个字母的颜色区分及文本对比度。UI 测试、Android Debug APK 和 Desktop JAR 构建均通过，无模型推理请求。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。

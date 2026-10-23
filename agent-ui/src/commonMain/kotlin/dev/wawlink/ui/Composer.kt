@@ -223,14 +223,14 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                     }
                     Box {
                         ComposerButton("模型 ${state.modelId}", menu == "model", { menu = if (menu == "model") null else "model" }) {
-                            ModelIcon(state.modelId, selectedModel?.name ?: state.modelId, selectedProvider?.name.orEmpty())
+                            ModelIcon(state.modelId, selectedModel?.name ?: state.modelId)
                         }
                         ComposerMenu(menu == "model", { menu = null }) {
                             providers.filter { it.enabled && it.models.isNotEmpty() }.forEach { provider ->
                                 Text(provider.name, Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant, fontWeight = FontWeight.Medium)
                                 provider.models.forEach { model ->
                                     PopupRow(model.name, "neurology", state.providerId == provider.id && state.modelId == model.id,
-                                        customIcon = { ModelIcon(model.id, model.name, provider.name, Modifier.size(32.dp)) }) {
+                                        customIcon = { ModelIcon(model.id, model.name, Modifier.size(32.dp)) }) {
                                         controller.selectModel(provider.id, model.id); controller.selectThinkingLevel(model.thinkingLevel); menu = null
                                     }
                                 }

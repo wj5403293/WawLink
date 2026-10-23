@@ -124,7 +124,7 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
 @Composable
 private fun ProviderAvatar(provider: ProviderConfig) {
     Box(Modifier.size(44.dp).alpha(if (provider.enabled) 1f else .5f).background(LocalAgentColors.current.surfaceContainerHigh, CircleShape), contentAlignment = Alignment.Center) {
-        ModelIcon("", providerName = provider.name, modifier = Modifier.size(28.dp))
+        ProviderBrandIcon(provider.name, modifier = Modifier.size(28.dp))
     }
 }
 
@@ -247,7 +247,7 @@ private fun ProviderDetailScreen(
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 provider.models.forEachIndexed { index, model ->
                     Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).background(colors.surfaceContainerLow, segmentedSettingsShape(index, provider.models.size)).clickable { editModel = model; modelSheet = true }.padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        ModelIcon(model.id, model.name, provider.name)
+                        ModelIcon(model.id, model.name)
                         Column(Modifier.weight(1f)) {
                             Text(model.name.ifBlank { model.id }, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (model.name != model.id) Text(model.id, fontFamily = LocalAgentMono.current, fontSize = 14.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -267,7 +267,7 @@ private fun ProviderDetailScreen(
         }
     }
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("删除服务？") }, text = { Text("将删除「${provider.name.ifBlank { "未命名" }}」及其模型配置。此操作无法撤销。") }, confirmButton = { TextButton({ confirmDelete = false; onDelete() }) { Text("删除", color = colors.error) } }, dismissButton = { TextButton({ confirmDelete = false }) { Text("取消") } })
-    if (modelSheet) ModelConfigSheet(provider.apiType, editModel, provider.models.map { it.id }.toSet(), repository, provider.name, { modelSheet = false }, { model ->
+    if (modelSheet) ModelConfigSheet(provider.apiType, editModel, provider.models.map { it.id }.toSet(), repository, { modelSheet = false }, { model ->
         val originalId = editModel?.id
         modifyLatest { current -> current.copy(models = if (originalId == null) current.models + model else current.models.map { if (it.id == originalId) model else it }) }
         modelSheet = false
@@ -284,7 +284,6 @@ private fun ModelConfigSheet(
     model: ModelConfig?,
     existingIds: Set<String>,
     repository: ProviderConfigRepository,
-    providerName: String,
     onDismiss: () -> Unit,
     onSave: (ModelConfig) -> Unit,
     onDelete: (() -> Unit)?,
@@ -382,7 +381,7 @@ private fun ModelConfigSheet(
     AgentSheet(if (model == null) "添加模型" else "编辑模型", onDismiss, actions = {}, contentPadding = PaddingValues(0.dp)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                ModelIcon(id, name, providerName, Modifier.size(32.dp))
+                ModelIcon(id, name, Modifier.size(32.dp))
                 Text("模型资料", fontSize = 20.sp, fontWeight = FontWeight.Medium)
             }
             SettingsLabel("模型 ID")
