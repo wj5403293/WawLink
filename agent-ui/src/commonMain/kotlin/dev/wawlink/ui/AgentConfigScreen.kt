@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -59,12 +60,12 @@ fun AgentConfigScreen(repository: AgentSettingsRepository, onBack: () -> Unit) {
             overrides.keys.toList().filterNot { it in queue.failures }.forEach(overrides::remove)
         }
     }
-    var categoryId by remember { mutableStateOf<String?>(null) }
-    var search by remember { mutableStateOf("") }
-    var onlyModified by remember { mutableStateOf(false) }
+    var categoryId by rememberSaveable { mutableStateOf<String?>(null) }
+    var search by rememberSaveable { mutableStateOf("") }
+    var onlyModified by rememberSaveable { mutableStateOf(false) }
     var activeId by remember { mutableStateOf<String?>(null) }
     var resetDialog by remember { mutableStateOf(false) }
-    val closedGroups = remember { mutableStateMapOf<String, Boolean>() }
+    val closedGroups = rememberSaveable(saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
     val listState = rememberLazyListState()
     val subState = rememberLazyListState()
     val categoryState = rememberLazyListState()
@@ -83,7 +84,6 @@ fun AgentConfigScreen(repository: AgentSettingsRepository, onBack: () -> Unit) {
         val index = selectedCategory?.groups?.indexOfFirst { it.id == activeGroup } ?: -1
         if (!filtering && index >= 0) subState.animateScrollToItem(index)
     }
-    LaunchedEffect(search, onlyModified, selectedCategory?.id) { listState.scrollToItem(0) }
     fun save(id: String) {
         queue.submit(id, "保存设置失败") { repository.updateSetting(id, overrides[id]) }
     }
@@ -113,7 +113,7 @@ fun AgentConfigScreen(repository: AgentSettingsRepository, onBack: () -> Unit) {
         } else queue.failures.keys.toList().forEach(::save)
     }
     fun back() {
-        if (search.isNotEmpty() || onlyModified) { search = ""; onlyModified = false }
+        if (search.isNotEmpty() || onlyModified) { search = ""; onlyModified = false; scope.launch { listState.scrollToItem(0) } }
         else queue.afterSaved(onBack)
     }
     Box(Modifier.fillMaxSize().background(colors.surface), contentAlignment = Alignment.TopCenter) {
@@ -124,13 +124,13 @@ fun AgentConfigScreen(repository: AgentSettingsRepository, onBack: () -> Unit) {
                 AgentTopBar("Agent 设置", ::back) {
                     val shape by animateFloatAsState(if (onlyModified) 16f else 24f, tween(400, easing = EmphEasing))
                     Box(Modifier.background(if (onlyModified) colors.primaryContainer else androidx.compose.ui.graphics.Color.Transparent, RoundedCornerShape(shape.dp))) {
-                        AgentIconButton("tune", "仅显示已修改项", { onlyModified = !onlyModified; notify(if (onlyModified) "仅显示已修改项" else "显示全部设置项") }, filled = onlyModified)
+                        AgentIconButton("tune", "仅显示已修改项", { onlyModified = !onlyModified; scope.launch { listState.scrollToItem(0) }; notify(if (onlyModified) "仅显示已修改项" else "显示全部设置项") }, filled = onlyModified)
                     }
                     AgentIconButton("restart_alt", "恢复全部默认设置", { if (allItems.none { it.modified }) notify("当前已是默认配置") else resetDialog = true })
                 }
                 SettingsFailure(queue, ::retry)
                 SettingsSyncError(synchronizationError)
-                SettingsSearch(search, { search = it }, "搜索设置项", Modifier.padding(horizontal = 16.dp).padding(bottom = 10.dp))
+                SettingsSearch(search, { search = it; scope.launch { listState.scrollToItem(0) } }, "搜索设置项", Modifier.padding(horizontal = 16.dp).padding(bottom = 10.dp))
                 LazyRow(state = categoryState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(categories, key = { it.id }) { category ->
                         val selected = category.id == selectedCategory?.id && !filtering

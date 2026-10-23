@@ -3,6 +3,7 @@ package dev.wawlink.driver
 import dev.wawlink.protocol.AgentSettingsRepository
 import dev.wawlink.protocol.LatencyInfo
 import dev.wawlink.protocol.ModelConfig
+import dev.wawlink.protocol.ModelCost
 import dev.wawlink.protocol.ProviderApiType
 import dev.wawlink.protocol.ProviderConfig
 import dev.wawlink.protocol.ProviderConfigRepository
@@ -198,11 +199,20 @@ private fun MappingNode.entry(key: String): NodeTuple? = value.firstOrNull { (it
 private fun Any?.asStringMap(): Map<String, Any?> = (this as? Map<*, *>)?.entries?.associate { it.key.toString() to it.value }.orEmpty()
 private fun Map<String, Any?>.string(key: String): String? = this[key] as? String
 private fun Map<String, Any?>.int(key: String, default: Int): Int = (this[key] as? Number)?.toInt() ?: default
+private fun Map<String, Any?>.cost(): ModelCost? = this["cost"]?.asStringMap()?.let { value ->
+    ModelCost(
+        (value["input"] as? Number)?.toDouble() ?: 0.0,
+        (value["output"] as? Number)?.toDouble() ?: 0.0,
+        (value["cacheRead"] as? Number)?.toDouble() ?: 0.0,
+        (value["cacheWrite"] as? Number)?.toDouble() ?: 0.0,
+    )
+}
 
 /** 18.12.6 stores OAuth in its own SQLite store. We never rewrite auth.json or auth database rows. */
 internal class OmpProviderRepository(
     private val directory: () -> File,
     scope: CoroutineScope,
+    private val catalog: KnownModelCatalog = KnownModelCatalog.shared,
     private val onChanged: suspend (String?, Any?) -> Unit,
 ) : ProviderConfigRepository, AutoCloseable {
     private val job = SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])
@@ -259,11 +269,19 @@ internal class OmpProviderRepository(
                     val modelId = model.string("id") ?: return@mapNotNull null
                     val thinking = model["thinking"].asStringMap()
                     val effort = thinking.string("defaultLevel")
-                    val level = if (model["reasoning"] == false) ThinkingLevel.NONE else effort.toThinkingLevel()
+                    val defaultOverride = ((metadata[id] as? JsonObject)?.get("modelDefaults") as? JsonObject)?.get(modelId)?.jsonPrimitive?.content
+                    val level = defaultOverride?.let { value -> ThinkingLevel.entries.firstOrNull { it.name == value } }
+                        ?: if (model["reasoning"] == false) ThinkingLevel.NONE else effort.toThinkingLevel()
                     ModelConfig(
                         id = modelId, name = model.string("name") ?: modelId, thinkingLevel = level,
                         reasoningEffort = effort?.let { thinking["effortMap"].asStringMap().string(it) ?: it },
                         thinkingBudget = budgets["$id/$modelId"], contextWindow = model.int("contextWindow", 200_000), maxTokens = model.int("maxTokens", 16_384),
+                        reasoning = model["reasoning"] as? Boolean,
+                        input = (model["input"] as? List<*>)?.filterIsInstance<String>() ?: listOf("text"),
+                        cost = model.cost(),
+                        thinkingLevelMap = thinking["effortMap"].asStringMap().mapNotNull { (key, value) ->
+                            key.toThinkingLevelOrNull()?.let { it to (value as? String ?: return@mapNotNull null) }
+                        }.toMap(),
                     )
                 },
             )
@@ -279,9 +297,15 @@ internal class OmpProviderRepository(
         require(provider.id.isNotBlank()) { "提供商 ID 不能为空" }
         require(provider.models.map { it.id }.distinct().size == provider.models.size && provider.models.all { it.id.isNotBlank() }) { "模型 ID 必须非空且唯一" }
         provider.models.forEach { model ->
+            require(model.contextWindow > 0 && model.maxTokens > 0) { "模型上下文和输出上限必须为正整数" }
+            require(model.input.isNotEmpty() && model.input.all { it == "text" || it == "image" }) { "OMP 输入类型仅支持 text/image" }
+            model.cost?.let { cost ->
+                require(listOf(cost.input, cost.output, cost.cacheRead, cost.cacheWrite).all { it.isFinite() && it >= 0 }) { "模型价格必须是有限非负数" }
+            }
+            require(model.thinkingLevelMap.keys.none { it == ThinkingLevel.NONE } && model.thinkingLevelMap.values.all { it.isNotBlank() }) { "思考映射必须使用启用档位和非空接口值" }
             model.thinkingBudget?.let { budget ->
                 require(provider.apiType == ProviderApiType.MESSAGE) { "数值思考预算仅适用于 Message 接口" }
-                require(budget >= 1024 && budget < model.maxTokens && model.thinkingLevel != ThinkingLevel.NONE) { "思考预算必须至少为 1024、小于模型输出上限，且启用思考" }
+                require(budget >= 1024 && budget < model.maxTokens && model.thinkingLevel != ThinkingLevel.NONE && model.reasoning != false) { "思考预算必须至少为 1024、小于模型输出上限，且启用思考" }
             }
         }
         ompConfigMutex.withLock {
@@ -307,25 +331,38 @@ internal class OmpProviderRepository(
                 setModel("id", model.id); setModel("name", model.name)
                 if (modelNode.entry("api") != null) setModel("api", providerApis.getValue(provider.apiType))
                 setModel("contextWindow", model.contextWindow); setModel("maxTokens", model.maxTokens)
-                val unchangedImplicitThinking = old != null && modelNode.entry("thinking") == null && model.thinkingLevel == ThinkingLevel.MEDIUM && model.reasoningEffort == null
-                if (!unchangedImplicitThinking) setModel("reasoning", model.thinkingLevel != ThinkingLevel.NONE)
-                if (!unchangedImplicitThinking && model.thinkingLevel != ThinkingLevel.NONE) {
-                    val effort = if (model.thinkingLevel == ThinkingLevel.LOW && model.reasoningEffort == "minimal") "minimal" else model.thinkingLevel.toEffort()
+                setModel("reasoning", model.reasoning)
+                setModel("input", model.input)
+                val costNode = (modelNode.entry("cost")?.valueNode as? MappingNode) ?: OmpYaml.mapping()
+                model.cost?.let { cost ->
+                    mapOf("input" to cost.input, "output" to cost.output, "cacheRead" to cost.cacheRead, "cacheWrite" to cost.cacheWrite).forEach { (key, value) ->
+                        yaml.set(costNode, key, yaml.represent(value))
+                    }
+                }
+                yaml.set(modelNode, "cost", costNode.takeIf { model.cost != null })
+                val unchangedImplicitThinking = modelNode.entry("thinking") == null && model.thinkingLevel == ThinkingLevel.MEDIUM && model.reasoningEffort == null && model.thinkingLevelMap.isEmpty()
+                if (!unchangedImplicitThinking && (modelNode.entry("thinking") != null || model.thinkingLevel != ThinkingLevel.NONE || model.thinkingLevelMap.isNotEmpty())) {
+                    val effort = if (model.thinkingLevel == ThinkingLevel.NONE) null else if (model.thinkingLevel == ThinkingLevel.LOW && model.reasoningEffort == "minimal") "minimal" else model.thinkingLevel.toEffort()
                     val thinking = (modelNode.entry("thinking")?.valueNode as? MappingNode) ?: OmpYaml.mapping()
                     if (thinking.entry("mode") == null) yaml.set(thinking, "mode", yaml.represent(if (provider.apiType == ProviderApiType.MESSAGE) "budget" else "effort"))
                     val configuredEfforts = (thinking.entry("efforts")?.valueNode as? SequenceNode)?.value?.mapNotNull { (it as? ScalarNode)?.value }
                         ?: (thinking.entry("levels")?.valueNode as? SequenceNode)?.value?.mapNotNull { (it as? ScalarNode)?.value }
                         ?: thinkingEfforts
-                    if (effort !in configuredEfforts || thinking.entry("efforts") == null) {
-                        yaml.set(thinking, "efforts", yaml.represent(thinkingEfforts.filter { it in configuredEfforts || it == effort }))
-                    }
-                    yaml.set(thinking, "defaultLevel", yaml.represent(effort))
-                    val wireEffort = model.reasoningEffort?.takeIf { it.isNotBlank() }
+                    val requiredEfforts = model.thinkingLevelMap.keys.map { it.toEffort() } + listOfNotNull(effort)
+                    yaml.set(thinking, "efforts", yaml.represent(thinkingEfforts.filter { it in configuredEfforts || it in requiredEfforts }))
+                    yaml.set(thinking, "defaultLevel", effort?.let(yaml::represent))
                     val effortMap = (thinking.entry("effortMap")?.valueNode as? MappingNode) ?: OmpYaml.mapping()
-                    yaml.set(effortMap, effort, wireEffort?.takeIf { it != effort }?.let(yaml::represent))
-                    if (effortMap.value.isNotEmpty()) yaml.set(thinking, "effortMap", effortMap) else yaml.set(thinking, "effortMap", null)
+                    // Edit recognized keys in place, retaining future keys and their comments.
+                    thinkingEfforts.filter { it != "minimal" }.forEach { key ->
+                        val mapped = model.thinkingLevelMap[key.toThinkingLevel()]
+                        yaml.set(effortMap, key, mapped?.let(yaml::represent))
+                    }
+                    model.reasoningEffort?.takeIf { it.isNotBlank() && model.thinkingLevel !in model.thinkingLevelMap }?.let { wire ->
+                        if (effort != null) yaml.set(effortMap, effort, wire.takeIf { it != effort }?.let(yaml::represent))
+                    }
+                    yaml.set(thinking, "effortMap", effortMap.takeIf { it.value.isNotEmpty() })
                     yaml.set(modelNode, "thinking", thinking)
-                } else if (!unchangedImplicitThinking) yaml.set(modelNode, "thinking", null)
+                }
                 modelNode as Node
             }
             yaml.set(node, "models", SequenceNode(Tag.SEQ, modelNodes, DumperOptions.FlowStyle.BLOCK))
@@ -339,7 +376,9 @@ internal class OmpProviderRepository(
             val metadataFile = configFile(dir, "wawlink-provider-ui.json")
             val metadata = metadataFile.takeIf { it.exists() }?.let { Json.parseToJsonElement(it.readText()).jsonObject.toMutableMap() } ?: mutableMapOf()
             val oldMetadata = (metadata[provider.id] as? JsonObject).orEmpty()
-            metadata[provider.id] = JsonObject(oldMetadata + ("name" to JsonPrimitive(provider.name)))
+            val modelDefaults = JsonObject(provider.models.filter { it.thinkingLevel == ThinkingLevel.NONE && it.reasoning != false }
+                .associate { it.id to JsonPrimitive(it.thinkingLevel.name) })
+            metadata[provider.id] = JsonObject(oldMetadata + mapOf("name" to JsonPrimitive(provider.name), "modelDefaults" to modelDefaults))
             yaml.write(file); config.write(settingsFile)
             repoAtomicWrite(metadataFile, JsonObject(metadata).toString() + "\n")
             mergeProviderBudgets(dir, provider.id, provider.models)
@@ -414,7 +453,7 @@ internal class OmpProviderRepository(
         LatencyInfo((System.nanoTime() - start) / 1_000_000, response.first, "推理连接成功（已实际调用模型）")
     }
 
-    override suspend fun fetchRemoteModels(provider: ProviderConfig): Result<List<String>> = resultOnIo {
+    override suspend fun fetchRemoteModels(provider: ProviderConfig): Result<List<ModelConfig>> = resultOnIo {
         val result = mutableListOf<String>()
         var path = "models"
         val seenPages = mutableSetOf<String>()
@@ -429,8 +468,15 @@ internal class OmpProviderRepository(
             val last = body["last_id"]?.jsonPrimitive?.content ?: error("模型列表分页缺少 last_id")
             path = "models?after_id=" + java.net.URLEncoder.encode(last, "UTF-8")
         }
-        result.distinct()
+        // Existing manual entries are authoritative; discovery never saves or replaces them.
+        val existing = provider.models.associateBy { it.id }
+        val index = if (result.any { it !in existing }) {
+            try { catalog.index() } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+        } else null
+        result.distinct().map { id -> existing[id] ?: index?.match(id) ?: ModelConfig(id) }
     }
+
+    override suspend fun matchModel(id: String): Result<ModelConfig?> = resultOnIo { catalog.index().match(id) }
 
     private fun request(provider: ProviderConfig, path: String, payload: String?): Pair<Int, String> {
         require(!provider.apiKey.startsWith("!")) { "命令型 API 密钥只能由容器内 OMP 解析；请使用明文 API 密钥测试" }
@@ -544,6 +590,14 @@ internal class OmpSettingsRepository(
     override fun close() { worker.cancel() }
 }
 
+private fun String.toThinkingLevelOrNull(): ThinkingLevel? = when (this) {
+    "low" -> ThinkingLevel.LOW
+    "medium" -> ThinkingLevel.MEDIUM
+    "high" -> ThinkingLevel.HIGH
+    "xhigh" -> ThinkingLevel.XHIGH
+    "max" -> ThinkingLevel.MAX
+    else -> null
+}
 private fun String?.toThinkingLevel(): ThinkingLevel = when (this) {
     "minimal" -> ThinkingLevel.LOW
     "low" -> ThinkingLevel.LOW
@@ -561,6 +615,6 @@ private fun ThinkingLevel.toEffort(): String = when (this) {
     ThinkingLevel.XHIGH -> "xhigh"
     ThinkingLevel.MAX -> "max"
 }
-private suspend fun <T> resultOnIo(block: () -> T): Result<T> = withContext(Dispatchers.IO) {
+private suspend fun <T> resultOnIo(block: suspend () -> T): Result<T> = withContext(Dispatchers.IO) {
     try { Result.success(block()) } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
 }

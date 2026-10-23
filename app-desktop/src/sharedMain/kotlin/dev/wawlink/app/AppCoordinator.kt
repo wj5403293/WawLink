@@ -83,6 +83,8 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         catch (e: Exception) { showError(e) }
         finally { _busy.update { it - 1 } }
     }
+    fun hasSession(id: String): Boolean = records.value.any { it.id == id }
+
     fun controller(id: String): AgentSessionController = synchronized(controllers) {
         controllers.getOrPut(id) {
             val r = records.value.firstOrNull { it.id == id } ?: error("找不到会话 $id")
@@ -90,13 +92,24 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             pool.session(r.id, r.containerId, r.workspace, r.title).also { observe(id, it) }
         }
     }
+    private fun latestUserId(feed: List<FeedItem>): String? {
+        for (index in feed.indices.reversed()) {
+            when (val item = feed[index]) {
+                is UserMessageItem -> return item.id
+                is StepGroupNodeItem -> latestUserId(item.children)?.let { return it }
+                else -> Unit
+            }
+        }
+        return null
+    }
+
     private fun observe(id: String, controller: AgentSessionController) {
         observers.remove(id)?.cancel()
-        var lastUser = controller.state.value.feed.lastOrNull { it is UserMessageItem }?.id
+        var lastUser = latestUserId(controller.state.value.feed)
         observers[id] = scope.launch {
             controller.state.collect { state ->
                 sessionStates.update { it + (id to state) }
-                val latest = state.feed.lastOrNull { it is UserMessageItem }?.id
+                val latest = latestUserId(state.feed)
                 if (latest != null && latest != lastUser) {
                     lastUser = latest
                     records.update { all -> all.map { if (it.id == id) it.copy(updatedAt = System.currentTimeMillis()) else it } }

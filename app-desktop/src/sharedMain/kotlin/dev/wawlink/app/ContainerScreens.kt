@@ -87,18 +87,18 @@ internal fun bytesLabel(bytes: Long): String = when {
 }
 
 @Composable internal fun InstallContainerScreen(app: AppCoordinator, files: HostFiles, rootfs: Boolean, onBack: () -> Unit) {
-    var tab by remember { mutableStateOf(if (rootfs) "导入 rootfs" else "发行版库") }
-    var query by remember { mutableStateOf("") }
-    var mirror by remember { mutableStateOf(MirrorSource.TSINGHUA) }
-    var engine by remember { mutableStateOf(ContainerEngineType.PROOT) }
-    var expanded by remember { mutableStateOf<String?>(app.runtime.catalog.firstOrNull()?.id) }
-    var sourceType by remember { mutableStateOf("本地文件") }
-    var source by remember { mutableStateOf("") }
-    var url by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("custom-rootfs") }
-    var family by remember { mutableStateOf("Ubuntu") }
-    var shell by remember { mutableStateOf("/bin/bash") }
-    var checksum by remember { mutableStateOf("") }
+    var tab by rememberSaveable { mutableStateOf(if (rootfs) "导入 rootfs" else "发行版库") }
+    var query by rememberSaveable { mutableStateOf("") }
+    var mirror by rememberSaveable { mutableStateOf(MirrorSource.TSINGHUA) }
+    var engine by rememberSaveable { mutableStateOf(ContainerEngineType.PROOT) }
+    var expanded by rememberSaveable { mutableStateOf<String?>(app.runtime.catalog.firstOrNull()?.id) }
+    var sourceType by rememberSaveable { mutableStateOf("本地文件") }
+    var source by rememberSaveable { mutableStateOf("") }
+    var url by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf("custom-rootfs") }
+    var family by rememberSaveable { mutableStateOf("Ubuntu") }
+    var shell by rememberSaveable { mutableStateOf("/bin/bash") }
+    var checksum by rememberSaveable { mutableStateOf("") }
     Column {
         AgentTopBar("添加容器", onBack)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 40.dp)) {
@@ -111,7 +111,8 @@ internal fun bytesLabel(bytes: Long): String = when {
                 HostChips(MirrorSource.entries, mirror, { it.label }, { mirror = it }, "language", enabled = { expanded != "fedora" || it == MirrorSource.ALIYUN || it == MirrorSource.OFFICIAL })
                 SectionLabel("可安装发行版", "explore")
                 app.runtime.catalog.filter { "${it.name} ${it.version}".contains(query.trim(), true) }.forEach { distro ->
-                    var alias by remember(distro.id) { mutableStateOf("${distro.id}-${distro.version.lowercase().replace(".", "")}") }
+                    key(distro.id) {
+                    var alias by rememberSaveable { mutableStateOf("${distro.id}-${distro.version.lowercase().replace(".", "")}") }
                     val open = expanded == distro.id
                     Column(Modifier.fillMaxWidth().padding(bottom = 3.dp).background(if (open) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(if (open) 26.dp else 20.dp)).animateContentSize()) {
                         Row(Modifier.fillMaxWidth().clickable {
@@ -129,6 +130,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                             HostField("容器名称", alias, { alias = it })
                             HostAction("下载并创建容器", "download", { app.launch { app.runtime.installDistro(distro, alias, mirror, engine) }; onBack() }, Modifier.fillMaxWidth(), enabled = alias.isNotBlank())
                         } }
+                    }
                     }
                 }
             } else {

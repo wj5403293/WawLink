@@ -1,0 +1,29 @@
+Model brand icon notices
+
+The PNG files drawable/model_*.png are offline renderings of the SVG sources
+packaged in this directory. Their source paths, pinned revisions, SHA-256 hashes,
+and comparison evidence are recorded per asset in provenance.json. The original
+MIT upstream SVG evidence is retained under upstream/.
+
+These brand illustrations originate from LobeHub Icons:
+https://github.com/lobehub/lobe-icons
+Copyright (c) 2023 LobeHub. Licensed under MIT; see LobeHub-MIT-LICENSE.txt.
+Brand names and logos remain the trademarks of their respective owners.
+
+Kelivo (https://github.com/Chevey339/kelivo) is AGPL-3.0 licensed. No Kelivo
+application code is included. Ten visual SVGs follow its assets/icons collection
+and have equivalent MIT-licensed LobeHub source evidence: DeepSeek, Claude,
+OpenAI (historical LobeHub version), Gemini, Qwen (historical version), Grok,
+MiniMax, Mistral, Gemma, and Meta. Differences include XML whitespace, generated
+gradient identifiers, and Meta's redundant grouping wrapper. DeepSeek retains
+the original #4D6BFE blue whale.
+
+The provenance of Kelivo's codex.svg and kimi-color.svg could not be established
+as MIT. Those two Kelivo SVGs are NOT distributed here. Instead, the packaged
+Codex and Kimi resources use explicitly MIT-licensed LobeHub same-brand icons;
+the manifest documents this deliberate difference from the Kelivo prototype.
+
+Assets are rendered once at development time into transparent 192x192 PNGs.
+No network, SVG parser, or color tint is used to display these images at runtime.
+Monochrome SVG currentColor uses the SVG default black. The project's own
+license is not changed by inclusion of these separately licensed assets.

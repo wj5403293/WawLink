@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.onSizeChanged
 import dev.wawlink.protocol.*
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 /** Host-neutral chat surface: all effects are routed through the supplied controller or host callbacks. */
@@ -49,14 +50,16 @@ fun AgentChatScreen(
         val c = LocalAgentColors.current
         val scope = rememberCoroutineScope()
         val list = key(state.id) { rememberLazyListState() }
-        val expanded = remember(state.id) { mutableStateMapOf<String, Boolean>() }
+        val expanded = rememberSaveable(state.id, saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
+        val previouslyRunning = rememberSaveable(state.id, saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
+        LaunchedEffect(state.id, state.feed) { updateGroupExpansion(state.feed, expanded, previouslyRunning) }
         var settingsMenu by remember { mutableStateOf(false) }
         var detail by remember { mutableStateOf<Pair<String, String>?>(null) }
         var composerHeight by remember { mutableStateOf(156.dp) }
-        var followTail by remember(state.id) { mutableStateOf(true) }
+        var followTail by rememberSaveable(state.id) { mutableStateOf(true) }
         val density = LocalDensity.current
         val compactIndex = state.feed.indexOfFirst { it.id == state.compactedThroughId }
-        var showCompacted by remember(state.id, state.compactedThroughId, appearance.collapseCompacted) { mutableStateOf(!appearance.collapseCompacted) }
+        var showCompacted by rememberSaveable(state.id, state.compactedThroughId, appearance.collapseCompacted) { mutableStateOf(!appearance.collapseCompacted) }
         val hasCompacted = compactIndex >= 0
         val visibleFeed = remember(state.feed, appearance.hideToolCalls, showCompacted, compactIndex) {
             state.feed.drop(if (hasCompacted && !showCompacted) compactIndex + 1 else 0)
@@ -87,7 +90,7 @@ fun AgentChatScreen(
             list.interactionSource.interactions.collect { interaction -> if (interaction is DragInteraction.Start) followTail = false }
         }
         LaunchedEffect(list) {
-            snapshotFlow { list.isScrollInProgress }.distinctUntilChanged().collect { scrolling ->
+            snapshotFlow { list.isScrollInProgress }.distinctUntilChanged().drop(1).collect { scrolling ->
                 if (!scrolling) followTail = !list.canScrollForward
             }
         }
@@ -112,7 +115,7 @@ fun AgentChatScreen(
         Surface(color = c.surface, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 Column(Modifier.widthIn(max = 460.dp).fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
-                    val scrolled by remember { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 4 } }
+                    val scrolled by remember(list) { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 4 } }
                     val barColor by animateColorAsState(if (scrolled) c.surfaceContainer else c.surface, tween(350, easing = EmphEasing))
                     Row(Modifier.fillMaxWidth().height(64.dp).background(barColor).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         AgentIconButton("forum", "会话列表", onNavigateToSessionList)

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,19 +23,35 @@ import dev.wawlink.ui.*
 
 class HostNavigation { var onBack: (() -> Boolean)? = null }
 
+private data class HostRoute(
+    val page: String,
+    val sessionId: String? = null,
+    val containerId: String? = null,
+    val rootfs: Boolean = false,
+) {
+    val stateKey: String = when (page) {
+        "chat" -> "chat:$sessionId"
+        "providers", "agent", "container" -> "$page:$containerId"
+        "install" -> "install:$rootfs"
+        else -> page
+    }
+}
+
 @Composable
 fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation? = null) {
     val appearance by app.appearance.collectAsState()
     val notice by app.notice.collectAsState()
     val busy by app.busy.collectAsState()
     val containers by app.runtime.containers.collectAsState()
+    val sessions by app.sessions.collectAsState()
     val pageStates = rememberSaveableStateHolder()
-    var page by remember { mutableStateOf("home") }
-    var selectedSession by remember { mutableStateOf<String?>(null) }
-    var selectedContainer by remember { mutableStateOf<String?>(null) }
+    var page by rememberSaveable { mutableStateOf("home") }
+    var selectedSession by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedContainer by rememberSaveable { mutableStateOf<String?>(null) }
     var newSession by remember { mutableStateOf(false) }
-    var installRootfs by remember { mutableStateOf(false) }
-    var settingsReturn by remember { mutableStateOf("home") }
+    var installRootfs by rememberSaveable { mutableStateOf(false) }
+    var settingsReturn by rememberSaveable { mutableStateOf("home") }
+    var savedSessionIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     fun goBack(): Boolean = when {
         newSession -> { newSession = false; true }
         page == "providers" || page == "agent" -> { page = settingsReturn; true }
@@ -45,34 +62,47 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     DisposableEffect(navigation) { onDispose { navigation?.onBack = null } }
     fun openNew() { if (containers.isEmpty()) { installRootfs = false; page = "install"; app.report("请先安装或导入一个容器") } else newSession = true }
     val configurationContainer = containers.firstOrNull { it.config.id == selectedContainer } ?: containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull()
+    val route = when (page) {
+        "chat" -> HostRoute(page, sessionId = selectedSession)
+        "providers", "agent", "container" -> HostRoute(page, containerId = configurationContainer?.config?.id)
+        "install" -> HostRoute(page, rootfs = installRootfs)
+        else -> HostRoute(page)
+    }
+    LaunchedEffect(sessions, route) {
+        val retained = savedSessionIds.filter { id ->
+            app.hasSession(id).also { exists -> if (!exists) pageStates.removeState("chat:$id") }
+        }
+        val currentId = route.sessionId?.takeIf(app::hasSession)
+        savedSessionIds = if (currentId != null && currentId !in retained) retained + currentId else retained
+    }
     AgentTheme(appearance) {
         Surface(Modifier.fillMaxSize().onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.Escape && goBack() }) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 Column(Modifier.widthIn(max = 460.dp).fillMaxSize()) {
-                    AnimatedContent(page, transitionSpec = {
+                    AnimatedContent(route, transitionSpec = {
                         (fadeIn(tween(380, easing = EmphDecelEasing)) + slideInHorizontally(tween(520, easing = EmphDecelEasing)) { it / 4 }) togetherWith
                             (fadeOut(tween(180, easing = EmphAccelEasing)) + slideOutHorizontally(tween(380, easing = EmphEasing)) { -it / 4 })
                     }, modifier = Modifier.weight(1f)) { current ->
-                        pageStates.SaveableStateProvider(current) {
-                        when (current) {
+                        pageStates.SaveableStateProvider(current.stateKey) {
+                        when (current.page) {
                             "home" -> HomeScreen(app, onSettings = { page = "appearance" }, onNewSession = ::openNew,
                                 onEnterSession = { selectedSession = it; page = "chat" },
                                 onContainer = { selectedContainer = it; page = "container" },
                                 onInstall = { installRootfs = it; page = "install" })
                             "chat" -> {
-                                val controller = remember(selectedSession) { runCatching { app.controller(requireNotNull(selectedSession)) } }
+                                val controller = remember(current.sessionId) { runCatching { app.controller(requireNotNull(current.sessionId)) } }
                                 controller.fold(onSuccess = {
-                                    val record = app.sessions.collectAsState().value.firstOrNull { s -> s.record.id == selectedSession }?.record
+                                    val record = sessions.firstOrNull { s -> s.record.id == current.sessionId }?.record
                                     if (record != null) AgentChatScreen(it, app.pool.providers(record.containerId), { page = "home" }, ::openNew,
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" }, { selectedContainer = record.containerId; settingsReturn = "chat"; page = "agent" }, files::pickAttachments, appearance)
                                     else EmptyHost("会话已删除")
                                 }, onFailure = { error -> Column { AgentTopBar("无法进入会话", { page = "home" }); EmptyHost(error.message ?: error.toString()) } })
                             }
-                            "providers" -> if (configurationContainer != null) ProviderSettingsScreen(app.pool.providers(configurationContainer.config.id), { page = settingsReturn }) else MissingContainer { page = "home" }
-                            "agent" -> if (configurationContainer != null) AgentConfigScreen(app.pool.settings(configurationContainer.config.id), { page = settingsReturn }) else MissingContainer { page = "home" }
+                            "providers" -> if (current.containerId != null) ProviderSettingsScreen(app.pool.providers(current.containerId), { page = settingsReturn }) else MissingContainer { page = "home" }
+                            "agent" -> if (current.containerId != null) AgentConfigScreen(app.pool.settings(current.containerId), { page = settingsReturn }) else MissingContainer { page = "home" }
                             "appearance" -> AppearanceScreen(app, { page = "home" }, { if (configurationContainer != null) { settingsReturn = "appearance"; page = "providers" } else openNew() }, { if (configurationContainer != null) { settingsReturn = "appearance"; page = "agent" } else openNew() })
-                            "install" -> InstallContainerScreen(app, files, installRootfs, { page = "home" })
-                            "container" -> configurationContainer?.let { ContainerDetailScreen(app, files, it, { page = "home" }) } ?: MissingContainer { page = "home" }
+                            "install" -> InstallContainerScreen(app, files, current.rootfs, { page = "home" })
+                            "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }) } ?: MissingContainer { page = "home" }
                         }
                         }
                     }

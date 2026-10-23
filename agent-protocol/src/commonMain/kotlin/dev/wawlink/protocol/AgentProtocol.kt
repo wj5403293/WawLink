@@ -26,7 +26,8 @@ interface ProviderConfigRepository {
     suspend fun saveProvider(provider: ProviderConfig)
     suspend fun deleteProvider(providerId: String)
     suspend fun testConnection(provider: ProviderConfig): Result<LatencyInfo>
-    suspend fun fetchRemoteModels(provider: ProviderConfig): Result<List<String>>
+    suspend fun fetchRemoteModels(provider: ProviderConfig): Result<List<ModelConfig>>
+    suspend fun matchModel(id: String): Result<ModelConfig?>
 }
 
 interface AgentSettingsRepository {
@@ -137,6 +138,13 @@ data class AskCardItem(override val id: String, val title: String, val question:
 data class AssistantMessageItem(override val id: String, val markdownText: String, val isStreaming: Boolean = false) : FeedItem
 
 enum class ProviderApiType(val label: String) { CHAT("Chat"), RESPONSE("Response"), MESSAGE("Message") }
+/** USD per million tokens; absent prices remain distinguishable from an explicitly free model. */
+data class ModelCost(
+    val input: Double = 0.0,
+    val output: Double = 0.0,
+    val cacheRead: Double = 0.0,
+    val cacheWrite: Double = 0.0,
+)
 data class ModelConfig(
     val id: String,
     val name: String = id,
@@ -145,6 +153,10 @@ data class ModelConfig(
     val thinkingBudget: Int? = null,
     val contextWindow: Int = 200_000,
     val maxTokens: Int = 16_384,
+    val reasoning: Boolean? = null,
+    val input: List<String> = listOf("text"),
+    val cost: ModelCost? = null,
+    val thinkingLevelMap: Map<ThinkingLevel, String> = emptyMap(),
 )
 data class ProviderConfig(
     val id: String,

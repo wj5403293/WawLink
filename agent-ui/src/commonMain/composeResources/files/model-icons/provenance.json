@@ -1,0 +1,189 @@
+{
+  "license": "MIT",
+  "copyright": "Copyright (c) 2023 LobeHub",
+  "licenseUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/LICENSE",
+  "licenseSha256": "add9d7531d1b21646317a8958e38fc727506fa39d24bdecb44154d943c82753a",
+  "conversion": "CairoSVG 2.9.1, 192x192 transparent PNG; source colors/gradients retained; currentColor resolves to SVG default black; no runtime SVG parsing or network",
+  "icons": [
+    {
+      "name": "deepseek-color",
+      "resource": "drawable/model_deepseek_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "3bf3570bd7f16b512b7b89e4e4a00d6022ab6c71ade8fc1926e193ed45ece9df",
+      "packagedSvgSha256": "315469d407c9a4fb13a6a7bb5fea41f4ebf51a63dd0fce8f7dcb17ea3fe4a40e",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/deepseek-color.svg",
+      "kelivoOriginalSha256": "315469d407c9a4fb13a6a7bb5fea41f4ebf51a63dd0fce8f7dcb17ea3fe4a40e",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/deepseek-color.svg",
+      "mitUpstreamSha256": "deba5f98a5c1796e20fcac3149bcd7eb8a32f0bdd04d048819400b1f28bd1439",
+      "evidence": "XML identical ignoring whitespace"
+    },
+    {
+      "name": "claude-color",
+      "resource": "drawable/model_claude_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "99564c6afd47ef8cbab5c5ad82e84b3ec636a9d8a92685acd330f0999bca25de",
+      "packagedSvgSha256": "7473b3ed6919108a75de8f71a3996ea28ff916aadd65decaf81f21e3d1e75df2",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/claude-color.svg",
+      "kelivoOriginalSha256": "7473b3ed6919108a75de8f71a3996ea28ff916aadd65decaf81f21e3d1e75df2",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/claude-color.svg",
+      "mitUpstreamSha256": "a3101f3047a119aa11825ad9369510f0c472428c8c52d420e31bc62db44a8364",
+      "evidence": "XML identical ignoring whitespace"
+    },
+    {
+      "name": "openai",
+      "resource": "drawable/model_openai.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "0f687f69d3bd357bee8caebaf5042aa022ff25486a552cdc1505933fc19c3c37",
+      "packagedSvgSha256": "308cf6f9301da0edd8e92a9a948d80a43ca9f635dd3650857e50c749ae3a5a33",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/openai.svg",
+      "kelivoOriginalSha256": "308cf6f9301da0edd8e92a9a948d80a43ca9f635dd3650857e50c749ae3a5a33",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/be085bdf5dc60e3fa132573ceb38d9627a695b65/packages/static-svg/icons/openai.svg",
+      "mitUpstreamSha256": "f3cf560e84bd85915e32b887cb2abd323529be62d8b4001d2f778669b77eda35",
+      "evidence": "XML identical ignoring whitespace"
+    },
+    {
+      "name": "codex",
+      "resource": "drawable/model_codex.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "fb8285eca3f9573d233ec918911f8e0feb8ad4bc356bd29a228bc675a0f0dd1a",
+      "packagedSvgSha256": "d08b4e824cd6727e89617f59e4737273ff53e44c1da849d016dd64dfd08b33e1",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/codex.svg",
+      "kelivoOriginalSha256": "2c6c9b81188fd8891253f3e3aa558f6a1238c1bef49ac79017ec4ece6d4801c3",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/codex.svg",
+      "mitUpstreamSha256": "d08b4e824cd6727e89617f59e4737273ff53e44c1da849d016dd64dfd08b33e1",
+      "evidence": "MIT upstream same-brand alternative; Kelivo original provenance unproven, original NOT packaged"
+    },
+    {
+      "name": "gemini-color",
+      "resource": "drawable/model_gemini_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "e1d36391e1a54e134502a05d1a6520435327e3baca6379e63ec814cc5c701fcc",
+      "packagedSvgSha256": "d7161ea5a85c51d996bb7611c665e9b531db5a4092d4978ed4d6ddf6c043257d",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/gemini-color.svg",
+      "kelivoOriginalSha256": "d7161ea5a85c51d996bb7611c665e9b531db5a4092d4978ed4d6ddf6c043257d",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/gemini-color.svg",
+      "mitUpstreamSha256": "8ab0a9bafec11f7e69bcb9fc4ffd8f1bc927d1ddcbbb6ff36dee5ae8b5a9d602",
+      "evidence": "Identical visual SVG after resolving gradient identifiers"
+    },
+    {
+      "name": "qwen-color",
+      "resource": "drawable/model_qwen_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "170edbeace82acefa123916d9825a91db839b49f5ff7101eeb2c2e8af83ec04d",
+      "packagedSvgSha256": "0aa9e2cc95b36f0243cbf384043ae80a2e32542e9260ded335dd59de5e625cb5",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/qwen-color.svg",
+      "kelivoOriginalSha256": "0aa9e2cc95b36f0243cbf384043ae80a2e32542e9260ded335dd59de5e625cb5",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/9a9e08440e63dceb699a86fd0334f2fc4f0e998b/packages/static-svg/icons/qwen-color.svg",
+      "mitUpstreamSha256": "77f5768c66d08ce1d3d14e73373975c1bc0454be88c81523ddd0ffd7e2974029",
+      "evidence": "Identical visual SVG after resolving gradient identifiers"
+    },
+    {
+      "name": "kimi-color",
+      "resource": "drawable/model_kimi_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "56546134390ad4fe38a4be3c225610f673079b78cdc42f9e0446bbc591b13093",
+      "packagedSvgSha256": "0bdb95375d7c6e90a1850e91cd36770da2bc98fa33ec2d783f4a8fed027da85f",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/kimi-color.svg",
+      "kelivoOriginalSha256": "9c91e224318bb20bce136d14fa1edab60beea50e5d20dd85d98f03bda5b40f27",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/kimi-color.svg",
+      "mitUpstreamSha256": "0bdb95375d7c6e90a1850e91cd36770da2bc98fa33ec2d783f4a8fed027da85f",
+      "evidence": "MIT upstream same-brand alternative; Kelivo original provenance unproven, original NOT packaged"
+    },
+    {
+      "name": "grok",
+      "resource": "drawable/model_grok.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "35d3b7fc7d5bd2d8a7c90509b3f4ca84722370037cc9b4ae61a0598b554e58cb",
+      "packagedSvgSha256": "151c57145a3fdebca04d880b7eb091c32b2104f166b983f0824852decee64978",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/grok.svg",
+      "kelivoOriginalSha256": "151c57145a3fdebca04d880b7eb091c32b2104f166b983f0824852decee64978",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/grok.svg",
+      "mitUpstreamSha256": "9175fc90c22655160231976c849f25a03b888d7cc0e04c5f1b987b659bb07c95",
+      "evidence": "XML identical ignoring whitespace"
+    },
+    {
+      "name": "minimax-color",
+      "resource": "drawable/model_minimax_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "68a26742edeb73fb64d8f5eea5a9f340f8f32666d408314f42b23262bc3d867a",
+      "packagedSvgSha256": "66961f9517381167fe1c406520d8be8e38a5708841970e0ea2de7766403e6b71",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/minimax-color.svg",
+      "kelivoOriginalSha256": "66961f9517381167fe1c406520d8be8e38a5708841970e0ea2de7766403e6b71",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/minimax-color.svg",
+      "mitUpstreamSha256": "7f7187fa6d9b341ac5f22f6c5a970523afb439dc45566d64eb4f4b9b604d6b01",
+      "evidence": "Identical visual SVG after resolving gradient identifiers"
+    },
+    {
+      "name": "mistral-color",
+      "resource": "drawable/model_mistral_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "d3b17033434e9ab5d87db8435e6691e3ed2190748c527e879500e13c99b37685",
+      "packagedSvgSha256": "7a1e80542a8f195a1ad48c9bb81d3a63434c40d781db671a7eaf60a87109b66e",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/mistral-color.svg",
+      "kelivoOriginalSha256": "7a1e80542a8f195a1ad48c9bb81d3a63434c40d781db671a7eaf60a87109b66e",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/mistral-color.svg",
+      "mitUpstreamSha256": "722f74b289d95486b43662fe24fa883b333701296f618406cd0ed502299170b6",
+      "evidence": "XML identical ignoring whitespace"
+    },
+    {
+      "name": "gemma-color",
+      "resource": "drawable/model_gemma_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "7cd2d612ed0b0c0cb3a7e0e2d293de5044357b632b0999c23fedf5b0e83dd0ce",
+      "packagedSvgSha256": "67c873af24b6cd6188466963a64b57b629bed48e13e0c45d76281ad77d880360",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/gemma-color.svg",
+      "kelivoOriginalSha256": "67c873af24b6cd6188466963a64b57b629bed48e13e0c45d76281ad77d880360",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/gemma-color.svg",
+      "mitUpstreamSha256": "8cdc48e35113d2f76f602fc93977ce8b8eebe41bc66a65f532ed9c89f6a68e2d",
+      "evidence": "Identical visual SVG after resolving gradient identifiers"
+    },
+    {
+      "name": "meta-color",
+      "resource": "drawable/model_meta_color.png",
+      "dimensions": [
+        192,
+        192
+      ],
+      "resourceSha256": "b7cfe38d73324a9048bd6dbc1a13af775ede932029e46bb819b7ff28bfa1109a",
+      "packagedSvgSha256": "c05ab6cc174fdab72a98060176a41d310324c36e9f1282a4e728b2b873e8b7c4",
+      "kelivoUrl": "https://github.com/Chevey339/kelivo/blob/58d9badfb0912bb01739a71d2dc26ed7deded90b/assets/icons/meta-color.svg",
+      "kelivoOriginalSha256": "c05ab6cc174fdab72a98060176a41d310324c36e9f1282a4e728b2b873e8b7c4",
+      "mitUpstreamUrl": "https://github.com/lobehub/lobe-icons/blob/680f1d7f95b5ae6a494fe43539da8a992f17b53d/packages/static-svg/icons/meta-color.svg",
+      "mitUpstreamSha256": "adf9f2c1a646ccd3a37ca8c2e7e5985d64630cd633f4b95fba393d1d44e0578c",
+      "evidence": "Identical path attributes and gradient definitions; Kelivo additionally groups paths with fill=none and fill-rule=nonzero (all paths set their own fill)"
+    }
+  ]
+}

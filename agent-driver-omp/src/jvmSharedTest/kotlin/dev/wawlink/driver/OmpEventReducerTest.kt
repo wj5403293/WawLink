@@ -23,6 +23,72 @@ class OmpEventReducerTest {
         listOf(it) + if (it is StepGroupNodeItem) allItems(it.children) else emptyList()
     }
 
+    @Test fun userMessagesStayBetweenEarlierAndLaterTodoChildrenAcrossSnapshots() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
+        reducer.startTool("before", "read", """{"path":"before.txt"}""")
+        val before = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single().children.single()
+        val message = """{"role":"user","content":"补充要求","timestamp":123}"""
+        reducer.accept("""{"type":"message_start","messageId":"follow-up","message":$message}""")
+        reducer.accept("""{"type":"message_end","messageId":"follow-up","message":$message}""")
+        val user = allItems(reducer.state.feed).filterIsInstance<UserMessageItem>().single()
+        reducer.updateEvent("""{"type":"thinking_delta","contentIndex":0,"delta":"遵循补充要求"}""")
+        val thinking = allItems(reducer.state.feed).filterIsInstance<ThinkingNodeItem>().single()
+        reducer.startTool("after", "read", """{"path":"after.txt"}""")
+        val group = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
+        val after = group.children.filterIsInstance<ToolNodeItem>().last()
+        val order = listOf(before.id, user.id, thinking.id, after.id)
+        assertEquals(order, group.children.map { it.id })
+        assertTrue(reducer.state.feed.none { it is UserMessageItem })
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"completed"},{"content":"Edit","status":"in_progress"}]}""")
+        reducer.accept("""{"type":"message_end","messageId":"follow-up","message":$message}""")
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[$message]}""")
+        val groups = reducer.state.feed.filterIsInstance<StepGroupNodeItem>()
+        assertEquals(order, groups.first().children.map { it.id })
+        assertEquals(listOf(user), allItems(reducer.state.feed).filterIsInstance<UserMessageItem>())
+        assertTrue(groups.last().children.isEmpty())
+    }
+
+    @Test fun queuedUsersKeepTheirSendPositionsWhenConsumedAfterToolsAndTaskSwitches() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
+        reducer.startTool("before", "read")
+        val originalGroup = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
+        val first = QueuedPrompt("queued-first", "相同追加")
+        val second = QueuedPrompt("queued-second", "相同追加")
+        val position = reducer.currentUserPosition()
+        reducer.reserveUserPosition(first.id, position)
+        reducer.reserveUserPosition(second.id, position)
+        reducer.update { it.copy(queuedPrompts = listOf(first, second)) }
+        reducer.startTool("later", "read")
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"completed"},{"content":"Edit","status":"in_progress"}]}""")
+        reducer.accept("""{"type":"queue_update","steering":[],"followUp":[]}""")
+        reducer.accept("""{"type":"message_start","messageId":"first","message":{"role":"user","content":"相同追加"}}""")
+        reducer.accept("""{"type":"message_end","messageId":"first","message":{"role":"user","content":"相同追加"}}""")
+        reducer.accept("""{"type":"message_end","messageId":"second","message":{"role":"user","content":"相同追加"}}""")
+        val groups = reducer.state.feed.filterIsInstance<StepGroupNodeItem>()
+        assertEquals(listOf(originalGroup.children.single().id, first.id, second.id, "omp:1:tool:later"), groups.first().children.map { it.id })
+        assertTrue(groups.last().children.isEmpty())
+        assertEquals(listOf(first.id, second.id), allItems(reducer.state.feed).filterIsInstance<UserMessageItem>().map { it.id })
+    }
+
+    @Test fun localNestedUserKeepsIdentityAndAttachmentsAcrossRepeatedNativeSnapshots() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
+        val attachment = AttachmentFile("attachment", "要求.txt", "/workspace/要求.txt")
+        val user = UserMessageItem("local-user", "补充要求", listOf(attachment), 123)
+        reducer.addUserMessage(user)
+        val message = """{"role":"user","content":"补充要求","timestamp":123}"""
+        reducer.accept("""{"type":"message_start","messageId":"native-user","message":$message}""")
+        reducer.startTool("after-local", "read")
+        reducer.accept("""{"type":"message_end","messageId":"native-user","message":$message}""")
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[$message]}""")
+        val group = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
+        assertEquals(listOf(user.id, "omp:1:tool:after-local"), group.children.map { it.id })
+        assertEquals(listOf(user), allItems(reducer.state.feed).filterIsInstance<UserMessageItem>())
+        assertTrue(reducer.hasConfirmedUser(user.id))
+    }
+
     @Test fun thinkingSnapshotsBelongToActiveTodoWithoutGroupingOtherMessages() {
         val reducer = reducer()
         reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
@@ -412,6 +478,15 @@ class OmpEventReducerTest {
         reducer.accept("""{"type":"prompt_result","agentInvoked":false,"status":"error","sessionSettled":true,"error":{"message":"Unknown slash command","retryable":false}}""")
         assertEquals(SessionStatus.ERROR, reducer.state.status)
         assertEquals("Unknown slash command", reducer.state.error)
+    }
+
+    @Test fun latePromptFailureWithoutDetailPreservesTheAdmittedModelError() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"message_end","messageId":"failed","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"Provider unavailable"}}""")
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[]}""")
+        reducer.accept("""{"type":"prompt_result","agentInvoked":true,"status":"error","sessionSettled":true}""")
+        assertEquals(SessionStatus.ERROR, reducer.state.status)
+        assertEquals("Provider unavailable", reducer.state.error)
     }
 
     @Test fun localPromptResultCannotSettleUnrelatedLiveBackgroundWork() {

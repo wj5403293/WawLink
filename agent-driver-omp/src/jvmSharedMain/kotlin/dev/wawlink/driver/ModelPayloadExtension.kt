@@ -2,6 +2,7 @@ package dev.wawlink.driver
 
 import dev.wawlink.protocol.ProviderConfig
 import dev.wawlink.protocol.ProviderApiType
+import dev.wawlink.protocol.ThinkingLevel
 import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
@@ -44,7 +45,7 @@ internal object ModelPayloadExtension {
                 provider.models.forEach { model ->
                     model.thinkingBudget?.let { budget ->
                         require(provider.apiType == ProviderApiType.MESSAGE) { "数值思考预算仅适用于 Message 接口" }
-                        require(budget >= 1024 && budget < model.maxTokens) { "思考预算必须至少为 1024，且小于模型输出上限" }
+                        require(budget >= 1024 && budget < model.maxTokens && model.thinkingLevel != ThinkingLevel.NONE && model.reasoning != false) { "思考预算必须至少为 1024、小于模型输出上限，且启用思考" }
                         put("${provider.id}/${model.id}", JsonPrimitive(budget))
                     }
                 }

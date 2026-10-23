@@ -3,6 +3,27 @@ package dev.wawlink.driver
 import dev.wawlink.protocol.*
 import kotlinx.serialization.json.*
 
+internal data class UserMessagePosition(val groupId: String?, val afterId: String?)
+
+internal fun placeUserMessage(feed: List<FeedItem>, user: UserMessageItem, position: UserMessagePosition,
+    positions: Map<String, UserMessagePosition> = emptyMap()): List<FeedItem> {
+    fun insert(items: List<FeedItem>): List<FeedItem> {
+        var after = position.afterId
+        while (after != null) {
+            val index = items.indexOfFirst { it.id == after }
+            if (index >= 0) return items.toMutableList().apply { add(index + 1, user) }
+            val previous = positions[after] ?: return items + user
+            after = previous.afterId
+        }
+        return listOf(user) + items
+    }
+    if (position.groupId == null) return insert(feed)
+    val index = feed.indexOfFirst { it.id == position.groupId && it is StepGroupNodeItem }
+    if (index < 0) return feed + user
+    val group = feed[index] as StepGroupNodeItem
+    return feed.toMutableList().apply { set(index, group.copy(children = insert(group.children))) }
+}
+
 /**
  * OMP 18.12.6 RPC reducer; the pool serializes all access, including [update].
  *
@@ -33,6 +54,8 @@ class OmpEventReducer(initial: ChatSessionUiState) {
     private val usageByMessage = mutableMapOf<String, UsageInfo>()
     private val reconciledUsers = mutableSetOf<String>()
     private val userFeedIds = mutableMapOf<String, String>()
+    private val userPositions = linkedMapOf<String, UserMessagePosition>()
+    private val positionTails = mutableMapOf<UserMessagePosition, String>()
     private val entries = linkedMapOf<String, JsonObject>()
     private var leafEntryId: String? = null
     private var firstKeptEntryId: String? = null
@@ -66,6 +89,23 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         return state
     }
     internal fun hasConfirmedUser(id: String): Boolean = id in reconciledUsers
+
+    internal fun currentUserPosition(): UserMessagePosition {
+        val group = activeGroup?.let { item(it) as? StepGroupNodeItem }?.takeIf { state.isRunning && it.state == NodeStatus.RUNNING }
+        return UserMessagePosition(group?.id, (group?.children ?: state.feed).lastOrNull()?.id)
+    }
+
+    internal fun reserveUserPosition(id: String, position: UserMessagePosition = currentUserPosition()) {
+        if (id in userPositions) return
+        // Pending users form an anchor chain, including multiple identical queued prompts.
+        userPositions[id] = positionTails[position]?.let { position.copy(afterId = it) } ?: position
+        positionTails[position] = id
+    }
+
+    internal fun addUserMessage(user: UserMessageItem, position: UserMessagePosition = currentUserPosition()) {
+        reserveUserPosition(user.id, position)
+        put(user)
+    }
 
 
     fun reduce(frame: JsonObject): ChatSessionUiState {
@@ -227,7 +267,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
             "user" -> {
                 val text = contentText(message["content"])
                 if (item(id) == null) {
-                    val existing = state.feed.filterIsInstance<UserMessageItem>().firstOrNull {
+                    val existing = allItems(state.feed).filterIsInstance<UserMessageItem>().firstOrNull {
                         it.text == text && it.id !in reconciledUsers
                     }
                     if (existing != null) {
@@ -717,7 +757,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         val invoked = frame.bool("agentInvoked") != false
         when (frame.string("status")) {
             "error" -> {
-                runError = frame.obj("error")?.string("message") ?: "请求失败"
+                runError = frame.obj("error")?.string("message") ?: runError ?: "请求失败"
                 state = state.copy(error = runError)
             }
             "aborted" -> if (!invoked || state.isRunning) aborted = true
@@ -739,6 +779,10 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         val group = if (!found && value is ThinkingNodeItem) activeGroup?.let { item(it) as? StepGroupNodeItem } else null
         state = state.copy(feed = when {
             found -> feed
+            value is UserMessageItem -> {
+                reserveUserPosition(value.id)
+                placeUserMessage(state.feed, value, userPositions.getValue(value.id), userPositions)
+            }
             group != null -> mapFeed(feed) {
                 if (it is StepGroupNodeItem && it.id == group.id) it.copy(children = it.children + value) else it
             }

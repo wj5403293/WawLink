@@ -196,6 +196,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         val timestamp: Long,
         val generation: Long,
         val queued: Boolean,
+        var position: UserMessagePosition,
+        val awaitingHistory: Boolean,
         var preview: Boolean = true,
         var dispatching: Boolean = false,
     )
@@ -219,6 +221,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private val presentationLock = Any()
         private val outgoingPrompts = LinkedHashMap<String, OutgoingPrompt>()
         @Volatile private var backendState = reducer.state
+        private var backendUserPosition = reducer.currentUserPosition()
+        private var historyReady = false
         private val mutableState: MutableStateFlow<ChatSessionUiState>
         override val state: StateFlow<ChatSessionUiState>
         @Volatile private var process: Process? = null
@@ -250,6 +254,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                         reducer.update { it.copy(id = id, title = title, workspace = workspace,
                             feed = if (it.isRunning) stopFeed(it.feed) else it.feed,
                             status = if (it.isRunning) SessionStatus.STOPPED else it.status, actionText = "准备就绪") }
+                        synchronized(presentationLock) {
+                            historyReady = true
+                            var position = reducer.currentUserPosition()
+                            for (prompt in outgoingPrompts.values) if (prompt.awaitingHistory) {
+                                prompt.position = position
+                                position = position.copy(afterId = prompt.id)
+                            }
+                        }
                         publishState()
                     }
                     val metadata = metadataFile(id)
@@ -291,8 +303,11 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             if (text.isBlank() && attachments.isEmpty()) return
             synchronized(presentationLock) {
                 if (disposed) return
+                val position = outgoingPrompts.values.lastOrNull {
+                    it.preview && !it.queued && it.position.groupId == backendUserPosition.groupId
+                }?.let { backendUserPosition.copy(afterId = it.id) } ?: backendUserPosition
                 val prompt = OutgoingPrompt(UUID.randomUUID().toString(), text, attachments.toList(),
-                    System.currentTimeMillis(), stopGeneration.get(), mutableState.value.isRunning || !backendSettled)
+                    System.currentTimeMillis(), stopGeneration.get(), mutableState.value.isRunning || !backendSettled, position, !historyReady)
                 outgoingPrompts[prompt.id] = prompt
                 presentState()
                 if (actions.trySend { deliverPrompt(prompt) }.isFailure) {
@@ -312,6 +327,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 if (prompt.queued) local(buildJsonObject {
                     put("action", "queue_add"); put("queueId", prompt.id); put("text", prompt.text)
                     put("attachments", attachmentsJson(prompt.attachments))
+                    put("position", positionJson(prompt.position))
                 })
                 completePrompt(prompt.id)
                 return true
@@ -331,12 +347,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     if (prompt.text == originalText) prepared.first else attachmentPrompt(prompt.text, prepared.second)
                 }
                 if (backendState.isRunning || !backendSettled) {
-                    enqueue(message, prepared.second, prepared.third, prompt.id)
+                    enqueue(message, prepared.second, prepared.third, prompt.id, prompt.position)
                 } else {
                     startedNanos = System.nanoTime()
                     local(buildJsonObject {
                         put("action", "user"); put("localId", prompt.id); put("text", message)
                         put("timestamp", prompt.timestamp); put("attachments", attachmentsJson(prepared.second))
+                        put("position", positionJson(prompt.position))
                     })
                     command("prompt", buildJsonObject {
                         put("message", message); if (prepared.third.isNotEmpty()) put("images", prepared.third)
@@ -346,9 +363,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             catch (failure: Exception) { rejectPrompt(prompt.id, failure.message ?: failure.javaClass.simpleName) }
         }
 
-        private suspend fun enqueue(text: String, attachments: List<AttachmentFile>, images: JsonArray, queuedId: String = UUID.randomUUID().toString()) {
+        private suspend fun enqueue(text: String, attachments: List<AttachmentFile>, images: JsonArray,
+            queuedId: String = UUID.randomUUID().toString(), position: UserMessagePosition? = null) {
             ensureStarted()
-            local(buildJsonObject { put("action", "queue_add"); put("queueId", queuedId); put("text", text); put("attachments", attachmentsJson(attachments)) })
+            local(buildJsonObject {
+                put("action", "queue_add"); put("queueId", queuedId); put("text", text); put("attachments", attachmentsJson(attachments))
+                position?.let { put("position", positionJson(it)) }
+            })
             try {
                 command("follow_up", buildJsonObject { put("message", text); if (images.isNotEmpty()) put("images", images) }, timeoutMs = 180_000, requestId = queuedId)
             } catch (failure: Exception) {
@@ -381,7 +402,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 check(removed) { "该消息已开始执行，无法编辑" }
                 local(buildJsonObject { put("action", "queue_remove"); put("queueId", id) })
                 val prepared = prepareAttachments(newText, item.attachments)
-                enqueue(prepared.first, prepared.second, prepared.third)
+                enqueue(prepared.first, prepared.second, prepared.third, id)
             }
         }
 
@@ -846,12 +867,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         private fun publishState() = synchronized(presentationLock) {
             backendState = reducer.state
+            backendUserPosition = reducer.currentUserPosition()
             presentState()
         }
 
         /** Called only under presentationLock; never waits for disk, attachments, or the RPC actor. */
         private fun presentState() {
-            var feed: MutableList<FeedItem>? = null
+            var feed: List<FeedItem>? = null
             var queue: MutableList<QueuedPrompt>? = null
             for (prompt in outgoingPrompts.values) {
                 if (!prompt.preview) continue
@@ -859,8 +881,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     if (queue == null) queue = backendState.queuedPrompts.toMutableList()
                     queue.add(QueuedPrompt(prompt.id, prompt.text, prompt.attachments))
                 } else {
-                    if (feed == null) feed = backendState.feed.toMutableList()
-                    feed.add(UserMessageItem(prompt.id, prompt.text, prompt.attachments, prompt.timestamp))
+                    feed = placeUserMessage(feed ?: backendState.feed,
+                        UserMessageItem(prompt.id, prompt.text, prompt.attachments, prompt.timestamp), prompt.position)
                 }
             }
             mutableState.value = if (feed == null && queue == null) backendState else backendState.copy(
@@ -904,23 +926,32 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 }
                 outgoingPrompts[promptId]?.preview = false
                 backendState = reducer.state
+                backendUserPosition = reducer.currentUserPosition()
                 presentState()
             }
         }
 
         private fun applyLocal(frame: JsonObject) {
             when (frame.string("action")) {
-                "user" -> reducer.update { it.copy(feed = it.feed + UserMessageItem(frame.string("localId"), frame.string("text"), parseAttachments(frame["attachments"]), frame["timestamp"]?.jsonPrimitive?.longOrNull ?: 0),
-                    status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
+                "user" -> {
+                    val position = frame["position"] as? JsonObject
+                    reducer.addUserMessage(UserMessageItem(frame.string("localId"), frame.string("text"), parseAttachments(frame["attachments"]),
+                        frame["timestamp"]?.jsonPrimitive?.longOrNull ?: 0), position?.let(::parsePosition) ?: reducer.currentUserPosition())
+                    reducer.update { it.copy(status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
+                }
                 "prompt_failed" -> reducer.update { it.copy(
-                    feed = it.feed.filterNot { item -> item.id == frame.string("promptId") },
+                    feed = removeFeedItem(it.feed, frame.string("promptId")),
                     queuedPrompts = it.queuedPrompts.filterNot { queued -> queued.id == frame.string("promptId") },
                     status = if (frame["settled"]?.jsonPrimitive?.booleanOrNull == true) SessionStatus.ERROR else it.status,
                     actionText = if (frame["settled"]?.jsonPrimitive?.booleanOrNull == true) "发送失败" else it.actionText,
                     error = frame.string("message")) }
-                "queue_add" -> reducer.update { current -> current.copy(queuedPrompts =
-                    current.queuedPrompts.filterNot { it.id == frame.string("queueId") } +
-                        QueuedPrompt(frame.string("queueId"), frame.string("text"), parseAttachments(frame["attachments"]))) }
+                "queue_add" -> {
+                    val position = frame["position"] as? JsonObject
+                    reducer.reserveUserPosition(frame.string("queueId"), position?.let(::parsePosition) ?: reducer.currentUserPosition())
+                    reducer.update { current -> current.copy(queuedPrompts =
+                        current.queuedPrompts.filterNot { it.id == frame.string("queueId") } +
+                            QueuedPrompt(frame.string("queueId"), frame.string("text"), parseAttachments(frame["attachments"]))) }
+                }
                 "queue_edit" -> reducer.update { current -> current.copy(queuedPrompts = current.queuedPrompts.map { queued ->
                     if (queued.id == frame.string("queueId")) queued.copy(text = frame.string("text"), attachments = parseAttachments(frame["attachments"])) else queued
                 }) }
@@ -947,6 +978,21 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     val feed = mapFeed(current.feed) { node -> if (node is AskCardItem && node.id == frame.string("nodeId")) node.copy(selectedAnswer = frame.string("answer")) else node }
                     current.copy(feed = feed, status = if (hasUnresolvedDialog(feed)) SessionStatus.WAITING else SessionStatus.RUNNING, error = null)
                 }
+            }
+        }
+
+        private fun positionJson(position: UserMessagePosition) = buildJsonObject {
+            put("groupId", position.groupId); put("afterId", position.afterId)
+        }
+
+        private fun parsePosition(value: JsonObject) = UserMessagePosition(
+            value["groupId"]?.jsonPrimitive?.contentOrNull, value["afterId"]?.jsonPrimitive?.contentOrNull)
+
+        private fun removeFeedItem(feed: List<FeedItem>, id: String): List<FeedItem> = feed.mapNotNull { item ->
+            when {
+                item.id == id -> null
+                item is StepGroupNodeItem -> item.copy(children = removeFeedItem(item.children, id))
+                else -> item
             }
         }
 

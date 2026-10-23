@@ -10,6 +10,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
@@ -49,6 +50,23 @@ internal fun PlanNodeItem.progressLabel(): String {
         current >= 0 -> "第 ${current + 1} 项，共 ${steps.size} 项"
         steps.isNotEmpty() && steps.all { it.state == StepState.COMPLETED } -> "全部完成"
         else -> "共 ${steps.size} 项"
+    }
+}
+
+/** Observe the whole feed, not recycled rows, so completion is consumed exactly once. */
+internal fun updateGroupExpansion(
+    feed: List<FeedItem>,
+    expanded: MutableMap<String, Boolean>,
+    previouslyRunning: MutableMap<String, Boolean>,
+) {
+    for (item in feed) if (item is StepGroupNodeItem) {
+        val running = item.state == NodeStatus.RUNNING
+        val previous = previouslyRunning[item.id]
+        if (previous != running) {
+            previouslyRunning[item.id] = running
+            if (previous == true && !running) expanded[item.id] = false
+        }
+        updateGroupExpansion(item.children, expanded, previouslyRunning)
     }
 }
 
@@ -235,7 +253,6 @@ private fun PlanNode(node: PlanNodeItem, expanded: MutableMap<String, Boolean>) 
 @Composable
 private fun GroupNode(node: StepGroupNodeItem, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDetail: (String, String) -> Unit) {
     val open = expanded[node.id] ?: node.isExpanded
-    LaunchedEffect(node.state) { if (node.state != NodeStatus.RUNNING) expanded[node.id] = false }
     val c = LocalAgentColors.current
     NodeFrame(node.icon, LeadStyle.DARK, open, node.title, { expanded[node.id] = !open },
         status = { NodeStatusLabel(node.state, node.elapsedSec) }) {
@@ -413,9 +430,9 @@ private fun ApprovalCard(node: ApprovalCardItem, controller: AgentSessionControl
 @Composable
 private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
     val c = LocalAgentColors.current
-    var selection by remember(node.id) { mutableStateOf<String?>(null) }
-    var custom by remember(node.id) { mutableStateOf("") }
-    var isCustom by remember(node.id) { mutableStateOf(false) }
+    var selection by rememberSaveable(node.id) { mutableStateOf<String?>(null) }
+    var custom by rememberSaveable(node.id) { mutableStateOf("") }
+    var isCustom by rememberSaveable(node.id) { mutableStateOf(false) }
     Surface(color = c.surfaceContainer, shape = RoundedCornerShape(28.dp)) {
         Box(Modifier.padding(20.dp)) {
             NodeFrame("help", LeadStyle.TONE, false, node.title, null) {

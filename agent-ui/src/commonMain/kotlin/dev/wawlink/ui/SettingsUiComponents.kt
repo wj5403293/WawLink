@@ -10,6 +10,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.mapSaver
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
@@ -23,6 +25,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+
+internal val BooleanStateMapSaver = mapSaver<SnapshotStateMap<String, Boolean>>(
+    save = { it.toMap() },
+    restore = { saved -> mutableStateMapOf<String, Boolean>().apply { for ((id, value) in saved) this[id] = value as Boolean } },
+)
 
 /** One ordered writer per screen: edits and navigation barriers cannot overtake persistence. */
 internal class SettingsWriteQueue(scope: CoroutineScope, private val report: (String) -> Unit) {

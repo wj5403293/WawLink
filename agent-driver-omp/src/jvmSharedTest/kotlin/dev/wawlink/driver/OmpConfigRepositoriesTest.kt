@@ -1,6 +1,10 @@
 package dev.wawlink.driver
 
 import dev.wawlink.protocol.ModelConfig
+import dev.wawlink.protocol.ModelCost
+import com.sun.net.httpserver.HttpServer
+import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicInteger
 import dev.wawlink.protocol.ProviderApiType
 import dev.wawlink.protocol.ProviderConfig
 import dev.wawlink.protocol.ThinkingLevel
@@ -9,8 +13,10 @@ import java.nio.file.Files
 import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -184,6 +190,9 @@ class OmpConfigRepositoriesTest {
                 val loaded = repo.providers.value.single()
                 assertEquals("自定义服务", loaded.name)
                 assertEquals(2048, loaded.models.single().thinkingBudget)
+                assertNull(loaded.models.single().reasoning)
+                assertEquals(listOf("text"), loaded.models.single().input)
+                assertEquals(mapOf(ThinkingLevel.HIGH to "wire-high"), loaded.models.single().thinkingLevelMap)
                 assertFalse(loaded.enabled)
                 repo.deleteProvider("vendor")
                 assertTrue((load(file)["providers"] as Map<*, *>).containsKey("unsupported"))
@@ -222,6 +231,138 @@ class OmpConfigRepositoriesTest {
                 repo.resetSetting("temperature")
                 assertEquals(-1L, calls.last { it.first == "temperature" }.second)
             } finally { repo.close() }
+        }
+    }
+
+    @Test
+    fun capabilitiesPricesAndHighestDefaultsRoundTripWithoutErasingUnknownYaml() = runBlocking {
+        withContainer { dir, scope ->
+            val file = File(dir, "models.yml")
+            file.writeText("""
+                providers:
+                  vendor:
+                    api: openai-responses
+                    models:
+                      - id: known
+                        name: Original
+                        reasoning: true # capability comment
+                        input: [text, image]
+                        cost:
+                          input: 1.0 # price comment
+                          output: 2.0
+                          cacheRead: 0.1
+                          cacheWrite: 0.2
+                          futurePrice: preserve
+                        thinking:
+                          mode: effort
+                          efforts: [low, medium, high, xhigh, max]
+                          defaultLevel: xhigh
+                          futureThinking: preserve
+                          effortMap:
+                            xhigh: max # map comment
+                            max: native-max
+                            futureEffort: preserve
+                        futureModel: preserve
+            """.trimIndent() + "\n")
+            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            try {
+                val provider = withTimeout(4_000) { repo.providers.first { it.isNotEmpty() } }.single()
+                val original = provider.models.single()
+                assertEquals(true, original.reasoning)
+                assertEquals(ModelCost(1.0, 2.0, 0.1, 0.2), original.cost)
+                assertEquals("max", original.thinkingLevelMap[ThinkingLevel.XHIGH])
+                assertEquals("native-max", original.thinkingLevelMap[ThinkingLevel.MAX])
+                val updated = original.copy(name = "中文显示名", thinkingLevel = ThinkingLevel.MAX,
+                    reasoningEffort = "stale-override", contextWindow = Int.MAX_VALUE, maxTokens = 1,
+                    cost = ModelCost(0.75, 4.5, 0.075, 0.0),
+                    thinkingLevelMap = mapOf(ThinkingLevel.XHIGH to "xhigh", ThinkingLevel.MAX to "max"))
+                repo.saveProvider(provider.copy(models = listOf(updated)))
+                val loaded = repo.providers.value.single().models.single()
+                assertEquals(updated.name, loaded.name)
+                assertEquals(updated.reasoning, loaded.reasoning)
+                assertEquals(updated.input, loaded.input)
+                assertEquals(updated.cost, loaded.cost)
+                assertEquals(updated.contextWindow, loaded.contextWindow)
+                assertEquals(updated.maxTokens, loaded.maxTokens)
+                assertEquals(ThinkingLevel.MAX, loaded.thinkingLevel)
+                assertEquals("max", loaded.reasoningEffort)
+                assertEquals(updated.thinkingLevelMap, loaded.thinkingLevelMap)
+                val saved = (((load(file)["providers"] as Map<*, *>)["vendor"] as Map<*, *>)["models"] as List<*>).single() as Map<*, *>
+                assertFalse(saved.containsKey("thinkingLevelMap"))
+                assertEquals("preserve", saved["futureModel"])
+                assertEquals("preserve", (saved["cost"] as Map<*, *>)["futurePrice"])
+                val thinking = saved["thinking"] as Map<*, *>
+                assertEquals("max", thinking["defaultLevel"])
+                assertEquals("preserve", thinking["futureThinking"])
+                assertEquals("preserve", (thinking["effortMap"] as Map<*, *>)["futureEffort"])
+                listOf("# capability comment", "# price comment", "# map comment").forEach { assertTrue(file.readText().contains(it)) }
+                // Disabling the default is not a declaration that a reasoning-capable model lost its capability.
+                repo.saveProvider(provider.copy(models = listOf(loaded.copy(thinkingLevel = ThinkingLevel.NONE, reasoningEffort = null))))
+                assertEquals(ThinkingLevel.NONE, repo.providers.value.single().models.single().thinkingLevel)
+                assertEquals(true, repo.providers.value.single().models.single().reasoning)
+                assertFalse(file.readText().contains("defaultLevel: none"))
+                assertTrue(file.readText().contains("futureThinking: preserve"))
+            } finally { repo.close() }
+        }
+    }
+
+    @Test
+    fun allSixDefaultsAndNullableCapabilitiesStayIndependent() = runBlocking {
+        withContainer { dir, scope ->
+            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            try {
+                val models = ThinkingLevel.entries.map { level -> ModelConfig(level.name, thinkingLevel = level, reasoning = true) } +
+                    listOf(ModelConfig("unknown"), ModelConfig("explicitly-disabled", thinkingLevel = ThinkingLevel.NONE, reasoning = false))
+                repo.saveProvider(ProviderConfig("vendor", "Vendor", models = models))
+                val loaded = repo.providers.value.single().models.associateBy { it.id }
+                ThinkingLevel.entries.forEach { assertEquals(it, loaded.getValue(it.name).thinkingLevel) }
+                assertNull(loaded.getValue("unknown").reasoning)
+                assertNull(loaded.getValue("unknown").cost)
+                assertEquals(false, loaded.getValue("explicitly-disabled").reasoning)
+                val saved = (((load(File(dir, "models.yml"))["providers"] as Map<*, *>)["vendor"] as Map<*, *>)["models"] as List<*>).map { it as Map<*, *> }
+                assertFalse(saved.single { it["id"] == "unknown" }.containsKey("reasoning"))
+                assertFalse(saved.single { it["id"] == "unknown" }.containsKey("thinking"))
+                assertTrue(saved.all { it["input"] == listOf("text") })
+                assertFailsWith<IllegalArgumentException> { repo.saveProvider(ProviderConfig("bad", "Bad", models = listOf(ModelConfig("invalid", cost = ModelCost(input = Double.NaN))))) }
+                assertFailsWith<IllegalArgumentException> { repo.saveProvider(ProviderConfig("bad", "Bad", models = listOf(ModelConfig("invalid", contextWindow = 0)))) }
+                assertFailsWith<IllegalArgumentException> { repo.saveProvider(ProviderConfig("bad", "Bad", models = listOf(ModelConfig("invalid", input = listOf("audio"))))) }
+            } finally { repo.close() }
+        }
+    }
+
+    @Test
+    fun remoteDiscoveryMatchesOncePreservesManualModelsAndDoesNotWriteConfiguration() = runBlocking {
+        withContainer { dir, scope ->
+            val catalogRequests = AtomicInteger()
+            val catalog = KnownModelCatalog(load = { url ->
+                catalogRequests.incrementAndGet()
+                if (url == KnownModelCatalog.PRIMARY_URL) """{"known":{"supports_reasoning":true,"supports_vision":true,"input_cost_per_token":0.000002}}"""
+                else """{"group":[{"id":"fallback"}]}"""
+            })
+            val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+            server.createContext("/v1/models") { exchange ->
+                val body = """{"data":[{"id":"known"},{"id":"manual"},{"id":"unknown"},{"id":"known"}]}""".toByteArray()
+                exchange.sendResponseHeaders(200, body.size.toLong())
+                exchange.responseBody.use { it.write(body) }
+            }
+            server.start()
+            val repo = OmpProviderRepository({ dir }, scope, catalog) { _, _ -> }
+            try {
+                val manual = ModelConfig("manual", "手工资料", reasoning = false, cost = ModelCost(input = 9.0))
+                val provider = ProviderConfig("vendor", "Vendor", baseUrl = "http://127.0.0.1:${server.address.port}/v1", models = listOf(manual))
+                val models = repo.fetchRemoteModels(provider).getOrThrow()
+                assertEquals(listOf("known", "manual", "unknown"), models.map { it.id })
+                assertEquals(true, models.first().reasoning)
+                assertEquals(listOf("text", "image"), models.first().input)
+                assertEquals(2.0, models.first().cost?.input)
+                assertEquals(manual, models[1])
+                assertEquals(ModelConfig("unknown"), models.last())
+                assertNull(repo.matchModel("not-in-catalog").getOrThrow())
+                assertEquals(true, repo.matchModel("proxy/KNOWN").getOrThrow()?.reasoning)
+                assertEquals(2, catalogRequests.get())
+                assertFalse(File(dir, "models.yml").exists())
+                assertEquals(emptyList(), repo.providers.value)
+            } finally { repo.close(); server.stop(0) }
         }
     }
 

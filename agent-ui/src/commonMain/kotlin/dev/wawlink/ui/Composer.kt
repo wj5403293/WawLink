@@ -12,6 +12,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -90,6 +93,15 @@ private val slashCommands = listOf(
     SlashCommand("model", "neurology", "切换模型"), SlashCommand("cost", "monitoring", "查看用量"),
 )
 
+private val AttachmentDraftSaver = listSaver<SnapshotStateList<AttachmentFile>, Any>(
+    save = { files -> files.map { arrayListOf(it.id, it.name, it.path, it.mimeType, it.sizeBytes, it.isWorkspaceFile) } },
+    restore = { rows -> rows.map { row ->
+        val fields = row as List<*>
+        AttachmentFile(fields[0] as String, fields[1] as String, fields[2] as String, fields[3] as String,
+            (fields[4] as Number).toLong(), fields[5] as Boolean)
+    }.toMutableStateList() },
+)
+
 @OptIn(ExperimentalAnimationApi::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun ComposerArea(controller: AgentSessionController, state: ChatSessionUiState, providerRepository: ProviderConfigRepository,
@@ -99,8 +111,11 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val providers by providerRepository.providers.collectAsState()
-    var text by remember(state.id) { mutableStateOf("") }
-    val attachments = remember(state.id) { mutableStateListOf<AttachmentFile>() }
+    val selectedProvider = providers.firstOrNull { it.id == state.providerId }
+    val selectedModel = selectedProvider?.models?.firstOrNull { it.id == state.modelId }
+    var text by rememberSaveable(state.id) { mutableStateOf("") }
+    val attachments = rememberSaveable(state.id, saver = AttachmentDraftSaver) { mutableStateListOf<AttachmentFile>() }
+    val workspaceExpanded = rememberSaveable(state.id, saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
     var menu by remember { mutableStateOf<String?>(null) }
     var workspacePicker by remember { mutableStateOf(false) }
     var usageSheet by remember { mutableStateOf(false) }
@@ -207,18 +222,15 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         }
                     }
                     Box {
-                        ComposerButton("模型 ${state.modelId}", menu == "model", { menu = if (menu == "model") null else "model" }) { Symbol("neurology") }
+                        ComposerButton("模型 ${state.modelId}", menu == "model", { menu = if (menu == "model") null else "model" }) {
+                            ModelIcon(state.modelId, selectedModel?.name ?: state.modelId, selectedProvider?.name.orEmpty())
+                        }
                         ComposerMenu(menu == "model", { menu = null }) {
                             providers.filter { it.enabled && it.models.isNotEmpty() }.forEach { provider ->
                                 Text(provider.name, Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant, fontWeight = FontWeight.Medium)
                                 provider.models.forEach { model ->
                                     PopupRow(model.name, "neurology", state.providerId == provider.id && state.modelId == model.id,
-                                        customIcon = {
-                                            val palette = listOf(Color(0xFF0B57D0), Color(0xFFC5551A), Color(0xFF146C2E), Color(0xFF8E24AA), Color(0xFF00796B), Color(0xFFB3261E), Color(0xFF5F6368))
-                                            Box(Modifier.size(52.dp).background(palette[(provider.id.hashCode() and Int.MAX_VALUE) % palette.size], CircleShape), contentAlignment = Alignment.Center) {
-                                                Text(provider.name.take(1).uppercase(), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                        }) {
+                                        customIcon = { ModelIcon(model.id, model.name, provider.name, Modifier.size(32.dp)) }) {
                                         controller.selectModel(provider.id, model.id); controller.selectThinkingLevel(model.thinkingLevel); menu = null
                                     }
                                 }
@@ -231,12 +243,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         ComposerButton("思考强度 ${state.thinkingLevel.label}", menu == "think", { menu = if (menu == "think") null else "think" }, lit = state.thinkingLevel != ThinkingLevel.NONE) { ThinkingBulb(state.thinkingLevel) }
                         ComposerMenu(menu == "think", { menu = null }) {
                             Text("思考强度", Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant)
-                            val api = providers.firstOrNull { it.id == state.providerId }?.apiType
-                            val levels = when (api) {
-                                ProviderApiType.CHAT -> listOf(ThinkingLevel.NONE, ThinkingLevel.LOW, ThinkingLevel.MEDIUM, ThinkingLevel.HIGH)
-                                ProviderApiType.MESSAGE -> ThinkingLevel.entries.filter { it != ThinkingLevel.XHIGH }
-                                else -> ThinkingLevel.entries
-                            }
+                            val levels = if (selectedModel?.reasoning == false) listOf(ThinkingLevel.NONE) else ThinkingLevel.entries
                             levels.forEach { level -> PopupRow(level.label, selected = state.thinkingLevel == level,
                                 customIcon = { ThinkingBulb(level) }) { controller.selectThinkingLevel(level); menu = null } }
                         }
@@ -258,7 +265,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
             }
         }
     }
-    if (workspacePicker) WorkspacePicker(controller, state.workspace, { workspacePicker = false }) { files ->
+    if (workspacePicker) WorkspacePicker(controller, state.workspace, workspaceExpanded, { workspacePicker = false }) { files ->
         attachments.addAll(files.filter { incoming -> attachments.none { it.path == incoming.path } }); workspacePicker = false
     }
     if (usageSheet) UsageSheet(state) { usageSheet = false }
@@ -278,26 +285,43 @@ private fun ComposerButton(description: String, active: Boolean, onClick: () -> 
 private fun ComposerMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     val transition = remember { MutableTransitionState(false) }
     transition.targetState = expanded
+    val scroll = rememberScrollState()
+    val motion = rememberTransition(transition, label = "composer-menu")
+    val scale by motion.animateFloat(transitionSpec = {
+        if (targetState) tween(500, easing = EmphDecelEasing) else tween(220, easing = EmphAccelEasing)
+    }, label = "menu-scale") { if (it) 1f else .6f }
+    val opacity by motion.animateFloat(transitionSpec = {
+        if (targetState) tween(300, easing = EmphDecelEasing) else tween(180, easing = EmphAccelEasing)
+    }, label = "menu-opacity") { if (it) 1f else 0f }
     val density = LocalDensity.current
     var pivot by remember { mutableFloatStateOf(.15f) }
+    var pivotY by remember { mutableFloatStateOf(1f) }
     val provider = remember(density) {
         object : PopupPositionProvider {
             override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
                 val inset = with(density) { 12.dp.roundToPx() }
-                val x = (anchorBounds.left - with(density) { 6.dp.roundToPx() }).coerceIn(inset, (windowSize.width - popupContentSize.width - inset).coerceAtLeast(inset))
-                val y = (anchorBounds.top - popupContentSize.height - with(density) { 10.dp.roundToPx() }).coerceAtLeast(inset)
+                val shadow = with(density) { 32.dp.roundToPx() }
+                val contentWidth = popupContentSize.width - shadow * 2
+                val x = (anchorBounds.left - with(density) { 6.dp.roundToPx() })
+                    .coerceIn(inset, (windowSize.width - contentWidth - inset).coerceAtLeast(inset)) - shadow
+                val y = (anchorBounds.top - popupContentSize.height + shadow - with(density) { 10.dp.roundToPx() })
+                    .coerceAtLeast(inset - shadow)
                 pivot = ((anchorBounds.left + anchorBounds.width / 2f - x) / popupContentSize.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                pivotY = ((popupContentSize.height - shadow).toFloat() / popupContentSize.height.coerceAtLeast(1)).coerceIn(0f, 1f)
                 return IntOffset(x, y)
             }
         }
     }
     if (transition.currentState || transition.targetState) Popup(popupPositionProvider = provider, onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true)) {
-        AnimatedVisibility(transition,
-            enter = scaleIn(tween(500, easing = EmphDecelEasing), .6f, TransformOrigin(pivot, 1f)) + fadeIn(tween(300, easing = EmphDecelEasing)),
-            exit = scaleOut(tween(220, easing = EmphAccelEasing), .6f, TransformOrigin(pivot, 1f)) + fadeOut(tween(180, easing = EmphAccelEasing))) {
+        properties = PopupProperties(focusable = true, clippingEnabled = false)) {
+        // Padding belongs inside the alpha/scale layer: both the popup window and the
+        // intermediate animation layer must contain the full elevation shadow.
+        Box(Modifier.graphicsLayer {
+            scaleX = scale; scaleY = scale; alpha = opacity
+            transformOrigin = TransformOrigin(pivot, pivotY); clip = false
+        }.padding(32.dp)) {
             Surface(color = LocalAgentColors.current.surface, shape = RoundedCornerShape(28.dp), shadowElevation = 12.dp) {
-                Column(Modifier.widthIn(min = 240.dp, max = 320.dp).heightIn(max = 520.dp).verticalScroll(rememberScrollState()).padding(vertical = 10.dp), content = content)
+                Column(Modifier.widthIn(min = 240.dp, max = 320.dp).heightIn(max = 520.dp).verticalScroll(scroll).padding(vertical = 10.dp), content = content)
             }
         }
     }
@@ -306,13 +330,14 @@ private fun ComposerMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Com
 @Composable
 private fun PopupRow(label: String, icon: String = "", selected: Boolean = false, customIcon: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
     val c = LocalAgentColors.current
-    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(22.dp)).clickable(onClick = onClick)
+    val background by animateColorAsState(if (selected) c.primaryContainer else Color.Transparent, tween(300, easing = EmphEasing))
+    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(22.dp)).background(background).clickable(onClick = onClick)
         .heightIn(min = 64.dp).padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Box(Modifier.size(52.dp).background(if (selected) c.primaryContainer else c.surfaceContainer, RoundedCornerShape(if (selected) 16.dp else 26.dp)), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(52.dp).background(if (selected) Color.Transparent else c.surfaceContainer, RoundedCornerShape(if (selected) 16.dp else 26.dp)), contentAlignment = Alignment.Center) {
             CompositionLocalProvider(LocalContentColor provides if (selected) c.onPrimaryContainer else c.onSurface) { if (customIcon != null) customIcon() else Symbol(icon) }
         }
-        Text(label, Modifier.weight(1f), fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal)
+        Text(label, Modifier.weight(1f), color = if (selected) c.onPrimaryContainer else c.onSurface, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal)
         if (selected) Symbol("check", tint = c.primary)
     }
 }
@@ -348,8 +373,8 @@ private fun PromptQueueList(prompts: List<QueuedPrompt>, controller: AgentSessio
 
 @Composable
 private fun QueueRow(prompt: QueuedPrompt, controller: AgentSessionController) {
-    var editing by remember(prompt.id) { mutableStateOf(false) }
-    var draft by remember(prompt.id, prompt.text) { mutableStateOf(prompt.text) }
+    var editing by rememberSaveable(prompt.id) { mutableStateOf(false) }
+    var draft by rememberSaveable(prompt.id, prompt.text) { mutableStateOf(prompt.text) }
     val c = LocalAgentColors.current
     val focus = remember { FocusRequester() }
     fun save() { if (draft.isBlank()) controller.removeQueuedPrompt(prompt.id) else controller.updateQueuedPrompt(prompt.id, draft.trim()); editing = false }
@@ -408,9 +433,9 @@ private fun UsageSheet(state: ChatSessionUiState, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun WorkspacePicker(controller: AgentSessionController, workspace: String, onDismiss: () -> Unit, onPick: (List<AttachmentFile>) -> Unit) {
+private fun WorkspacePicker(controller: AgentSessionController, workspace: String, expanded: MutableMap<String, Boolean>,
+    onDismiss: () -> Unit, onPick: (List<AttachmentFile>) -> Unit) {
     val selected = remember { mutableStateMapOf<String, WorkspaceFileItem>() }
-    val expanded = remember { mutableStateMapOf<String, Boolean>() }
     AgentSheet("项目文件", onDismiss) {
         Text(workspace, fontFamily = LocalAgentMono.current, fontSize = 14.sp, color = LocalAgentColors.current.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
         Column(Modifier.weight(1f, fill = false).heightIn(min = 180.dp, max = 480.dp).verticalScroll(rememberScrollState())) {

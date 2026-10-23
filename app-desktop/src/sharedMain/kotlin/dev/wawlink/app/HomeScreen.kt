@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +38,7 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
     var terminal by remember { mutableStateOf<String?>(null) }
     val sessions by app.sessions.collectAsState()
     val containers by app.runtime.containers.collectAsState()
+    val tabStates = rememberSaveableStateHolder()
     val visible = sessions.filter { session ->
         val r = session.record; val c = containers.firstOrNull { it.config.id == r.containerId }?.config
         (if (filter == "已归档") r.archived else !r.archived) &&
@@ -80,6 +82,7 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
         }
     }) { padding ->
         AnimatedContent(tab, modifier = Modifier.padding(padding), transitionSpec = { fadeIn(tween(420, easing = EmphDecelEasing)) togetherWith fadeOut(tween(180)) }) { current ->
+            tabStates.SaveableStateProvider(current) {
             if (current == 0) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 96.dp)) {
                 Row(Modifier.padding(top = 8.dp, bottom = 6.dp).fillMaxWidth().height(56.dp).background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(28.dp)).padding(start = 18.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Symbol("search")
@@ -116,6 +119,7 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
                     }
                 }
             } else ContainersHome(app, onContainer, { terminal = it })
+            }
         }
     }
     editing?.let { record -> SessionEditor(app, record, { editing = null }) { editing = null } }
