@@ -18,12 +18,18 @@
 - 返回页面、进入设置或切换会话时保留滚动与展开状态；草稿按会话隔离。弹出菜单缩放/淡入淡出时保留外部阴影，选中背景覆盖完整列表项。
 - 模型选择按钮始终显示当前模型图标，列表项显示各自模型图标，保留品牌原色；未匹配品牌时，以模型 ID 首字符的大写单字标识加圆形底色显示，底色按字母稳定生成，同字母同色，不得套用服务商图标或通用脑图标。品牌资源参照 Kelivo，来源可核实的 MIT 图标与差异记录位于 `agent-ui/src/commonMain/composeResources/files/model-icons/`，不得复制许可来源未核实的资源。
 - 模型资料仅按唯一 ID/规范化别名自动匹配，不模糊猜测；同步只追加新模型，已有编辑须显式应用匹配且保留手动字段。支持四项价格及独立的 `xhigh`、`max` 档位贯通 UI、配置和 RPC。
+- Slash 补全以当前会话 OMP 的原生命令目录及动态更新为准，不用固定菜单冒充可用命令；当前版本的内置命令可预设中文描述与 Material Symbols 图标，未预设或扩展命令仍显示，但使用默认图标且不显示描述。保留无参数 `/model` 的应用模型选择和 `/cost` 的用量快捷入口，带参数的命令交给 OMP。
+- 同一次 OMP ask 的多个问题显示在一张卡片中，按原生问题 ID 保存答案及预览状态；左下角使用灰色、无背景圆形前后切换按钮，配合左右非线性滑动。支持选项说明、推荐项、多选、自定义输入和提交前回看，一次提交完整答案。
+- Ask 富预览与 Agent 正文共用 SVG、Mermaid、图像及 Markdown 渲染；图表不依赖在线渲染服务，模型内容不得执行脚本、读取宿主文件或通过 SVG 加载外部资源。
 
 ## 项目结构与索引
 
 - `agent-protocol/`：独立 Kotlin 领域模型、会话控制、模型服务与设置契约；仅使用协程状态流，不依赖驱动或容器。
 - `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonMain/kotlin/dev/wawlink/ui/ModelIcon.kt` 统一离线品牌图标与 ID 字母标识，`src/commonMain/composeResources/files/model-icons/` 保存来源/许可，`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ModelIconTest.kt`、`FeedExpansionStateTest.kt` 和 `MarkdownTest.kt` 覆盖字母标识/颜色区分、展开状态和 Markdown 边界。
-- `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置及审批/执行模式边界。
+  - `src/commonMain/kotlin/dev/wawlink/ui/ComposerSlashCommands.kt` 提供原生命令的图标/中文展示匹配，`AskDraftState.kt` 保存按问题 ID 隔离的答案、页码与预览状态。
+  - 同目录的 `MarkdownParts.kt`、`RichGraphic.kt` 共用正文/Ask 富媒体入口；`src/jvmSharedMain/kotlin/dev/wawlink/ui/RichGraphicDocument.kt` 负责离线图表文档、SVG 安全与图像加载，`src/androidMain/kotlin/dev/wawlink/ui/RichGraphic.android.kt` 和 `src/desktopMain/kotlin/dev/wawlink/ui/RichGraphic.desktop.kt` 分别提供沙箱 WebView 与无窗口 Canvas/原生图像显示。
+  - `src/commonMain/composeResources/files/rich/` 保存 Mermaid 离线引擎、来源与许可证；`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ComposerSlashCommandsTest.kt`、`AskDraftStateTest.kt`、`MarkdownPartsTest.kt` 覆盖命令覆盖优先级、分组作答和富媒体解析边界，`src/desktopTest/kotlin/dev/wawlink/ui/RichGraphicSafetyTest.kt` 覆盖 SVG 主动内容、图像 URI 与重定向边界。
+- `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端；`src/jvmSharedMain/kotlin/dev/wawlink/runtime/RuntimeDns.kt` 负责边界安全的原子 DNS 更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeDnsTest.kt` 覆盖链接边界与配置切换。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。

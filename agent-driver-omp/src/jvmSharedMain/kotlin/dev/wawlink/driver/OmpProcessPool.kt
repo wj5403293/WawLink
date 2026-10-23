@@ -14,6 +14,7 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -215,7 +216,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private val stopGeneration = AtomicLong()
         private val requests = LinkedHashMap<String, JsonObject>()
         private val answeringApprovals = HashSet<String>()
-        private val askAnswers = LinkedHashMap<String, MutableMap<Int, String>>()
+        private val loadingSlashCommands = AtomicBoolean()
         private val eventJournal = journalFile(id)
         private val reducer = OmpEventReducer(ChatSessionUiState(id = id, title = title, workspace = workspace, autoApprove = initialAutoApprove))
         private val presentationLock = Any()
@@ -253,7 +254,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                         // No child from a previous host lifetime is owned by this controller.
                         reducer.update { it.copy(id = id, title = title, workspace = workspace,
                             feed = if (it.isRunning) stopFeed(it.feed) else it.feed,
-                            status = if (it.isRunning) SessionStatus.STOPPED else it.status, actionText = "准备就绪") }
+                            status = if (it.isRunning) SessionStatus.STOPPED else it.status, actionText = "准备就绪",
+                            slashCommands = emptyList(), slashCommandsLoading = false, slashCommandsError = null) }
                         synchronized(presentationLock) {
                             historyReady = true
                             var position = reducer.currentUserPosition()
@@ -346,17 +348,21 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     prompt.dispatching = true
                     if (prompt.text == originalText) prepared.first else attachmentPrompt(prompt.text, prepared.second)
                 }
-                if (backendState.isRunning || !backendSettled) {
+                val running = backendState.isRunning || !backendSettled
+                val nativeSlash = message.startsWith("/") && prompt.attachments.isEmpty()
+                if (running && !nativeSlash) {
                     enqueue(message, prepared.second, prepared.third, prompt.id, prompt.position)
                 } else {
-                    startedNanos = System.nanoTime()
+                    if (!running) startedNanos = System.nanoTime()
                     local(buildJsonObject {
                         put("action", "user"); put("localId", prompt.id); put("text", message)
                         put("timestamp", prompt.timestamp); put("attachments", attachmentsJson(prepared.second))
                         put("position", positionJson(prompt.position))
+                        if (running) put("preserveRun", true)
                     })
                     command("prompt", buildJsonObject {
                         put("message", message); if (prepared.third.isNotEmpty()) put("images", prepared.third)
+                        if (running) put("streamingBehavior", "followUp")
                     }, timeoutMs = 180_000, requestId = prompt.id)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -535,43 +541,27 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
         }
 
-        override fun respondAsk(nodeId: String, selectedOption: String) {
+        override fun respondAsk(nodeId: String, answers: List<AskAnswer>) {
             sessionScope.launch {
                 try {
-                    val requestId = nodeId.substringBefore(":q:")
-                    val request = stateMutex.withLock { requests[requestId] } ?: error("提问请求已失效")
-                    if (request.string("method") == "ask") {
-                        val questions = request["questions"]!!.jsonArray
-                        val index = nodeId.substringAfter(":q:", "0").toInt()
-                        require(index in questions.indices)
-                        val answers = stateMutex.withLock {
-                            askAnswers.getOrPut(requestId) { LinkedHashMap() }.also { it[index] = selectedOption }.toMap()
-                        }
-                        local(buildJsonObject { put("action", "ask"); put("nodeId", nodeId); put("answer", selectedOption) })
-                        if (answers.size == questions.size) {
-                            writeFrame(buildJsonObject {
-                                put("type", "extension_ui_response"); put("id", requestId)
-                                put("answers", buildJsonArray {
-                                    questions.forEachIndexed { questionIndex, element ->
-                                        val question = element.jsonObject
-                                        val answer = answers.getValue(questionIndex)
-                                        val choices = question["options"]?.jsonArray.orEmpty().map { it.jsonObject.string("label") }
-                                        add(buildJsonObject {
-                                            put("id", question.string("id"))
-                                            put("selectedOptions", if (answer in choices) JsonArray(listOf(JsonPrimitive(answer))) else JsonArray(emptyList()))
-                                            if (answer !in choices) put("customInput", answer)
-                                        })
-                                    }
-                                })
-                            })
-                            stateMutex.withLock { requests.remove(requestId); askAnswers.remove(requestId) }
-                        }
-                    } else {
-                        writeFrame(buildJsonObject { put("type", "extension_ui_response"); put("id", requestId); put("value", selectedOption) })
-                        local(buildJsonObject { put("action", "ask"); put("nodeId", nodeId); put("answer", selectedOption) })
-                        stateMutex.withLock { requests.remove(requestId) }
+                    stateMutex.withLock {
+                        val request = requests[nodeId] ?: error("提问请求已失效")
+                        val card = findAskCard(reducer.state.feed, nodeId) ?: error("提问卡片已失效")
+                        check(!card.isResolved) { "提问已回答或取消" }
+                        val ordered = validateAskAnswers(card.questions, answers)
+                        writeFrame(buildJsonObject {
+                            put("type", "extension_ui_response"); put("id", nodeId)
+                            if (request.string("method") == "ask") put("answers", askAnswersJson(ordered))
+                            else {
+                                val answer = ordered.single()
+                                put("value", answer.customInput ?: answer.selectedOptions.single())
+                            }
+                        })
+                        recordLocal(buildJsonObject { put("action", "ask"); put("nodeId", nodeId); put("answers", askAnswersJson(ordered)) })
+                        requests.remove(nodeId)
                     }
-                } catch (failure: Exception) { if (failure !is CancellationException) fail(failure) }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) { fail(failure) }
             }
         }
 
@@ -579,6 +569,22 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val name = command.trim().removePrefix("/")
             require(name.isNotBlank() && !name.contains('\n'))
             sendPrompt("/$name${if (args.isBlank()) "" else " $args"}")
+        }
+
+        override fun loadSlashCommands() {
+            if (disposed || !loadingSlashCommands.compareAndSet(false, true)) return
+            submit {
+                mutate { it.copy(slashCommandsLoading = true, slashCommandsError = null) }
+                try {
+                    if (process?.isAlive == true) command("get_available_commands") else ensureStarted()
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) {
+                    mutate { it.copy(slashCommandsError = failure.message ?: "无法加载 OMP 指令") }
+                } finally {
+                    loadingSlashCommands.set(false)
+                    mutate { it.copy(slashCommandsLoading = false) }
+                }
+            }
         }
 
         override fun listWorkspaceFiles(relativePath: String): Flow<List<WorkspaceFileItem>> = flow {
@@ -664,6 +670,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 command("set_ask_dialog", buildJsonObject { put("enabled", true) })
                 command("set_session_name", buildJsonObject { put("name", state.value.title) })
                 command("get_state")
+                command("get_available_commands")
                 command("get_session_stats")
                 for ((index, queued) in restoredQueue.withIndex()) {
                     if (startupGeneration != stopGeneration.get()) {
@@ -775,11 +782,12 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 if (type == "extension_ui_request") {
                     when (frame.string("method")) {
                         "select", "confirm", "ask", "input", "editor" -> requests[frame.string("id")] = frame
-                        "cancel" -> { requests.remove(frame.string("targetId")); askAnswers.remove(frame.string("targetId")) }
+                        "cancel" -> requests.remove(frame.string("targetId"))
                     }
                 }
-                // Heartbeat snapshots still reduce state but need not inflate the durable feed journal.
-                if (!(type == "response" && frame.string("id").startsWith("hb-"))) appendJournal(frame)
+                // Command metadata is process-local; it must not replay stale plugins after restart.
+                if (type != "available_commands_update" && !(type == "response" &&
+                    (frame.string("id").startsWith("hb-") || frame.string("command") == "get_available_commands"))) appendJournal(frame)
                 reducer.reduce(frame)
                 val automatic = type == "extension_ui_request" && reducer.state.autoApprove && isApprovalRequest(frame)
                 if (!automatic) publishState()
@@ -791,8 +799,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             })
             if (type == "response") {
                 if (frame["success"]?.jsonPrimitive?.booleanOrNull == false) rejectPrompt(frame.string("id"), frame.string("error", "OMP 请求失败"))
-                else if (frame.string("command") == "follow_up" ||
-                    (frame.string("command") == "prompt" && frame["data"]?.jsonObject?.get("agentInvoked")?.jsonPrimitive?.booleanOrNull == false)) completePrompt(frame.string("id"))
+                else if (frame.string("command") == "follow_up") completePrompt(frame.string("id"))
+                else if (frame.string("command") == "prompt" && frame["data"]?.jsonObject?.get("agentInvoked")?.jsonPrimitive?.booleanOrNull == false) {
+                    completePrompt(frame.string("id"))
+                    sessionScope.launch {
+                        runCatching { command("get_state") }.onFailure { if (it !is CancellationException && process != null) fail(it) }
+                    }
+                }
             }
             if (type == "prompt_result") {
                 if (frame["agentInvoked"]?.jsonPrimitive?.booleanOrNull == false && frame.string("status") == "error") {
@@ -847,7 +860,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val closedFailure = IllegalStateException("OMP 会话进程已关闭")
             pending.values.forEach { it.completeExceptionally(closedFailure) }
             pending.clear()
-            stateMutex.withLock { requests.clear(); askAnswers.clear() }
+            stateMutex.withLock { requests.clear() }
             if (backendState.isRunning) local(buildJsonObject { put("action", "stopped") })
             saveMetadata()
         }
@@ -937,7 +950,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     val position = frame["position"] as? JsonObject
                     reducer.addUserMessage(UserMessageItem(frame.string("localId"), frame.string("text"), parseAttachments(frame["attachments"]),
                         frame["timestamp"]?.jsonPrimitive?.longOrNull ?: 0), position?.let(::parsePosition) ?: reducer.currentUserPosition())
-                    reducer.update { it.copy(status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
+                    if (frame["preserveRun"]?.jsonPrimitive?.booleanOrNull != true)
+                        reducer.update { it.copy(status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
                 }
                 "prompt_failed" -> reducer.update { it.copy(
                     feed = removeFeedItem(it.feed, frame.string("promptId")),
@@ -975,7 +989,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     current.copy(feed = feed, status = if (hasUnresolvedDialog(feed)) SessionStatus.WAITING else SessionStatus.RUNNING, error = null, actionText = "继续执行")
                 }
                 "ask" -> reducer.update { current ->
-                    val feed = mapFeed(current.feed) { node -> if (node is AskCardItem && node.id == frame.string("nodeId")) node.copy(selectedAnswer = frame.string("answer")) else node }
+                    val answers = parseAskAnswers(frame["answers"])
+                    val feed = mapFeed(current.feed) { node ->
+                        if (node is AskCardItem && node.id == frame.string("nodeId")) node.copy(answers = answers, cancelled = false) else node
+                    }
                     current.copy(feed = feed, status = if (hasUnresolvedDialog(feed)) SessionStatus.WAITING else SessionStatus.RUNNING, error = null)
                 }
             }
@@ -1004,7 +1021,25 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     if (line.isNotBlank()) {
                         try {
                             val frame = DriverJson.parseToJsonElement(line).jsonObject
-                            if (frame.string("type") == "wawlink_local") applyLocal(frame) else reducer.reduce(frame)
+                            if (frame.string("type") == "wawlink_local") {
+                                if (frame.string("action") == "ask" && frame["answers"] == null) {
+                                    // Read old per-question journal answers into the grouped native card.
+                                    val oldId = frame.string("nodeId")
+                                    val requestId = oldId.substringBeforeLast(":q:", oldId)
+                                    val card = findAskCard(reducer.state.feed, requestId)
+                                    val index = oldId.substringAfterLast(":q:", "0").toIntOrNull() ?: 0
+                                    val question = card?.questions?.getOrNull(index)
+                                    if (question != null) {
+                                        val value = frame.string("answer")
+                                        val answer = if (question.options.any { it.label == value }) AskAnswer(question.id, listOf(value))
+                                            else AskAnswer(question.id, customInput = value)
+                                        val restored = card.answers.orEmpty().filterNot { it.questionId == question.id } + answer
+                                        reducer.update { state -> state.copy(feed = mapFeed(state.feed) { node ->
+                                            if (node is AskCardItem && node.id == requestId) node.copy(answers = restored) else node
+                                        }) }
+                                    }
+                                } else applyLocal(frame)
+                            } else reducer.reduce(frame)
                         } catch (failure: Exception) {
                             // An interrupted final append must not erase the readable transcript prefix.
                             reducer.update { it.copy(error = "历史记录部分损坏：${failure.message}", status = SessionStatus.ERROR) }
@@ -1203,7 +1238,7 @@ private fun parseAttachments(element: JsonElement?): List<AttachmentFile> = (ele
 private fun mapFeed(items: List<FeedItem>, transform: (FeedItem) -> FeedItem): List<FeedItem> = items.map { item -> transform(if (item is StepGroupNodeItem) item.copy(children = mapFeed(item.children, transform)) else item) }
 private fun hasUnresolvedDialog(items: List<FeedItem>): Boolean = items.any { item -> when (item) {
     is ApprovalCardItem -> item.resolution == null
-    is AskCardItem -> item.selectedAnswer == null
+    is AskCardItem -> !item.isResolved
     is StepGroupNodeItem -> hasUnresolvedDialog(item.children)
     else -> false
 } }
@@ -1213,9 +1248,44 @@ private fun stopFeed(items: List<FeedItem>): List<FeedItem> = mapFeed(items) { i
     is ThinkingNodeItem -> item.copy(isStreaming = false)
     is AssistantMessageItem -> item.copy(isStreaming = false)
     is ApprovalCardItem -> if (item.resolution == null) item.copy(resolution = ApprovalDecision.DENY) else item
-    is AskCardItem -> if (item.selectedAnswer == null) item.copy(selectedAnswer = "已取消") else item
+    is AskCardItem -> if (!item.isResolved) item.copy(cancelled = true) else item
     else -> item
 } }
+
+private fun findAskCard(items: List<FeedItem>, id: String): AskCardItem? {
+    for (item in items) {
+        if (item is AskCardItem && item.id == id) return item
+        if (item is StepGroupNodeItem) findAskCard(item.children, id)?.let { return it }
+    }
+    return null
+}
+
+internal fun validateAskAnswers(questions: List<AskQuestion>, answers: List<AskAnswer>): List<AskAnswer> {
+    require(answers.size == questions.size && answers.map { it.questionId }.toSet().size == answers.size) { "请完整回答所有问题" }
+    return questions.map { question ->
+        val answer = answers.firstOrNull { it.questionId == question.id } ?: error("缺少问题的回答：${question.id}")
+        require(answer.selectedOptions.distinct().size == answer.selectedOptions.size &&
+            answer.selectedOptions.all { label -> question.options.any { it.label == label } }) { "回答包含无效选项" }
+        val custom = answer.customInput?.takeIf { it.isNotBlank() }
+        require(question.multi || (answer.selectedOptions.size <= 1 && (custom == null || answer.selectedOptions.isEmpty()))) { "此问题只能选择一个回答" }
+        require(question.multi || answer.selectedOptions.isNotEmpty() || custom != null) { "请先选择选项或填写回答" }
+        answer.copy(customInput = custom)
+    }
+}
+
+private fun askAnswersJson(answers: List<AskAnswer>): JsonArray = buildJsonArray {
+    for (answer in answers) add(buildJsonObject {
+        put("id", answer.questionId)
+        put("selectedOptions", JsonArray(answer.selectedOptions.map(::JsonPrimitive)))
+        answer.customInput?.let { put("customInput", it) }
+    })
+}
+
+private fun parseAskAnswers(value: JsonElement?): List<AskAnswer> = (value as? JsonArray).orEmpty().map { element ->
+    val answer = element.jsonObject
+    AskAnswer(answer.string("id"), answer["selectedOptions"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content },
+        answer["customInput"]?.jsonPrimitive?.contentOrNull)
+}
 
 /** Source-compatible protocol-v2 reassembly, including strict byte/order/UTF-8 validation. */
 internal class OmpFrameDecoder {

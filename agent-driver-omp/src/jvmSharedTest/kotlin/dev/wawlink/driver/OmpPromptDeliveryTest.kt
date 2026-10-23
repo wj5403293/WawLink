@@ -177,7 +177,7 @@ class OmpPromptDeliveryTest {
             transport.respond(request)
             transport.emit("""{"type":"extension_ui_request","id":"question","method":"select","title":"选择下一步","options":["Approve","Deny"]}""")
             val waiting = awaitState { it.feed.any { item -> item.id == "question" } }
-            assertNull(waiting.feed.filterIsInstance<AskCardItem>().single().selectedAnswer)
+            assertFalse(waiting.feed.filterIsInstance<AskCardItem>().single().isResolved)
             assertEquals(SessionStatus.WAITING, waiting.status)
             assertFalse(transport.hasUiResponse())
         }
@@ -224,6 +224,79 @@ class OmpPromptDeliveryTest {
             pool = OmpProcessPool(runtime, data)
             val restoredAgain = pool.session("session", "fixture", "/workspace", autoApprove = false)
             withTimeout(5_000) { restoredAgain.state.first { it.autoApprove } }
+        }
+    }
+
+    @Test fun incompleteAskSubmissionStaysPendingAndValidBatchIsSentOnceInNativeOrder() = runBlocking {
+        fixture {
+            gate.complete(transport)
+            controller.sendPrompt("分组提问")
+            val prompt = transport.request()
+            transport.acceptUser(prompt)
+            transport.respond(prompt)
+            transport.emit("""{"type":"extension_ui_request","id":"ask-batch","method":"ask","questions":[{"id":"language","question":"语言？","options":[{"label":"Kotlin (Recommended)"}]},{"id":"target","question":"平台？","multi":true,"options":[{"label":"Android"},{"label":"Linux"}]}]}""")
+            awaitState { it.feed.any { item -> item.id == "ask-batch" } }
+            controller.respondAsk("ask-batch", listOf(AskAnswer("language", listOf("Kotlin (Recommended)"))))
+            val rejected = awaitState { it.error != null }
+            assertEquals(SessionStatus.WAITING, rejected.status)
+            assertFalse(rejected.feed.filterIsInstance<AskCardItem>().single().isResolved)
+            assertFalse(transport.hasUiResponse())
+            val answers = listOf(AskAnswer("target", listOf("Android", "Linux"), "另需桌面版"), AskAnswer("language", listOf("Kotlin (Recommended)")))
+            controller.respondAsk("ask-batch", answers)
+            val response = transport.uiResponse()
+            val nativeAnswers = response["answers"]!!.jsonArray
+            assertEquals(listOf("language", "target"), nativeAnswers.map { it.jsonObject.string("id") })
+            assertEquals("Kotlin (Recommended)", nativeAnswers[0].jsonObject["selectedOptions"]!!.jsonArray.single().jsonPrimitive.content)
+            val accepted = awaitState { it.feed.filterIsInstance<AskCardItem>().single().isResolved }
+            assertEquals(listOf(answers[1], answers[0]), accepted.feed.filterIsInstance<AskCardItem>().single().answers)
+            controller.respondAsk("ask-batch", answers)
+            awaitState { it.error != null }
+            assertFalse(transport.hasUiResponse())
+        }
+    }
+
+    @Test fun nativeAnswerValidationRejectsWrongQuestionsUnknownChoicesAndSingleChoiceAmbiguity() {
+        val question = AskQuestion("one", "选择", options = listOf(AskOption("A"), AskOption("B")))
+        assertFailsWith<IllegalArgumentException> { validateAskAnswers(listOf(question), listOf(AskAnswer("one", listOf("other")))) }
+        assertFailsWith<IllegalStateException> { validateAskAnswers(listOf(question), listOf(AskAnswer("different", listOf("A")))) }
+        assertFailsWith<IllegalArgumentException> { validateAskAnswers(listOf(question), listOf(AskAnswer("one", listOf("A", "B")))) }
+        assertFailsWith<IllegalArgumentException> { validateAskAnswers(listOf(question), listOf(AskAnswer("one", listOf("A"), "额外回答"))) }
+        assertFailsWith<IllegalArgumentException> { validateAskAnswers(listOf(question), listOf(AskAnswer("one"))) }
+        assertFailsWith<IllegalArgumentException> { validateAskAnswers(listOf(question), listOf(AskAnswer("one", listOf("A", "A")))) }
+        assertEquals(listOf(AskAnswer("one")), validateAskAnswers(listOf(question.copy(multi = true)), listOf(AskAnswer("one"))))
+    }
+
+    @Test fun slashDuringExecutionUsesNativeParserWithoutResettingTheActiveRun() = runBlocking {
+        fixture {
+            gate.complete(transport)
+            controller.sendPrompt("正在执行的任务")
+            val prompt = transport.request()
+            transport.acceptUser(prompt)
+            transport.respond(prompt)
+            transport.emit("""{"type":"extension_ui_request","id":"pending-ask","method":"select","title":"等待选择","options":["A","B"]}""")
+            awaitState { it.status == SessionStatus.WAITING }
+            controller.executeSlashCommand("todo", "help")
+            val slash = transport.request()
+            assertEquals("prompt", slash.string("type"))
+            assertEquals("followUp", slash.string("streamingBehavior"))
+            assertEquals(SessionStatus.WAITING, controller.state.value.status)
+            transport.respond(slash, data = buildJsonObject { put("agentInvoked", false) })
+            val preserved = awaitState { it.queuedPrompts.isEmpty() }
+            assertEquals(SessionStatus.WAITING, preserved.status)
+            assertFalse(preserved.feed.filterIsInstance<AskCardItem>().single().isResolved)
+        }
+    }
+
+    @Test fun nativeCommandResponseWithoutPromptResultStopsTheSessionIndicator() = runBlocking {
+        fixture {
+            gate.complete(transport)
+            controller.executeSlashCommand("todo", "help")
+            val request = transport.request()
+            assertEquals(SessionStatus.RUNNING, controller.state.value.status)
+            transport.respond(request, data = buildJsonObject { put("agentInvoked", false) })
+            val completed = awaitState { it.status == SessionStatus.DONE }
+            assertEquals("/todo help", completed.feed.filterIsInstance<UserMessageItem>().single().text)
+            assertTrue(completed.queuedPrompts.isEmpty())
         }
     }
 

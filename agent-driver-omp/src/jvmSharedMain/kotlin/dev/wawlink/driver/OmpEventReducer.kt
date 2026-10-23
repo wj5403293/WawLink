@@ -34,11 +34,9 @@ internal fun placeUserMessage(feed: List<FeedItem>, user: UserMessageItem, posit
  * Durable compaction boundaries require `get_entries` ancestry; partially retained groups
  * remain visible rather than losing content.
  *
- * Native UI card ids deliberately retain request ids for responses. Public AskCardItem
- * supports a single answer/free text, so upstream multi-select questions cannot expose
- * a multi-selection widget. Blocked/abandoned todo distinctions and automatic effort have
- * no exact public enum equivalent; blocked stays pending, abandoned completes, auto preserves
- * the last effective fixed thinking level.
+ * Native UI card ids retain request ids; ask questions retain their own ids and option metadata.
+ * Blocked/abandoned todo distinctions and automatic effort have no exact public enum equivalent;
+ * blocked stays pending, abandoned completes, auto preserves the last effective fixed level.
  */
 class OmpEventReducer(initial: ChatSessionUiState) {
     var state: ChatSessionUiState = initial
@@ -124,6 +122,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                 activeGroup = null
                 activeTitle = null
                 planId = null
+                state = state.copy(slashCommands = emptyList(), slashCommandsError = null)
             }
             "agent_start" -> {
                 if (startedAt == null) {
@@ -155,6 +154,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                 waiting()
             }
             "command_output" -> frame.string("text")?.let { put(AssistantMessageItem(generated("command"), it)) }
+            "available_commands_update" -> availableCommands(frame)
             "session_info_update" -> frame.string("title")?.let { state = state.copy(title = it) }
             "ask" -> askRequest(frame, frame.string("id") ?: generated("ask"))
             "queue_update" -> queue(frame)
@@ -302,6 +302,12 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                                 block.string("thinking").orEmpty(), old?.isExpanded ?: false))
                         }
                         "text" -> put(AssistantMessageItem(nodeId, block.string("text").orEmpty(), streaming))
+                        "image" -> {
+                            val mime = block.string("mimeType")
+                            val data = block.string("data")
+                            if (mime in imageMimeTypes && !data.isNullOrBlank())
+                                put(AssistantMessageItem(nodeId, "![图像](data:$mime;base64,$data)", streaming))
+                        }
                         "toolCall" -> block.string("id")?.let { tool(it, block.string("name").orEmpty(),
                             block.obj("arguments") ?: JsonObject(emptyMap()), block.string("intent")) }
                     }
@@ -498,10 +504,14 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         val title = frame.string("title").orEmpty()
         when (frame.string("method")) {
             "select" -> {
-                val options = frame.array("options").orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                val options = frame.array("options").orEmpty().mapIndexedNotNull { index, option ->
+                    askOption(option)?.let { value ->
+                        value.copy(description = value.description ?: frame.array("optionDetails")?.getOrNull(index)?.asObject()?.string("description"))
+                    }
+                }
                 if (isApprovalRequest(frame)) {
                     put(ApprovalCardItem(id, title.lineSequence().first(), title, title.substringAfter('\n', "")))
-                } else put(AskCardItem(id, title, title, options))
+                } else put(AskCardItem(id, title, listOf(AskQuestion(id, title, options = options))))
                 waiting()
             }
             "confirm" -> {
@@ -509,7 +519,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                 waiting()
             }
             "input", "editor" -> {
-                put(AskCardItem(id, title, frame.string("placeholder") ?: frame.string("prefill") ?: title, emptyList()))
+                put(AskCardItem(id, title, listOf(AskQuestion(id, frame.string("placeholder") ?: frame.string("prefill") ?: title))))
                 waiting()
             }
             "ask" -> askRequest(frame, id)
@@ -518,7 +528,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                 state = state.copy(feed = mapFeed(state.feed) {
                     when {
                         it is ApprovalCardItem && it.id == target && it.resolution == null -> it.copy(resolution = ApprovalDecision.DENY)
-                        it is AskCardItem && it.selectedAnswer == null && (it.id == target || it.id.startsWith("$target:q:")) -> it.copy(selectedAnswer = "已取消")
+                        it is AskCardItem && it.id == target && !it.isResolved -> it.copy(cancelled = true)
                         else -> it
                     }
                 })
@@ -531,22 +541,38 @@ class OmpEventReducer(initial: ChatSessionUiState) {
     }
 
     private fun askRequest(frame: JsonObject, id: String) {
-        val questions = frame.array("questions")
-        if (questions == null) {
-            put(AskCardItem(id, frame.string("title") ?: "需要你的回答", frame.string("question").orEmpty(),
-                frame.array("options").orEmpty().mapNotNull { optionLabel(it) }))
-        } else questions.forEachIndexed { index, question ->
-            val value = question.asObject() ?: return@forEachIndexed
-            put(AskCardItem("$id:q:$index", value.string("header") ?: "需要你的回答", value.string("question").orEmpty(),
-                value.array("options").orEmpty().mapNotNull { optionLabel(it) }))
-        }
-        if (questions == null || questions.isNotEmpty()) waiting()
+        val questions = frame.array("questions")?.mapNotNull { question ->
+            val value = question.asObject() ?: return@mapNotNull null
+            val questionId = value.string("id") ?: return@mapNotNull null
+            AskQuestion(questionId, value.string("question").orEmpty(), value.string("header"),
+                value.array("options").orEmpty().mapNotNull(::askOption), value.bool("multi") == true,
+                value.number("recommended")?.toInt())
+        } ?: listOf(AskQuestion(id, frame.string("question").orEmpty(),
+            options = frame.array("options").orEmpty().mapNotNull(::askOption)))
+        if (questions.isEmpty()) return
+        val previous = item(id) as? AskCardItem
+        put(AskCardItem(id, frame.string("title") ?: "需要你的回答", questions, previous?.answers, previous?.cancelled == true))
+        if (previous?.isResolved != true) waiting()
     }
 
-    private fun optionLabel(value: JsonElement) = value.asObject()?.string("label") ?: (value as? JsonPrimitive)?.contentOrNull
+    private fun askOption(value: JsonElement): AskOption? {
+        val option = value.asObject()
+        val label = option?.string("label") ?: (value as? JsonPrimitive)?.contentOrNull ?: return null
+        return AskOption(label, option?.string("description"), option?.string("preview"))
+    }
+
+    private fun availableCommands(frame: JsonObject) {
+        val commands = frame.array("commands") ?: return
+        state = state.copy(slashCommands = commands.mapNotNull { element ->
+            val command = element.asObject() ?: return@mapNotNull null
+            val name = command.string("name")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            AgentSlashCommand(name, command.string("source").orEmpty(),
+                command.array("aliases").orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull })
+        }, slashCommandsError = null)
+    }
     private fun waiting() { state = state.copy(status = SessionStatus.WAITING, actionText = "等待你的回复") }
     private fun hasPendingDialog(): Boolean = allItems(state.feed).any {
-        it is ApprovalCardItem && it.resolution == null || it is AskCardItem && it.selectedAnswer == null
+        it is ApprovalCardItem && it.resolution == null || it is AskCardItem && !it.isResolved
     }
 
     private fun queue(frame: JsonObject) {
@@ -563,11 +589,14 @@ class OmpEventReducer(initial: ChatSessionUiState) {
 
     private fun response(frame: JsonObject) {
         if (frame.bool("success") == false) {
-            state = state.copy(error = frame.string("error") ?: "RPC 请求失败")
+            val error = frame.string("error") ?: "RPC 请求失败"
+            state = if (frame.string("command") == "get_available_commands") state.copy(slashCommandsError = error)
+                else state.copy(error = error)
             return
         }
         val data = frame.obj("data") ?: return
         when (frame.string("command")) {
+            "get_available_commands" -> availableCommands(data)
             "get_entries" -> {
                 data.array("entries")?.forEach { entry -> entry.asObject()?.let { value ->
                     value.string("id")?.let { entries[it] = value }
@@ -596,6 +625,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                 data.obj("contextUsage")?.let(::context)
                 if (data.bool("isStreaming") == true && !hasPendingDialog()) state = state.copy(status = SessionStatus.RUNNING)
                 if (data.bool("isCompacting") == true) state = state.copy(actionText = "正在压缩上下文")
+                if (data.bool("isSettled") == true && state.isRunning && !hasPendingDialog()) settleStatus()
             }
             "get_session_stats" -> {
                 val tokens = data.obj("tokens")
@@ -701,7 +731,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                 "user" -> compactedIds.add(userFeedIds[id] ?: id)
                 "assistant" -> message.array("content")?.forEachIndexed { index, element ->
                     val type = element.asObject()?.string("type")
-                    if (type == "text" || type == "thinking") compactedIds.add(blockId(id, index))
+                    if (type == "text" || type == "thinking" || type == "image") compactedIds.add(blockId(id, index))
                     element.asObject()?.takeIf { it.string("type") == "toolCall" }?.string("id")?.let { callId ->
                         if (branch.none { it.obj("message")?.string("toolCallId") == callId }) {
                             compactedIds.add("${id.substringBefore(":message:")}:tool:$callId")
@@ -807,6 +837,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
     private fun isEdit(name: String) = name == "edit" || name == "write" || name == "apply_patch" || name == "ast_edit"
     private fun escape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     private val todoNames = setOf("todo", "todo_write", "todowrite")
+    private val imageMimeTypes = setOf("image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/svg+xml")
 }
 
 private fun JsonElement?.asObject(): JsonObject? = this as? JsonObject

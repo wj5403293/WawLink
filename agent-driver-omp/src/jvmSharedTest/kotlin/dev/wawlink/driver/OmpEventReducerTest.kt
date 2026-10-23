@@ -308,20 +308,23 @@ class OmpEventReducerTest {
         assertEquals(1.5, reducer.state.usage.cost)
     }
 
-    @Test fun nativeApprovalAndEveryAskQuestionRetainResponseRoutingIds() {
+    @Test fun nativeAskGroupsQuestionsAndCancellationResolvesTheWholeRequest() {
         val reducer = reducer()
         reducer.accept("""{"type":"extension_ui_request","id":"approval","method":"select","title":"Allow tool: bash\ncommand: rm file","options":["Approve","Approve bash for this session","Deny"]}""")
         assertEquals("approval", reducer.state.feed.filterIsInstance<ApprovalCardItem>().single().id)
         assertEquals(SessionStatus.WAITING, reducer.state.status)
         reducer.accept("""{"type":"response","command":"get_state","success":true,"data":{"isStreaming":true}}""")
         assertEquals(SessionStatus.WAITING, reducer.state.status)
-        reducer.accept("""{"type":"extension_ui_request","id":"questions","method":"ask","questions":[{"id":"language","header":"语言","question":"使用什么语言？","options":[{"label":"Kotlin","description":"JVM"}]},{"id":"target","question":"目标平台？","multi":true,"options":[{"label":"Android"},{"label":"Linux"}]}]}""")
-        val cards = reducer.state.feed.filterIsInstance<AskCardItem>()
-        assertEquals(listOf("questions:q:0", "questions:q:1"), cards.map { it.id })
-        assertEquals(listOf("Kotlin"), cards[0].options)
-        assertEquals(listOf("Android", "Linux"), cards[1].options)
+        reducer.accept("""{"type":"extension_ui_request","id":"questions","method":"ask","questions":[{"id":"language","header":"语言","question":"使用什么语言？","recommended":0,"options":[{"label":"Kotlin","description":"JVM","preview":"**预览**"}]},{"id":"target","question":"目标平台？","multi":true,"options":[{"label":"Android"},{"label":"Linux"}]}]}""")
+        val card = reducer.state.feed.filterIsInstance<AskCardItem>().single()
+        assertEquals("questions", card.id)
+        assertEquals(listOf("language", "target"), card.questions.map { it.id })
+        assertEquals(AskOption("Kotlin", "JVM", "**预览**"), card.questions[0].options.single())
+        assertEquals(0, card.questions[0].recommended)
+        assertTrue(card.questions[1].multi)
         reducer.accept("""{"type":"extension_ui_request","id":"cancel","method":"cancel","targetId":"questions"}""")
-        assertTrue(reducer.state.feed.filterIsInstance<AskCardItem>().all { it.selectedAnswer == "已取消" })
+        assertTrue(reducer.state.feed.filterIsInstance<AskCardItem>().single().cancelled)
+        assertTrue(reducer.state.feed.filterIsInstance<AskCardItem>().single().isResolved)
     }
 
     @Test fun nativeInputsSelectsAndConfirmAreInteractive() {
@@ -332,7 +335,18 @@ class OmpEventReducerTest {
         reducer.accept("""{"type":"extension_ui_request","id":"confirm","method":"confirm","title":"Continue?","message":"Confirm change"}""")
         assertEquals(listOf("select", "input", "editor"), reducer.state.feed.filterIsInstance<AskCardItem>().map { it.id })
         assertEquals("confirm", reducer.state.feed.filterIsInstance<ApprovalCardItem>().single().id)
-        assertEquals("existing", reducer.state.feed.filterIsInstance<AskCardItem>().last().question)
+        assertEquals("existing", reducer.state.feed.filterIsInstance<AskCardItem>().last().questions.single().question)
+    }
+
+    @Test fun nativeCatalogUpdatesReplaceRemovedCommandsAndRestartClearsOldWorkspaceMetadata() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"response","command":"get_available_commands","success":true,"data":{"commands":[{"name":"compact","source":"builtin"},{"name":"deploy","source":"extension","aliases":["ship"]}]}}""")
+        assertEquals(listOf("compact", "deploy"), reducer.state.slashCommands.map { it.name })
+        reducer.accept("""{"type":"available_commands_update","commands":[{"name":"ship","source":"custom"}]}""")
+        assertEquals(listOf("ship"), reducer.state.slashCommands.map { it.name })
+        reducer.accept("""{"type":"ready"}""")
+        assertTrue(reducer.state.slashCommands.isEmpty())
+        assertEquals(SessionStatus.RUNNING, reducer.state.status)
     }
 
     @Test fun readyGenerationsPreventProcessRestartMessageAndToolCollisions() {
@@ -495,5 +509,15 @@ class OmpEventReducerTest {
         assertEquals(SessionStatus.RUNNING, reducer.state.status)
         reducer.accept("""{"type":"session_settled"}""")
         assertEquals(SessionStatus.DONE, reducer.state.status)
+    }
+
+    @Test fun authoritativeSnapshotKeepsBackgroundWorkAndQuestionsPending() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"response","command":"get_state","success":true,"data":{"isStreaming":false,"isSettled":false}}""")
+        assertEquals(SessionStatus.RUNNING, reducer.state.status)
+        reducer.accept("""{"type":"extension_ui_request","id":"pending","method":"input","title":"Input"}""")
+        reducer.accept("""{"type":"response","command":"get_state","success":true,"data":{"isStreaming":false,"isSettled":true}}""")
+        assertEquals(SessionStatus.WAITING, reducer.state.status)
+        assertFalse(reducer.state.feed.filterIsInstance<AskCardItem>().single().isResolved)
     }
 }

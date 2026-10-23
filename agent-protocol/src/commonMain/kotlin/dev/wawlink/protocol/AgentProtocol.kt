@@ -15,8 +15,9 @@ interface AgentSessionController {
     fun selectThinkingLevel(level: ThinkingLevel)
     fun toggleExecutionMode(autoApprove: Boolean)
     fun respondApproval(nodeId: String, decision: ApprovalDecision)
-    fun respondAsk(nodeId: String, selectedOption: String)
+    fun respondAsk(nodeId: String, answers: List<AskAnswer>)
     fun executeSlashCommand(command: String, args: String)
+    fun loadSlashCommands()
     fun listWorkspaceFiles(relativePath: String): Flow<List<WorkspaceFileItem>>
 }
 
@@ -58,6 +59,7 @@ data class AttachmentFile(
 )
 data class WorkspaceFileItem(val name: String, val relativePath: String, val isDirectory: Boolean, val sizeBytes: Long = 0)
 data class QueuedPrompt(val id: String, val text: String, val attachments: List<AttachmentFile> = emptyList())
+data class AgentSlashCommand(val name: String, val source: String, val aliases: List<String> = emptyList())
 data class UsageInfo(
     val inputTokens: Long = 0,
     val outputTokens: Long = 0,
@@ -88,6 +90,9 @@ data class ChatSessionUiState(
     val addedLines: Int = 0,
     val removedLines: Int = 0,
     val error: String? = null,
+    val slashCommands: List<AgentSlashCommand> = emptyList(),
+    val slashCommandsLoading: Boolean = false,
+    val slashCommandsError: String? = null,
 ) {
     val isRunning: Boolean get() = status == SessionStatus.RUNNING || status == SessionStatus.WAITING
 }
@@ -134,7 +139,25 @@ sealed interface ToolDetail {
     data class PlainText(val text: String) : ToolDetail
 }
 data class ApprovalCardItem(override val id: String, val title: String, val description: String, val commandPreview: String, val resolution: ApprovalDecision? = null) : FeedItem
-data class AskCardItem(override val id: String, val title: String, val question: String, val options: List<String>, val selectedAnswer: String? = null) : FeedItem
+data class AskOption(val label: String, val description: String? = null, val preview: String? = null)
+data class AskQuestion(
+    val id: String,
+    val question: String,
+    val header: String? = null,
+    val options: List<AskOption> = emptyList(),
+    val multi: Boolean = false,
+    val recommended: Int? = null,
+)
+data class AskAnswer(val questionId: String, val selectedOptions: List<String> = emptyList(), val customInput: String? = null)
+data class AskCardItem(
+    override val id: String,
+    val title: String,
+    val questions: List<AskQuestion>,
+    val answers: List<AskAnswer>? = null,
+    val cancelled: Boolean = false,
+) : FeedItem {
+    val isResolved: Boolean get() = answers != null || cancelled
+}
 data class AssistantMessageItem(override val id: String, val markdownText: String, val isStreaming: Boolean = false) : FeedItem
 
 enum class ProviderApiType(val label: String) { CHAT("Chat"), RESPONSE("Response"), MESSAGE("Message") }

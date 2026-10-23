@@ -21,7 +21,28 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
         }
         commonTest.dependencies { implementation(kotlin("test")) }
-        val desktopMain by getting { dependencies { implementation(compose.desktop.currentOs) } }
+        val jvmSharedMain by creating {
+            dependsOn(commonMain.get())
+        }
+        androidMain.get().dependsOn(jvmSharedMain)
+        val desktopMain by getting {
+            dependsOn(jvmSharedMain)
+            dependencies {
+                implementation(compose.desktop.currentOs)
+                // JavaFX 21 runs on the application's JDK 17. Ship WebKit natives with the app.
+                val os = System.getProperty("os.name").lowercase()
+                val arm = System.getProperty("os.arch") in setOf("aarch64", "arm64")
+                val platform = when {
+                    os.contains("mac") -> if (arm) "mac-aarch64" else "mac"
+                    os.contains("win") -> "win"
+                    else -> if (arm) "linux-aarch64" else "linux"
+                }
+                listOf("base", "graphics", "controls", "media", "web").forEach {
+                    implementation("org.openjfx:javafx-$it:21.0.13:$platform")
+                }
+            }
+        }
+        val desktopTest by getting { dependencies { implementation(kotlin("test")) } }
     }
 }
 android {

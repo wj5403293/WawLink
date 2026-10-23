@@ -60,6 +60,9 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 
 - 主页管理多会话、搜索、容器/状态筛选、分支、批量置顶/归档/删除，并可直接处理待审批操作。
 - 聊天页支持真实流式输出、Todo 条件归组、工具详情和 Diff、审批/提问、运行中消息排队与编辑、附件、项目文件、斜杠命令和用量详情。
+- Slash 菜单从当前会话 OMP 的原生命令目录加载并跟随动态更新；第一次输入 `/` 时才启动目录查询，不发送用户 prompt。当前内置命令匹配中文描述与 Material Symbols 图标；未知、扩展或被自定义覆盖的命令仍显示，使用默认图标且不显示描述。无参数 `/model`、`/cost` 保留应用内快捷入口，带参数的命令交给 OMP 原生解析。
+- 同一次 ask 的多个问题共用一张卡片，左下角灰色无背景前后按钮配合左右非线性切换；问题 ID 固定答案、页码和预览状态。支持推荐项、选项描述、单选/多选、自定义输入、提交前回看与一次提交完整答案，提交后仍可查看；免审批不会自动回答普通问题。
+- Agent 正文与 ask 富预览共用 Markdown、SVG/Mermaid 代码块与 Markdown 图像显示。Mermaid 12.2.0 随 UI 离线打包；PNG/JPEG/GIF/WebP 使用原生解码，动画图像显示首帧。图像来源仅 HTTP(S) 与图像 data URL，不读取宿主文件；SVG 不允许脚本、外部资源、实体、事件或 foreignObject，错误内容显示中文原因。
 - 用户消息与运行中追加消息即时本地显示，发送失败只撤回对应的未接收消息并显示原因；收到原生用户消息后，后续模型执行失败仍保留该消息。消息按发送时的 Todo 与前置节点定位，后续工具、思考、任务切换及历史重放不改变其位置。加载状态使用 Material 3 标准进度组件。
 - 应用设置中的“新会话默认免审批”默认开启并持久化，只影响以后创建的会话；会话内仍能单独切换。开启免审批会立即回复已等待和后续工具审批，不自动回答普通提问，不改写全局工具权限配置；关闭时在下一轮启动恢复原生审批模式。
 - 新思考节点跟随当前活动 Todo 子任务；没有活动 Todo 时保持扁平。任务切换、完整快照与历史重放不迁移或重复既有思考节点。
@@ -87,6 +90,8 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 
 Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/libs/`。外部宿主需同时引入协议库及 Compose / 协程等正常运行依赖；不需要引入 OMP 驱动或容器模块。
 
+富图形的 Android 宿主需要可用且较新的 Android System WebView。Desktop 同时需要当前平台的 OpenJFX 21.0.13 `base/graphics/controls/media/web` 运行依赖（兼容 JDK 17），Linux 需要 GTK 3 及 JavaFX WebKit 的原生库；Gradle 工程已按平台声明。桌面使用无窗口 WebView/Canvas 生成原生 Compose 图片，不嵌入 Swing 子窗口，不需要 interop blending 参数。Mermaid 来源与 MIT 许可位于 `agent-ui/src/commonMain/composeResources/files/rich/`；分发 OpenJFX 运行库时保留其 GPL/ClassPath exception 及 WebKit 第三方通知。
+
 `dev.wawlink.ui` 的入口：
 
 | 入口 | 宿主提供的契约 |
@@ -97,6 +102,8 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 | `AgentTheme` | 宿主外观状态；设置页可置于同一主题内 |
 
 导航、文件选择、认证和 Agent 实现由宿主负责。协议使用 `StateFlow` / `Flow`；UI 只消费状态与控制契约，没有对具体驱动或容器的引用。
+
+`AgentSessionController.loadSlashCommands()` 负责按需加载目录，`ChatSessionUiState.slashCommands`/`slashCommandsError` 提供命令元数据与加载错误；目录不会作为历史重放。`respondAsk(nodeId, answers: List<AskAnswer>)` 一次接收同一原生请求的完整答案，以 `questionId` 对齐，不再按每道题分别调用。
 
 ## 预置环境与产物
 
@@ -146,5 +153,9 @@ DNS 修复已在完整交付 Rootfs 的 arm64 PRoot/QEMU 容器内验证：先�
 本轮另运行真实桌面界面：展开 Todo、思考与工具、滚动聊天并输入草稿，往返模型设置及切换另一个会话后，原会话消息区域截图逐像素一致；另一会话没有串入草稿。已检查菜单动画中的阴影、整行模型选中背景、品牌图标切换，以及模型编辑保存后的上下文、输出、四项价格和最大思考档位。真实目录联网匹配、唯一别名与未知 ID 行为通过独立烟测；原生 OMP RPC 分别设置 `xhigh`、`max` 并由 `get_state` 回读确认，未发送 prompt 或产生模型推理请求。历史 journal 回放及重复终态快照保持“前置工具 → 用户消息 → 思考 → 后置工具”的 ID、顺序与所属 Todo。Android APK 和 Desktop JAR 构建通过；不将这些结果标为 Android 真机交互验收。
 
 模型图标修正另通过实际桌面检查：在同一 OpenAI 服务下切换三个未知模型和 DeepSeek，按钮与列表按模型独立呈现；像素采样确认同首字母同底色、不同首字母不同底色。3 项新增回归覆盖 ID 首字符、大小写/后缀无关的配色、26 个字母的颜色区分及文本对比度。UI 测试、Android Debug APK 和 Desktop JAR 构建均通过，无模型推理请求。
+
+Slash、Ask 与富媒体本轮回归通过 109 项 Kotlin 测试（驱动 74、UI 35，无失败或跳过），Android Debug APK 与 Desktop JAR 构建通过。真实 OMP RPC 发现 52 条命令（含临时扩展），运行 `/todo help`，并验证同次 ask 的两道题按原生顺序一次提交、历史恢复及过期命令目录不重放；没有模型推理或认证使用。
+
+实际桌面已操作动态命令菜单、未知命令发送、多问题前后切换、推荐单选、多选、自定义输入、切页保留、完整答案检查与提交；正文及 Ask 预览均显示 SVG、Mermaid 和 PNG 图像，图表渲染生成有效彩色像素且始终仅一个应用窗口。另检查无效 Mermaid、不安全 SVG 与本机文件图像地址均显示中文原因，不执行内容。Android 富媒体仅完成编译打包，未将其标为设备端 WebView 渲染验收。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。

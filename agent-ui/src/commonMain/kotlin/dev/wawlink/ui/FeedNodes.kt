@@ -5,6 +5,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -14,9 +15,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -430,47 +435,190 @@ private fun ApprovalCard(node: ApprovalCardItem, controller: AgentSessionControl
 @Composable
 private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
     val c = LocalAgentColors.current
-    var selection by rememberSaveable(node.id) { mutableStateOf<String?>(null) }
-    var custom by rememberSaveable(node.id) { mutableStateOf("") }
-    var isCustom by rememberSaveable(node.id) { mutableStateOf(false) }
+    var draft by rememberSaveable(node.id, stateSaver = AskRequestDraftSaver) { mutableStateOf(AskRequestDraft()) }
+    val page = draft.page(node.questions)
+    val active = node.questions.getOrNull(page)
+    fun answer(question: AskQuestion): AskAnswer? = if (node.answers != null) {
+        node.answers?.firstOrNull { it.questionId == question.id }
+    } else draft.question(question.id).answer(question)
+
     Surface(color = c.surfaceContainer, shape = RoundedCornerShape(28.dp)) {
-        Box(Modifier.padding(20.dp)) {
+        Column(Modifier.padding(20.dp)) {
             NodeFrame("help", LeadStyle.TONE, false, node.title, null) {
-                Expand(node.selectedAnswer == null) {
-                    Column {
-                        Text(node.question, Modifier.padding(top = 4.dp), fontSize = 18.sp)
-                        Column(Modifier.padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            node.options.forEach { option ->
-                                val chosen = !isCustom && selection == option
-                                Surface(color = if (chosen) c.primaryContainer else c.surface, shape = RoundedCornerShape(if (chosen) 28.dp else 20.dp),
-                                    modifier = Modifier.fillMaxWidth().clickable { selection = option; isCustom = false }) {
-                                    Row(Modifier.heightIn(min = 60.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                        Symbol(if (chosen) "radio_button_checked" else "radio_button_unchecked", tint = if (chosen) c.primary else c.outline, filled = chosen)
-                                        Text(option, fontSize = 17.sp)
+                if (node.isResolved) {
+                    Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Symbol(if (node.cancelled) "block" else "check_circle", size = 20.dp, tint = c.onSurfaceVariant)
+                        Text(if (node.cancelled) "已取消 · 可查看答案" else "已提交 · 可查看答案", color = c.onSurfaceVariant, fontSize = 14.sp)
+                    }
+                }
+                if (node.questions.isEmpty()) {
+                    Text("没有可回答的问题", Modifier.padding(top = 12.dp), color = c.onSurfaceVariant)
+                } else if (draft.reviewing) {
+                    Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(if (node.isResolved) "全部答案" else "检查全部答案", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+                        node.questions.forEachIndexed { index, question ->
+                            Surface(color = c.surface, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(14.dp)) {
+                                    Text("${index + 1}. ${question.question}", fontWeight = FontWeight.Medium)
+                                    val response = answer(question)
+                                    Text(response?.let { (it.selectedOptions + listOfNotNull(it.customInput)).joinToString("\n").ifEmpty { "不选择任何选项" } } ?: "尚未作答",
+                                        Modifier.padding(top = 8.dp), color = if (response == null && !node.isResolved) c.error else c.onSurfaceVariant)
+                                    TextButton({ draft = draft.show(question.id) }) {
+                                        Text(if (node.isResolved) "查看问题" else "编辑答案")
                                     }
                                 }
                             }
-                            Surface(color = if (isCustom) c.primaryContainer else c.surface, shape = RoundedCornerShape(if (isCustom) 28.dp else 20.dp)) {
-                                Row(Modifier.heightIn(min = 60.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                    Symbol("edit", tint = if (isCustom) c.primary else c.outline)
-                                    BasicTextField(custom, { custom = it; isCustom = true }, Modifier.weight(1f).padding(vertical = 12.dp),
-                                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.onSurface),
-                                        decorationBox = { inner -> if (custom.isEmpty()) Text("其他想法", color = c.onSurfaceVariant); inner() })
-                                }
-                            }
                         }
-                        val answer = if (isCustom) custom.trim() else selection.orEmpty()
-                        Button({ controller.respondAsk(node.id, answer) }, Modifier.fillMaxWidth().padding(top = 16.dp).height(48.dp), enabled = answer.isNotEmpty()) {
-                            Symbol("send", size = 20.dp); Spacer(Modifier.width(8.dp)); Text("确定")
+                    }
+                } else if (active != null) {
+                    // Clip both incoming and outgoing pages; movement follows question order, not tap timing.
+                    AnimatedContent(
+                        targetState = page,
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)),
+                        transitionSpec = {
+                            val direction = if (targetState > initialState) AnimatedContentTransitionScope.SlideDirection.Left else AnimatedContentTransitionScope.SlideDirection.Right
+                            (slideIntoContainer(direction, tween(450, easing = EmphEasing)) + fadeIn(tween(250))) togetherWith
+                                (slideOutOfContainer(direction, tween(450, easing = EmphEasing)) + fadeOut(tween(180)))
+                        },
+                        label = "ask-question",
+                    ) { index ->
+                        node.questions.getOrNull(index)?.let { question ->
+                            AskQuestionPage(
+                                question = question,
+                                draft = draft.question(question.id),
+                                answer = answer(question),
+                                resolved = node.isResolved,
+                                unanswered = draft.unansweredQuestionId == question.id && answer(question) == null,
+                                onChange = { if (!node.isResolved) draft = draft.edit(question.id, it) },
+                                onPreview = { label, selected -> draft = draft.edit(question.id, draft.question(question.id).togglePreview(label, selected)) },
+                            )
                         }
                     }
                 }
-                Expand(node.selectedAnswer != null) {
-                    Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Symbol("reply", tint = c.primary); Text(node.selectedAnswer.orEmpty(), fontSize = 17.sp)
+            }
+            if (node.questions.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth().padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { draft = draft.show(node.questions[page - 1].id) },
+                        enabled = !draft.reviewing && page > 0,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Symbol("chevron_left", tint = c.onSurfaceVariant.copy(alpha = if (!draft.reviewing && page > 0) 1f else .38f), contentDescription = "上一题")
+                    }
+                    IconButton(
+                        onClick = { draft = draft.show(node.questions[page + 1].id) },
+                        enabled = !draft.reviewing && page < node.questions.lastIndex,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Symbol("chevron_right", tint = c.onSurfaceVariant.copy(alpha = if (!draft.reviewing && page < node.questions.lastIndex) 1f else .38f), contentDescription = "下一题")
+                    }
+                    Text(if (draft.reviewing) "检查" else "${page + 1}/${node.questions.size}", color = c.onSurfaceVariant, fontSize = 13.sp)
+                    Spacer(Modifier.weight(1f))
+                    if (draft.reviewing && !node.isResolved) {
+                        Button({
+                            val missing = draft.firstUnanswered(node.questions)
+                            if (missing != null) {
+                                draft = draft.show(missing).copy(unansweredQuestionId = missing)
+                            } else {
+                                draft.answers(node.questions)?.let { controller.respondAsk(node.id, it) }
+                            }
+                        }, Modifier.heightIn(min = 48.dp)) {
+                            Text("提交全部")
+                        }
+                    } else if (draft.reviewing) {
+                        TextButton({ draft = draft.copy(reviewing = false) }, Modifier.heightIn(min = 48.dp)) { Text("返回") }
+                    } else {
+                        TextButton({ draft = draft.copy(reviewing = true) }, Modifier.heightIn(min = 48.dp)) {
+                            Text(if (node.isResolved) "查看全部" else "检查答案")
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun AskQuestionPage(
+    question: AskQuestion,
+    draft: AskQuestionDraft,
+    answer: AskAnswer?,
+    resolved: Boolean,
+    unanswered: Boolean,
+    onChange: (AskQuestionDraft) -> Unit,
+    onPreview: (String, Boolean) -> Unit,
+) {
+    val c = LocalAgentColors.current
+    val selected = if (resolved) answer?.selectedOptions.orEmpty() else if (!question.multi && draft.customActive) emptyList() else draft.selectedOptions
+    val custom = if (resolved) answer?.customInput.orEmpty() else draft.customInput
+    val customChosen = if (resolved) !answer?.customInput.isNullOrBlank() else question.multi && custom.isNotBlank() || draft.customActive || question.options.isEmpty()
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        question.header?.takeIf { it.isNotBlank() }?.let {
+            Text(it, Modifier.padding(bottom = 6.dp), color = c.onSurfaceVariant, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        }
+        Text(question.question, fontSize = 18.sp)
+        if (question.multi) Text("可多选，也可补充其他想法", Modifier.padding(top = 6.dp), color = c.onSurfaceVariant, fontSize = 14.sp)
+        Column(Modifier.padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            question.options.forEachIndexed { index, option ->
+                val chosen = option.label in selected
+                Surface(color = if (chosen) c.primaryContainer else c.surface, shape = RoundedCornerShape(if (chosen) 28.dp else 20.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column {
+                        Row(
+                            Modifier.fillMaxWidth().selectable(selected = chosen, enabled = !resolved,
+                                role = if (question.multi) Role.Checkbox else Role.RadioButton,
+                                onClick = { onChange(draft.select(question, option.label)) })
+                                .heightIn(min = 60.dp).padding(horizontal = 18.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Symbol(if (question.multi) { if (chosen) "check_box" else "check_box_outline_blank" } else {
+                                if (chosen) "radio_button_checked" else "radio_button_unchecked"
+                            }, tint = if (chosen) c.primary else c.outline, filled = chosen)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(option.label, fontSize = 17.sp)
+                                option.description?.takeIf { it.isNotBlank() }?.let { Text(it, color = c.onSurfaceVariant, fontSize = 14.sp) }
+                                if (question.recommended == index) Text("推荐", color = c.primary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                        option.preview?.takeIf { it.isNotBlank() }?.let { preview ->
+                            val open = draft.previewOpen(option.label, chosen)
+                            TextButton({ onPreview(option.label, chosen) }, Modifier.padding(horizontal = 8.dp)
+                                .semantics { contentDescription = "${if (open) "收起" else "展开"}${option.label}预览" }) {
+                                Text(if (open) "收起预览" else "展开预览")
+                            }
+                            if (open) AskRichPreview(preview, Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp))
+                        }
+                    }
+                }
+            }
+            Surface(color = if (customChosen) c.primaryContainer else c.surface, shape = RoundedCornerShape(if (customChosen) 28.dp else 20.dp)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Symbol("edit", tint = if (customChosen) c.primary else c.outline)
+                    if (resolved) {
+                        SelectionContainer {
+                            Text(custom.ifBlank { if (question.options.isEmpty()) "未作答" else "未填写其他想法" }, Modifier.padding(vertical = 12.dp), color = if (custom.isBlank()) c.onSurfaceVariant else c.onSurface)
+                        }
+                    } else {
+                        BasicTextField(custom, { onChange(draft.editCustom(it)) }, Modifier.weight(1f).padding(vertical = 12.dp)
+                            .onFocusChanged { if (it.isFocused && !question.multi && !draft.customActive) onChange(draft.editCustom(custom)) }
+                            .semantics { contentDescription = if (question.options.isEmpty()) "填写答案" else "其他想法" },
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.onSurface),
+                            decorationBox = { inner ->
+                                if (custom.isEmpty()) Text(if (question.options.isEmpty()) "填写答案" else "其他想法", color = c.onSurfaceVariant)
+                                inner()
+                            })
+                    }
+                }
+            }
+            if (question.multi && selected.isEmpty() && custom.isBlank()) {
+                if (resolved) {
+                    if (answer != null) Text("本题不选择任何选项", Modifier.padding(top = 4.dp), color = c.onSurfaceVariant, fontSize = 14.sp)
+                } else {
+                    TextButton({ onChange(draft.confirmEmpty()) }) {
+                        Text(if (draft.confirmedEmpty) "已确认本题不选择" else "本题不选择")
+                    }
+                }
+            }
+        }
+        if (unanswered) Text("请先回答这一题，再提交全部答案", Modifier.padding(top = 10.dp), color = c.error, fontSize = 14.sp)
     }
 }

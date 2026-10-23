@@ -4,6 +4,9 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -85,13 +88,6 @@ internal fun decimal(value: Double, digits: Int): String {
 }
 internal fun tokens(value: Long): String = when { value >= 1_000_000 -> decimal(value / 1_000_000.0, 1) + "M"; value >= 1_000 -> decimal(value / 1000.0, 1) + "k"; else -> value.toString() }
 
-private data class SlashCommand(val name: String, val icon: String, val description: String)
-private val slashCommands = listOf(
-    SlashCommand("init", "description", "生成项目说明"), SlashCommand("plan", "checklist", "先规划再执行"),
-    SlashCommand("review", "rate_review", "审查当前改动"), SlashCommand("test", "science", "运行测试"),
-    SlashCommand("compact", "compress", "压缩上下文"), SlashCommand("clear", "delete_sweep", "清空会话"),
-    SlashCommand("model", "neurology", "切换模型"), SlashCommand("cost", "monitoring", "查看用量"),
-)
 
 private val AttachmentDraftSaver = listSaver<SnapshotStateList<AttachmentFile>, Any>(
     save = { files -> files.map { arrayListOf(it.id, it.name, it.path, it.mimeType, it.sizeBytes, it.isWorkspaceFile) } },
@@ -123,22 +119,42 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     var picking by remember { mutableStateOf(false) }
     var slashIndex by remember { mutableStateOf(0) }
     var inputFocused by remember { mutableStateOf(false) }
-    val suggestions = if (Regex("^/\\S*$").matches(text)) slashCommands.filter { it.name.startsWith(text.drop(1), ignoreCase = true) } else emptyList()
+    val slashMode = slashQuery(text) != null
+    val commands = remember(state.slashCommands) { composerSlashCommands(state.slashCommands) }
+    val suggestions = slashQuery(text)?.let { matchingSlashCommands(commands, it) }.orEmpty()
+    val slashListState = rememberLazyListState()
+    LaunchedEffect(state.id, slashMode) {
+        if (slashMode) controller.loadSlashCommands()
+    }
     val selectedIndex = slashIndex.coerceIn(0, (suggestions.size - 1).coerceAtLeast(0))
-    fun pickSlash(command: SlashCommand) {
-        when (command.name) { "model" -> { text = ""; menu = "model" }; "cost" -> { text = ""; usageSheet = true }; else -> text = "/${command.name} " }
+    LaunchedEffect(selectedIndex, suggestions) {
+        if (suggestions.isNotEmpty()) {
+            val layout = slashListState.layoutInfo
+            val selected = layout.visibleItemsInfo.firstOrNull { it.index == selectedIndex }
+            if (selected == null || selected.offset < layout.viewportStartOffset || selected.offset + selected.size > layout.viewportEndOffset) {
+                slashListState.animateScrollToItem(selectedIndex)
+            }
+        }
+    }
+    fun pickSlash(command: ComposerSlashCommand) {
+        when (localSlashAction("/${command.name}")) {
+            LocalSlashAction.MODEL -> { text = ""; menu = "model" }
+            LocalSlashAction.COST -> { text = ""; usageSheet = true }
+            null -> text = "/${command.name} "
+        }
         slashIndex = 0
     }
     fun submit() {
         val prompt = text.trim()
         if (prompt.isEmpty() && attachments.isEmpty()) { if (state.isRunning) controller.stopExecution(); return }
         if (prompt.startsWith("/") && attachments.isEmpty()) {
-            val command = prompt.drop(1).substringBefore(' ')
-            val args = prompt.drop(1).substringAfter(' ', "")
-            when (command) {
-                "model" -> menu = "model"
-                "cost" -> usageSheet = true
-                else -> { onPromptSubmitted(); controller.executeSlashCommand(command, args) }
+            val commandText = prompt.drop(1)
+            val command = commandText.takeWhile { !it.isWhitespace() }
+            val args = commandText.drop(command.length).trimStart()
+            when (localSlashAction(prompt)) {
+                LocalSlashAction.MODEL -> menu = "model"
+                LocalSlashAction.COST -> usageSheet = true
+                null -> { onPromptSubmitted(); controller.executeSlashCommand(command, args) }
             }
         } else {
             onPromptSubmitted()
@@ -150,17 +166,34 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     Column(modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(c.surface.copy(alpha = 0f), c.surface, c.surface), endY = 90f))
         .padding(horizontal = 12.dp).padding(top = 24.dp, bottom = 12.dp)) {
         PromptQueueList(state.queuedPrompts, controller)
-        AnimatedVisibility(suggestions.isNotEmpty(), enter = expandVertically(tween(450, easing = EmphEasing)) + fadeIn(tween(300, easing = EmphDecelEasing)) + slideInVertically(tween(500, easing = EmphDecelEasing)) { 10 },
+        AnimatedVisibility(slashMode, enter = expandVertically(tween(450, easing = EmphEasing)) + fadeIn(tween(300, easing = EmphDecelEasing)) + slideInVertically(tween(500, easing = EmphDecelEasing)) { 10 },
             exit = shrinkVertically(tween(400, easing = EmphEasing)) + fadeOut(tween(200, easing = EmphAccelEasing))) {
             Surface(color = c.surface, shape = RoundedCornerShape(24.dp), shadowElevation = 6.dp, modifier = Modifier.padding(bottom = 8.dp)) {
-                Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(6.dp)) {
-                    suggestions.forEachIndexed { index, command ->
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(if (index == selectedIndex) c.surfaceContainer else Color.Transparent)
-                            .clickable { pickSlash(command) }.heightIn(min = 60.dp).padding(start = 6.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Box(Modifier.size(44.dp).background(if (index == selectedIndex) c.primaryContainer else c.surfaceContainer, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Symbol(command.icon, tint = c.onSurfaceVariant) }
-                            Text("/${command.name}", color = c.primary, fontSize = 17.sp, fontFamily = LocalAgentMono.current, fontWeight = FontWeight.SemiBold)
-                            Text(command.description, Modifier.weight(1f), fontSize = 16.sp, color = c.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column {
+                    if (state.slashCommandsLoading) Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                        Text("正在加载命令…", color = c.onSurfaceVariant)
+                    }
+                    state.slashCommandsError?.let {
+                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("无法加载命令，请重试", Modifier.weight(1f), color = c.error)
+                            TextButton(onClick = { controller.loadSlashCommands() }) { Text("重试") }
+                        }
+                    }
+                    if (suggestions.isEmpty() && !state.slashCommandsLoading && state.slashCommandsError == null) {
+                        Text("没有匹配的命令", Modifier.padding(16.dp), color = c.onSurfaceVariant)
+                    }
+                    LazyColumn(Modifier.heightIn(max = 300.dp).padding(6.dp), state = slashListState) {
+                        itemsIndexed(suggestions, key = { _, command -> command.name }) { index, command ->
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(if (index == selectedIndex) c.surfaceContainer else Color.Transparent)
+                                .clickable { pickSlash(command) }.heightIn(min = 60.dp).padding(start = 6.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Box(Modifier.size(44.dp).background(if (index == selectedIndex) c.primaryContainer else c.surfaceContainer, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Symbol(command.icon, tint = c.onSurfaceVariant) }
+                                Text("/${command.name}", color = c.primary, fontSize = 17.sp, fontFamily = LocalAgentMono.current, fontWeight = FontWeight.SemiBold)
+                                command.description?.let { description ->
+                                    Text(description, Modifier.weight(1f), fontSize = 16.sp, color = c.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
                         }
                     }
                 }

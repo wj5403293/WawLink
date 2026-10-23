@@ -1,0 +1,23 @@
+{
+  "name": "mermaid",
+  "version": "12.2.0",
+  "source": "https://registry.npmjs.org/mermaid/-/mermaid-12.2.0.tgz",
+  "sourceIntegrity": "sha512-w7nr/SFrLO7BaVTs3dQTvYSV6nYSBj0Yy9DjBhsIJtAcHqRzXSq4Pg32ujHZ/AdWsAMNEvvhbm5dt9E2tOiHzw==",
+  "sourceSha256": "071914164d0f6d53e5c26a10a220230d4ae8d37ed0f2263fbf072266f0af3a0a",
+  "upstreamPath": "package/dist/mermaid.min.js",
+  "asset": "mermaid.min.js",
+  "assetSha256": "a8a6a6f805b074a8261a2825c86f99c8054acb3b35f50bb7e24a4f9f2c3c3b9f",
+  "license": "MIT",
+  "licenseFile": "MERMAID-LICENSE.txt",
+  "thirdPartyLicenses": "THIRD-PARTY-LICENSES.json",
+  "thirdPartyVersionSource": "package/dist/mermaid.min.js.map sources",
+  "modifications": "None. The self-contained upstream IIFE is bundled verbatim, retaining its license banners. No CDN, online renderer, module imports, or model-provided JavaScript is used.",
+  "runtime": {
+    "android": "Android System WebView; minSdk 26. Current WebView is required for the bundled engine's modern JavaScript. Missing/outdated providers produce a Chinese error; no emulator required.",
+    "desktop": "OpenJFX 21.0.13 (JDK 17 compatible), host-classified base/graphics/controls/media/web Maven artifacts. An unshown WebView rasterizes sanitized SVG/Mermaid through an app-owned canvas, then releases its document; chat displays a native Compose image, without Swing bridges or auxiliary windows. Linux requires GTK 3 and the native libraries used by JavaFX WebKit. OpenJFX is GPL-2.0 with Classpath exception; WebKit includes LGPL-licensed components. Retain dependency legal notices when redistributing packaged native binaries.",
+    "raster": "Native Compose Image: Android BitmapFactory and desktop Skia. PNG, JPEG, GIF, WebP; animated files show the first frame.",
+    "mermaid": "Strict security; HTML labels, URL callbacks, external resources, frontmatter, and initialization/configuration directives are unavailable. 50,000 source characters / 500 edges. Engine timeout 20 seconds and native loading timeout 25 seconds.",
+    "images": "HTTP(S) or image data URLs only, 8 MiB encoded payload maximum, dimensions at most 16,384 on either axis and 32 million pixels. Up to five redirects, no HTTPS downgrade or non-HTTP destination. 10-second connect/read timeouts; no arbitrary local file/content/jar access.",
+    "svg": "1 MiB, 10,000 elements, depth 64. XML element allowlist; no DTD/entities, processing instructions, scripts/events, foreignObject, SMIL, external links, images, external CSS/fonts/resources. Internal fragment references are allowed. currentColor and --fg/--foreground/--bg/--background/--surface/--primary/--accent are supplied from Material theme."
+  }
+}

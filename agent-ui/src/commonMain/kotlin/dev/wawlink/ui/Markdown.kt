@@ -37,6 +37,22 @@ internal fun streamedText(text: String, streaming: Boolean): String {
 
 @Composable
 internal fun Markdown(text: String, modifier: Modifier = Modifier) {
+    val parts = remember(text) { markdownParts(text) }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        parts.forEach { part ->
+            when (part) {
+                is MarkdownPart.Text -> if (part.text.isNotBlank()) PlainMarkdown(part.text)
+                is MarkdownPart.Graphic -> RichGraphic(part)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AskRichPreview(text: String, modifier: Modifier = Modifier) = Markdown(text, modifier)
+
+@Composable
+private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
     val c = LocalAgentColors.current
     val mono = LocalAgentMono.current
     val uri = LocalUriHandler.current
