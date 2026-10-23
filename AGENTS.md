@@ -21,6 +21,12 @@
 - Slash 补全以当前会话 OMP 的原生命令目录及动态更新为准，不用固定菜单冒充可用命令；当前版本的内置命令可预设中文描述与 Material Symbols 图标，未预设或扩展命令仍显示，但使用默认图标且不显示描述。保留无参数 `/model` 的应用模型选择和 `/cost` 的用量快捷入口，带参数的命令交给 OMP。
 - 同一次 OMP ask 的多个问题显示在一张卡片中，按原生问题 ID 保存答案及预览状态；左下角使用灰色、无背景圆形前后切换按钮，配合左右非线性滑动。支持选项说明、推荐项、多选、自定义输入和提交前回看，一次提交完整答案。
 - Ask 富预览与 Agent 正文共用 SVG、Mermaid、图像及 Markdown 渲染；图表不依赖在线渲染服务，模型内容不得执行脚本、读取宿主文件或通过 SVG 加载外部资源。
+- 工具、Todo 与思考的运行耗时实时刷新，结束后固定；不足 1 秒隐藏，1–59 秒显示 `15s`，达到 1 分钟后显示 `1:05`，不显示静止的 `0:00`。
+- 长思考及工具内容展开后，标题滚出可视区时将概况吸附在 Todo 与子任务概况下方；各层可回跳，不遮挡原始标题。流式思考按稳定段落增量渲染，阅读、选择或上滑时不强制追尾，全文查看使用 Markdown。
+- LLM 代码块、工具执行的脚本及读取/写入/查找的代码共用成熟库高亮；未知语言保留纯文本。全屏代码只读且可选择、复制原文，Android 使用 Sora Editor，Desktop 使用原生桌面代码组件，不使用 WebView 冒充 Sora。
+- 容器终端使用独立页面与真实 PTY；Android 直接移植 Love2Droid 的 Termux 终端模块，保留上游许可，Desktop 使用成熟终端组件。支持 ANSI、控制键、交互式程序及窗口尺寸更新，离开终端回收其进程。
+- 工具链卡片点击只弹出安装或卸载确认，取消不执行；确认后避免重复触发。同一行卡片按较高内容等高，版本允许换行，Git 仅显示版本号，不重复 `git version`。
+- 用户发送消息、继续下一轮或收到完整状态时，Todo 内容和状态未变化就不追加计划卡片；真正变化才追加，保留先前计划快照及用户消息位置。
 
 ## 项目结构与索引
 
@@ -29,10 +35,17 @@
   - `src/commonMain/kotlin/dev/wawlink/ui/ComposerSlashCommands.kt` 提供原生命令的图标/中文展示匹配，`AskDraftState.kt` 保存按问题 ID 隔离的答案、页码与预览状态。
   - 同目录的 `MarkdownParts.kt`、`RichGraphic.kt` 共用正文/Ask 富媒体入口；`src/jvmSharedMain/kotlin/dev/wawlink/ui/RichGraphicDocument.kt` 负责离线图表文档、SVG 安全与图像加载，`src/androidMain/kotlin/dev/wawlink/ui/RichGraphic.android.kt` 和 `src/desktopMain/kotlin/dev/wawlink/ui/RichGraphic.desktop.kt` 分别提供沙箱 WebView 与无窗口 Canvas/原生图像显示。
   - `src/commonMain/composeResources/files/rich/` 保存 Mermaid 离线引擎、来源与许可证；`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ComposerSlashCommandsTest.kt`、`AskDraftStateTest.kt`、`MarkdownPartsTest.kt` 覆盖命令覆盖优先级、分组作答和富媒体解析边界，`src/desktopTest/kotlin/dev/wawlink/ui/RichGraphicSafetyTest.kt` 覆盖 SVG 主动内容、图像 URI 与重定向边界。
+  - `src/commonMain/kotlin/dev/wawlink/ui/FeedPresentation.kt`、`src/jvmSharedMain/kotlin/dev/wawlink/ui/FeedClock.kt` 统一运行耗时、思考稳定展示与详情；`FeedPresentationTest.kt` 覆盖耗时边界，`MarkdownPartsTest.kt` 覆盖稳定 Markdown 段落与代码围栏边界。
+  - 同目录的 `CodeLanguage.kt`、`HighlightedCode.kt`、`CodeDetailScreen.kt` 提供语言识别、Highlights 高亮与全屏入口；`src/androidMain/kotlin/dev/wawlink/ui/CodeDetailScreen.android.kt` 接入只读 Sora，`src/desktopMain/kotlin/dev/wawlink/ui/CodeDetailScreen.desktop.kt` 接入只读 RSyntaxTextArea。`src/commonMain/composeResources/files/code/` 保存精确版本来源与许可，`CodeLanguageTest.kt` 覆盖语言别名、路径选择器和未知语言边界。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端；`src/jvmSharedMain/kotlin/dev/wawlink/runtime/RuntimeDns.kt` 负责边界安全的原子 DNS 更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeDnsTest.kt` 覆盖链接边界与配置切换。
+  - 同目录的 `PtyTransport.kt` 及 `src/androidMain/kotlin/dev/wawlink/runtime/PtyTransport.android.kt`、`src/desktopMain/kotlin/dev/wawlink/runtime/PtyTransport.desktop.kt` 提供两端真实 PTY，`ContainerContract.kt` 定义原始字节读写、调整尺寸与会话回收契约。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
+  - `src/sharedMain/kotlin/dev/wawlink/app/TerminalScreen.kt` 为独立终端导航页，`src/desktopMain/kotlin/dev/wawlink/app/TerminalSurface.desktop.kt` 提供 JediTerm 终端；`src/desktopMain/resources/licenses/` 随桌面分发保留 JediTerm 与 pty4j 许可。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
+  - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView。
+- `terminal-emulator/`、`terminal-view/`：从 Love2Droid 固定提交移植的 Android Termux 终端解析器、JNI PTY 与视图，仅构建 arm64-v8a；`terminal-emulator/NOTICE` 记录上游来源及修改，许可同时保存在模块 assets 与 `licenses/`。
+- `licenses/`：Termux 终端、JediTerm 与 pty4j 的完整上游许可及来源。
 - `scripts/`：免 Docker Rootfs、Android 原生二进制与验证脚本。
 - `ref-plan/`：用户提供的需求和视觉原型；不修改原型。
 - `README.md`：构建运行、独立 UI 接入、能力边界、产物与已验证范围。

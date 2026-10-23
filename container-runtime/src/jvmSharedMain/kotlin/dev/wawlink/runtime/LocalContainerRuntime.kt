@@ -199,6 +199,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         while (System.nanoTime() < deadline && owned.any { it.hasLiveProcesses() }) Thread.sleep(50)
         terminate(owned, root, true)
         owned.forEach { if (it.process.isAlive) it.process.destroyForcibly(); it.process.waitFor(2, TimeUnit.SECONDS) }
+        owned.forEach { it.terminal?.close() }
         check(owned.none { it.hasLiveProcesses() }) { "容器仍有已跟踪进程未退出，已保留挂载以保护文件系统" }
         processes.remove(id)
         keepers.remove(id)
@@ -388,11 +389,15 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         mutex.withLock { ensureOpen(); startLocked(id); idleJobs.remove(id)?.cancel(); launchLocked(config(id), arguments, cwd, environment, false, false).process }
     }
 
-    private fun launchLocked(config: ContainerConfig, arguments: List<String>, cwd: String, environment: Map<String, String>, merge: Boolean, keeper: Boolean): TrackedProcess {
+    private fun launchLocked(config: ContainerConfig, arguments: List<String>, cwd: String, environment: Map<String, String>, merge: Boolean, keeper: Boolean, pty: Boolean = false): TrackedProcess {
         val root = config.engine == ContainerEngineType.CHROOT
         val pidFile = if (root) File(paths.dataDir, "tmp/root-${UUID.randomUUID()}.pid").apply { parentFile.mkdirs(); check(createNewFile()) { "无法创建 Root PID 握手文件" } } else null
-        val process = try { engines.builder(config, arguments, cwd, environment, merge, pidFile).start() }
-        catch (failure: java.io.IOException) { pidFile?.delete(); throw IllegalStateException("无法启动容器引擎：${failure.message}", failure) }
+        var terminal: PtyTransport? = null
+        val process = try {
+            val builder = engines.builder(config, arguments, cwd, environment, merge, pidFile)
+            if (pty) createPtyTransport(builder).also { terminal = it }.process else builder.start()
+        }
+        catch (failure: Throwable) { pidFile?.delete(); throw IllegalStateException("无法启动容器引擎：${failure.message}", failure) }
         val identity = if (pidFile != null) {
             var result: Pair<Long, String>? = null
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
@@ -403,17 +408,13 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             result ?: TrackedProcess.handshake(pidFile)
         } else null
         if (root && identity == null) {
-            process.destroyForcibly(); pidFile?.delete()
+            process.destroyForcibly(); terminal?.close(); pidFile?.delete()
             error("无法安全识别 su 启动的 chroot PID；执行确认未发送，Root Shell 将超时退出")
         }
-        val tracked = try { TrackedProcess(process, keeper, identity, if (root) engines::rootSnapshot else null) }
-        catch (failure: Throwable) { process.destroyForcibly(); pidFile?.delete(); throw failure }
-        if (tracked.pid == null) { process.destroyForcibly(); error("无法识别容器进程 PID，拒绝启动以避免遗留进程") }
+        val tracked = try { TrackedProcess(process, keeper, identity, if (root) engines::rootSnapshot else null, terminal) }
+        catch (failure: Throwable) { process.destroyForcibly(); terminal?.close(); pidFile?.delete(); throw failure }
+        if (tracked.pid == null) { process.destroyForcibly(); terminal?.close(); pidFile?.delete(); error("无法识别容器进程 PID，拒绝启动以避免遗留进程") }
         processes.getOrPut(config.id) { mutableListOf() } += tracked
-        if (pidFile != null) {
-            check(File(pidFile.path + ".ack").createNewFile()) { "无法确认 Root 进程执行" }
-            pidFile.delete()
-        }
         if (keeper) tracked.outputDrainer = scope.launch {
             try {
                 process.inputStream.use { input ->
@@ -447,6 +448,17 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
                 }
             }
         }
+        if (pidFile != null) {
+            try {
+                check(File(pidFile.path + ".ack").createNewFile()) { "无法确认 Root 进程执行" }
+            } catch (failure: Throwable) {
+                // Tracking is installed before acknowledgement, including when filesystem I/O fails.
+                try { terminate(listOf(tracked), root, true) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+                process.destroyForcibly()
+                try { terminal?.close() } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+                throw failure
+            } finally { pidFile.delete() }
+        }
         return tracked
     }
 
@@ -470,14 +482,52 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         mutex.withLock {
             ensureOpen(); startLocked(id); idleJobs.remove(id)?.cancel()
             val config = config(id)
-            val process = launchLocked(config, listOf(config.shell, "-i"), "/workspace", emptyMap(), true, false).process
-            StreamingTerminal(process, scope)
+            val tracked = launchLocked(config, listOf(config.shell, "-i"), "/workspace", emptyMap(), true, false, pty = true)
+            object : TerminalSession {
+                override val process = tracked.process
+                override val processId = requireNotNull(tracked.pid)
+                private val alive = MutableStateFlow(process.isAlive)
+                override val isAlive = alive.asStateFlow()
+                private val closing = java.util.concurrent.atomic.AtomicBoolean()
+                init { scope.launch { process.waitFor(); alive.value = false } }
+                override fun resize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
+                    require(columns > 0 && rows > 0)
+                    if (process.isAlive) requireNotNull(tracked.terminal).resize(columns, rows, cellWidthPixels, cellHeightPixels)
+                }
+                override fun close() {
+                    if (!closing.compareAndSet(false, true)) return
+                    scope.launch {
+                        mutex.withLock {
+                            val root = config.engine == ContainerEngineType.CHROOT
+                            try {
+                                tracked.refreshDescendants()
+                                terminate(listOf(tracked), root, false)
+                                process.destroy()
+                                process.waitFor(2, TimeUnit.SECONDS)
+                                terminate(listOf(tracked), root, true)
+                                if (process.isAlive) process.destroyForcibly()
+                                process.waitFor(2, TimeUnit.SECONDS)
+                                check(!tracked.hasLiveProcesses()) { "终端仍有已跟踪子进程未退出" }
+                            } catch (failure: Exception) {
+                                errors[id] = "终端关闭失败：${failure.message}"
+                                publish()
+                            } finally {
+                                try { tracked.terminal?.close() }
+                                catch (failure: Exception) { errors[id] = "终端 PTY 关闭失败：${failure.message}"; publish() }
+                                alive.value = false
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     override suspend fun probeToolchains(id: String): List<ToolchainInfo> = tools.map { tool ->
         val output = execute(id, "if command -v ${tool.probe} >/dev/null 2>&1; then ${tool.version} 2>&1 | head -n 1; else printf '__WAWLINK_MISSING__'; fi", "/")
-        ToolchainInfo(tool.id, tool.title, tool.icon, !output.contains("__WAWLINK_MISSING__"), if (output.contains("__WAWLINK_MISSING__")) "" else output.trim())
+        val missing = output.contains("__WAWLINK_MISSING__")
+        val version = if (missing) "" else output.trim().let { if (tool.id == "git") it.removePrefix("git version ") else it }
+        ToolchainInfo(tool.id, tool.title, tool.icon, !missing, version)
     }
 
     override suspend fun changeToolchain(id: String, toolId: String, install: Boolean): String = packageLocks.getOrPut(id) { Mutex() }.withLock {
@@ -563,35 +613,6 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     }
 }
 
-private class StreamingTerminal(private val process: Process, scope: CoroutineScope) : TerminalSession {
-    private val _output = MutableStateFlow<List<String>>(emptyList())
-    override val output = _output.asStateFlow()
-    private val _isAlive = MutableStateFlow(true)
-    override val isAlive = _isAlive.asStateFlow()
-    private val writer = process.outputStream.bufferedWriter()
-    private val job = scope.launch {
-        val lines = ArrayDeque<String>()
-        val partial = StringBuilder()
-        try {
-            process.inputStream.reader().use { input ->
-                val buffer = CharArray(2048)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    for (index in 0 until count) {
-                        val char = buffer[index]
-                        if (char == '\n') { lines.addLast(partial.toString()); partial.clear(); while (lines.size > 2000) lines.removeFirst() }
-                        else if (char == '\r') partial.clear() else partial.append(char)
-                    }
-                    _output.value = lines.toList() + if (partial.isNotEmpty()) listOf(partial.toString()) else emptyList()
-                }
-            }
-        } catch (failure: Exception) { if (process.isAlive) _output.value += "终端读取失败：${failure.message}" }
-        finally { _isAlive.value = false }
-    }
-    override fun send(command: String) { synchronized(writer) { check(process.isAlive) { "终端已关闭" }; writer.write(command); if (!command.endsWith('\n')) writer.newLine(); writer.flush() } }
-    override fun close() { try { writer.close() } finally { process.destroy(); if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly(); job.cancel(); _isAlive.value = false } }
-}
 
 /** Starttime pins ownership even when a PID is recycled. Root commands use privileged
  * snapshots because Android hides daemon-spawned su children from an ordinary app. */
@@ -600,6 +621,7 @@ private class TrackedProcess(
     val keeper: Boolean,
     rootIdentity: Pair<Long, String>? = null,
     private val privilegedSnapshot: ((List<Long>) -> List<String>)? = null,
+    val terminal: PtyTransport? = null,
 ) {
     @Volatile var stopping = false
     var outputDrainer: Job? = null

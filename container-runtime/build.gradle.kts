@@ -19,8 +19,14 @@ kotlin {
                 implementation("org.tukaani:xz:1.10")
             }
         }
-        androidMain { dependsOn(jvmSharedMain); dependencies { implementation("com.github.luben:zstd-jni:1.5.7-2@aar") } }
-        val desktopMain by getting { dependsOn(jvmSharedMain); dependencies { implementation("com.github.luben:zstd-jni:1.5.7-2") } }
+        androidMain { dependsOn(jvmSharedMain); dependencies {
+            implementation("com.github.luben:zstd-jni:1.5.7-2@aar")
+            implementation(project(":terminal-emulator"))
+        } }
+        val desktopMain by getting { dependsOn(jvmSharedMain); dependencies {
+            implementation("com.github.luben:zstd-jni:1.5.7-2")
+            implementation("org.jetbrains.pty4j:pty4j:0.13.4")
+        } }
         commonTest.dependencies { implementation(kotlin("test")) }
         val jvmSharedTest by creating { dependsOn(commonTest.get()) }
         val desktopTest by getting { dependsOn(jvmSharedTest) }

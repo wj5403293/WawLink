@@ -43,9 +43,11 @@ data class RuntimePaths(
     val resolvConf: StateFlow<String?>? = null,
 )
 interface TerminalSession : AutoCloseable {
-    val output: StateFlow<List<String>>
+    /** Raw PTY transport; terminal emulators consume bytes without line conversion. */
+    val process: Process
+    val processId: Long
     val isAlive: StateFlow<Boolean>
-    fun send(command: String)
+    fun resize(columns: Int, rows: Int, cellWidthPixels: Int = 0, cellHeightPixels: Int = 0)
 }
 interface ContainerRuntime : AutoCloseable {
     val containers: StateFlow<List<ContainerInfo>>

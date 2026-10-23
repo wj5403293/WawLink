@@ -3,6 +3,7 @@ package dev.wawlink.ui
 /** Graphics are separated before the existing native Markdown renderer sees inline syntax. */
 internal sealed interface MarkdownPart {
     data class Text(val text: String) : MarkdownPart
+    data class Code(val text: String, val language: String?) : MarkdownPart
     data class Graphic(val kind: GraphicKind, val source: String, val description: String = "") : MarkdownPart
 }
 
@@ -37,12 +38,12 @@ internal fun markdownParts(text: String): List<MarkdownPart> {
                 else -> null
             }
             // Incomplete streamed diagrams stay code until the closing fence arrives.
+            flush()
+            val source = lines.subList(lineIndex + 1, end).joinToString("\n")
             if (kind != null && end < lines.size) {
-                flush()
-                parts += MarkdownPart.Graphic(kind, lines.subList(lineIndex + 1, end).joinToString("\n"))
+                parts += MarkdownPart.Graphic(kind, source)
             } else {
-                plain.append(lines.subList(lineIndex, (end + 1).coerceAtMost(lines.size)).joinToString("\n"))
-                plain.append('\n')
+                parts += MarkdownPart.Code(source, language.takeIf(String::isNotEmpty))
             }
             lineIndex = (end + 1).coerceAtMost(lines.size)
             continue
@@ -144,4 +145,47 @@ private fun imageAt(line: String, start: Int): Pair<Int, Pair<String, String>>? 
     }
     if (cursor >= line.length || line[cursor] != ')') return null
     return (cursor + 1) to (line.substring(start + 2, labelEnd) to url)
+}
+
+/** Commits complete blocks, leaving fences and SVGs intact while their streaming tail grows. */
+internal class StableMarkdownBuffer {
+    private var previous = ""
+    private var committedThrough = 0
+    private val committed = mutableListOf<String>()
+
+    fun update(text: String): List<String> {
+        if (!text.startsWith(previous)) {
+            committed.clear()
+            committedThrough = 0
+        }
+        previous = text
+        var fence: String? = null
+        var svg = false
+        var lineStart = committedThrough
+        while (lineStart < text.length) {
+            val end = text.indexOf('\n', lineStart)
+            if (end < 0) break
+            val line = text.substring(lineStart, end).removeSuffix("\r")
+            val marker = fence
+            if (marker != null) {
+                if (isClosingFence(line, marker)) fence = null
+            } else if (svg) {
+                if (line.contains("</svg>", ignoreCase = true)) svg = false
+            } else {
+                fence = openingFence.matchEntire(line)?.groupValues?.get(1)
+                if (fence == null && line.trimStart().startsWith("<svg", ignoreCase = true)) {
+                    svg = !line.contains("</svg>", ignoreCase = true)
+                }
+                if (fence == null && !svg && line.isBlank()) {
+                    committed += text.substring(committedThrough, end + 1)
+                    committedThrough = end + 1
+                }
+            }
+            lineStart = end + 1
+        }
+        return buildList {
+            addAll(committed)
+            if (committedThrough < text.length) add(text.substring(committedThrough))
+        }
+    }
 }

@@ -31,7 +31,7 @@ private data class HostRoute(
 ) {
     val stateKey: String = when (page) {
         "chat" -> "chat:$sessionId"
-        "providers", "agent", "container" -> "$page:$containerId"
+        "providers", "agent", "container", "terminal" -> "$page:$containerId"
         "install" -> "install:$rootfs"
         else -> page
     }
@@ -51,9 +51,12 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     var newSession by remember { mutableStateOf(false) }
     var installRootfs by rememberSaveable { mutableStateOf(false) }
     var settingsReturn by rememberSaveable { mutableStateOf("home") }
+    var terminalReturn by rememberSaveable { mutableStateOf("home") }
+    fun openTerminal(id: String) { selectedContainer = id; terminalReturn = page; page = "terminal" }
     var savedSessionIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     fun goBack(): Boolean = when {
         newSession -> { newSession = false; true }
+        page == "terminal" -> { page = terminalReturn; true }
         page == "providers" || page == "agent" -> { page = settingsReturn; true }
         page != "home" -> { page = "home"; true }
         else -> false
@@ -65,6 +68,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val route = when (page) {
         "chat" -> HostRoute(page, sessionId = selectedSession)
         "providers", "agent", "container" -> HostRoute(page, containerId = configurationContainer?.config?.id)
+        "terminal" -> HostRoute(page, containerId = selectedContainer)
         "install" -> HostRoute(page, rootfs = installRootfs)
         else -> HostRoute(page)
     }
@@ -76,9 +80,9 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         savedSessionIds = if (currentId != null && currentId !in retained) retained + currentId else retained
     }
     AgentTheme(appearance) {
-        Surface(Modifier.fillMaxSize().onPreviewKeyEvent { it.type == KeyEventType.KeyDown && it.key == Key.Escape && goBack() }) {
+        Surface(Modifier.fillMaxSize().onPreviewKeyEvent { page != "terminal" && it.type == KeyEventType.KeyDown && it.key == Key.Escape && goBack() }) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                Column(Modifier.widthIn(max = 460.dp).fillMaxSize()) {
+                Column(Modifier.widthIn(max = if (page == "terminal") 1200.dp else 460.dp).fillMaxSize()) {
                     AnimatedContent(route, transitionSpec = {
                         (fadeIn(tween(380, easing = EmphDecelEasing)) + slideInHorizontally(tween(520, easing = EmphDecelEasing)) { it / 4 }) togetherWith
                             (fadeOut(tween(180, easing = EmphAccelEasing)) + slideOutHorizontally(tween(380, easing = EmphEasing)) { -it / 4 })
@@ -88,7 +92,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                             "home" -> HomeScreen(app, onSettings = { page = "appearance" }, onNewSession = ::openNew,
                                 onEnterSession = { selectedSession = it; page = "chat" },
                                 onContainer = { selectedContainer = it; page = "container" },
-                                onInstall = { installRootfs = it; page = "install" })
+                                onInstall = { installRootfs = it; page = "install" }, onTerminal = ::openTerminal)
                             "chat" -> {
                                 val controller = remember(current.sessionId) { runCatching { app.controller(requireNotNull(current.sessionId)) } }
                                 controller.fold(onSuccess = {
@@ -102,7 +106,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                             "agent" -> if (current.containerId != null) AgentConfigScreen(app.pool.settings(current.containerId), { page = settingsReturn }) else MissingContainer { page = "home" }
                             "appearance" -> AppearanceScreen(app, { page = "home" }, { if (configurationContainer != null) { settingsReturn = "appearance"; page = "providers" } else openNew() }, { if (configurationContainer != null) { settingsReturn = "appearance"; page = "agent" } else openNew() })
                             "install" -> InstallContainerScreen(app, files, current.rootfs, { page = "home" })
-                            "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }) } ?: MissingContainer { page = "home" }
+                            "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }, ::openTerminal) } ?: MissingContainer { page = "home" }
+                            "terminal" -> containers.firstOrNull { it.config.id == current.containerId }?.let { TerminalScreen(app, it.config, { page = terminalReturn }) } ?: MissingContainer { page = terminalReturn }
                         }
                         }
                     }

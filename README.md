@@ -12,6 +12,7 @@ Android / Linux Desktop 跨端 Coding Agent。Kotlin Multiplatform、Compose Mul
 | `container-runtime` | Proroot / PRoot / chroot、Rootfs、发行版部署、工具链与终端 |
 | `app-desktop` | 460 × 920 桌面窗口；`src/sharedMain/kotlin` 包含双端共用主页、容器管理与应用协调层 |
 | `app-android` | arm64-v8a 宿主、系统文件选择、前台服务；Rootfs 从容器页单独导入 |
+| `terminal-emulator` / `terminal-view` | 从 Love2Droid 固定提交移植的 Android Termux 终端与 JNI PTY；只构建 arm64-v8a |
 
 `agent-driver-omp/src/jvmSharedMain/resources/` 中的模型预算扩展和 OMP 设置 Schema 同时供两端使用。Android 驱动显式将该目录接入 `main.resources`，使两份文件作为 Java 类路径资源进入驱动 AAR 和宿主 APK；仅声明 Kotlin 共享源码集依赖不足以打包这些资源。修复此类 APK 资源遗漏不需要重新生成或导入 Rootfs。
 
@@ -19,7 +20,7 @@ OMP 启动前会将 `models.yml` 和主设置文件重新序列化为 Bun 可解
 
 ## 构建与运行
 
-构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
+构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35 与 Android NDK（编译终端 JNI）、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
 
 在工程根目录执行：
 
@@ -40,7 +41,7 @@ OMP 启动前会将 `models.yml` 和主设置文件重新序列化为 Bun 可解
 ./gradlew :app-android:assembleDebug
 ```
 
-输出：`app-android/build/outputs/apk/debug/app-android-debug.apk`。该任务不要求 Rootfs 归档存在，不会启动模拟器。原生程序作为可执行 `.so` 随 APK 安装，仅打包 arm64-v8a，保留上游二进制原始字节。
+输出：`app-android/build/outputs/apk/debug/app-android-debug.apk`。该任务不要求 Rootfs 归档存在，不会启动模拟器。预置原生命令作为可执行 `.so` 随 APK 安装，仅打包 arm64-v8a，保留上游二进制原始字节；新增终端 PTY 的 `libtermux.so` 从移植的 JNI 源码构建。
 
 Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA256 文件到 `build/outputs/`。首次安装后，将独立归档复制到手机，在“容器 → 导入 rootfs”选择文件并完成导入；应用启动不再从 APK 解包环境。以后覆盖安装同签名 APK 即可保留已有容器和会话，不需要重新下载或导入未变化的 Rootfs，也不要为更新而卸载应用。
 
@@ -60,12 +61,17 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 
 - 主页管理多会话、搜索、容器/状态筛选、分支、批量置顶/归档/删除，并可直接处理待审批操作。
 - 聊天页支持真实流式输出、Todo 条件归组、工具详情和 Diff、审批/提问、运行中消息排队与编辑、附件、项目文件、斜杠命令和用量详情。
+- 工具、Todo 和思考的运行耗时实时更新，结束后固定；不足 1 秒隐藏，1–59 秒显示 `15s`，达到 1 分钟后显示 `1:05`。展开的长思考/工具概况吸附在计划、子任务下方，三层均可回跳。
+- 流式思考每 100 ms 合并可变尾部，已完成 Markdown 段落保持稳定；上滑、阅读或选择时不强制追尾，使用独立的“回到底部”恢复跟随。思考全文以 Markdown 显示，展开时不从头播放。
+- Markdown 代码块与工具脚本、文件内容使用 Highlights 1.0.0 离线高亮；语言依据显式标记、工具名、文件后缀或 shebang 识别，未知显式语言保留纯文本。读取路径支持行号、范围、raw、归档成员和查询选择器，不将这些选择器误当后缀。
+- 读取、写入、创建及查找代码可打开全屏只读查看器，支持行号、选择和复制原文；Android 使用 Sora Editor 0.23.6，Desktop 使用 RSyntaxTextArea 3.6.0，不以网页组件替代 Sora。来源、精确版本和完整许可位于 `agent-ui/src/commonMain/composeResources/files/code/`。
 - Slash 菜单从当前会话 OMP 的原生命令目录加载并跟随动态更新；第一次输入 `/` 时才启动目录查询，不发送用户 prompt。当前内置命令匹配中文描述与 Material Symbols 图标；未知、扩展或被自定义覆盖的命令仍显示，使用默认图标且不显示描述。无参数 `/model`、`/cost` 保留应用内快捷入口，带参数的命令交给 OMP 原生解析。
 - 同一次 ask 的多个问题共用一张卡片，左下角灰色无背景前后按钮配合左右非线性切换；问题 ID 固定答案、页码和预览状态。支持推荐项、选项描述、单选/多选、自定义输入、提交前回看与一次提交完整答案，提交后仍可查看；免审批不会自动回答普通问题。
 - Agent 正文与 ask 富预览共用 Markdown、SVG/Mermaid 代码块与 Markdown 图像显示。Mermaid 12.2.0 随 UI 离线打包；PNG/JPEG/GIF/WebP 使用原生解码，动画图像显示首帧。图像来源仅 HTTP(S) 与图像 data URL，不读取宿主文件；SVG 不允许脚本、外部资源、实体、事件或 foreignObject，错误内容显示中文原因。
 - 用户消息与运行中追加消息即时本地显示，发送失败只撤回对应的未接收消息并显示原因；收到原生用户消息后，后续模型执行失败仍保留该消息。消息按发送时的 Todo 与前置节点定位，后续工具、思考、任务切换及历史重放不改变其位置。加载状态使用 Material 3 标准进度组件。
 - 应用设置中的“新会话默认免审批”默认开启并持久化，只影响以后创建的会话；会话内仍能单独切换。开启免审批会立即回复已等待和后续工具审批，不自动回答普通提问，不改写全局工具权限配置；关闭时在下一轮启动恢复原生审批模式。
 - 新思考节点跟随当前活动 Todo 子任务；没有活动 Todo 时保持扁平。任务切换、完整快照与历史重放不迁移或重复既有思考节点。
+- 用户消息和新一轮执行不重复追加未改变的 Todo；原生更新、提醒和完整状态按内容、状态与阶段判重，真正变化才生成新计划卡片，先前快照和用户消息位置保持不变。
 - 返回聊天、切换会话或进入设置后，保留各会话的滚动位置、Todo/思考/工具展开状态及未发送草稿；主页筛选和相关设置页的滚动、展开状态独立保存。不跨会话共享草稿，也不承诺结束应用进程后恢复所有临时 UI 状态。
 - 模型服务支持 Chat、Response、Message 接口、真实连通性测试与远端模型同步；模型可编辑显示名、推理/图片能力、上下文与最大输出，以及输入、输出、缓存读取、缓存写入四项美元/百万 token 价格。
 - 模型资料参考 ipmt 的目录匹配方式，联网读取主/备目录并缓存六小时；按唯一 ID 或规范化别名匹配，歧义或未知模型不猜测。新增模型可补全能力与价格；已保存模型须显式“应用匹配”，手动改过的字段保留。远端同步仅追加新模型，不覆盖既有编辑。
@@ -76,6 +82,8 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - Proroot 上游仅提供 Android arm64 版本；桌面使用真实 PRoot/QEMU 或具备 Root 权限的 chroot，不伪装支持 Proroot。
 - 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，并在停止容器时回收所属进程、卸载挂载点。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
+- 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 移植 Love2Droid 的 Termux TerminalView/TerminalSession，Desktop 使用 JediTerm 3.63 + pty4j 0.13.4；支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新。离开页面关闭其终端进程，退出后保留输出并提示重新打开；不关闭其他会话的进程。
+- 工具链安装/卸载先确认，取消不执行，执行期间禁止重复触发；同一行卡片按较高内容等高，长版本自动换行。Git 版本去掉 `git version` 前缀。
 - rootfs 支持 `.tar.gz`、`.tar.xz`、`.tar.zst` 导入，导出为 `.tar.zst`。归档路径和符号链接受边界检查；克隆/导出保留可执行及访问权限。文件系统允许时保留真实硬链接；Android 等环境拒绝创建硬链接时，导入器改为复制普通文件并保留权限和修改时间，不生成替代符号链接。此时文件不再共享 inode，可能增加磁盘占用。体积统计不遍历运行时挂载和 PRoot/QEMU 的临时宿主视图。
 - 导入时以解压目录的真实路径统一校验符号链接，支持 Android 应用数据父目录的路径别名及合法的 `node_modules/.bin` 相对链接；仍拒绝作为解压目录的符号链接、路径穿越和真正逃逸的链接链。
 - Android 容器启动及执行命令前使用当前默认网络的 DNS，并在网络变化时原子更新已运行容器的 `/etc/resolv.conf`；断网时保留最后一份有效配置。显式绑定 `/etc/resolv.conf` 或 `/etc` 时，以用户挂载为准。现有 Rootfs 的旧 DNS 会在运行时修正，无需重新下载或导入归档。
@@ -90,7 +98,7 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 
 Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/libs/`。外部宿主需同时引入协议库及 Compose / 协程等正常运行依赖；不需要引入 OMP 驱动或容器模块。
 
-富图形的 Android 宿主需要可用且较新的 Android System WebView。Desktop 同时需要当前平台的 OpenJFX 21.0.13 `base/graphics/controls/media/web` 运行依赖（兼容 JDK 17），Linux 需要 GTK 3 及 JavaFX WebKit 的原生库；Gradle 工程已按平台声明。桌面使用无窗口 WebView/Canvas 生成原生 Compose 图片，不嵌入 Swing 子窗口，不需要 interop blending 参数。Mermaid 来源与 MIT 许可位于 `agent-ui/src/commonMain/composeResources/files/rich/`；分发 OpenJFX 运行库时保留其 GPL/ClassPath exception 及 WebKit 第三方通知。
+富图形的 Android 宿主需要可用且较新的 Android System WebView。Desktop 同时需要当前平台的 OpenJFX 21.0.13 `base/graphics/controls/media/web` 运行依赖（兼容 JDK 17），Linux 需要 GTK 3 及 JavaFX WebKit 的原生库；Gradle 工程已按平台声明。富图形在桌面使用无窗口 WebView/Canvas 生成原生 Compose 图片，不嵌入 Swing 子窗口，不需要 interop blending 参数；全屏代码查看单独使用原生 Swing 代码组件。Mermaid 来源与 MIT 许可位于 `agent-ui/src/commonMain/composeResources/files/rich/`；分发 OpenJFX 运行库时保留其 GPL/ClassPath exception 及 WebKit 第三方通知。
 
 `dev.wawlink.ui` 的入口：
 
@@ -109,13 +117,13 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 
 固定输入：Ubuntu Base 24.04.4 arm64、Bun 1.3.14、Node 22.22.2、OMP 18.12.6，以及 Git、ripgrep、fd、jq、Python、curl、xz、zstd。OMP 使用完整 npm 生产依赖及原生依赖，不以替身命令代替。初始项目位于 `/workspace`，默认工具策略为 `always-ask`。
 
-本次完整功能构建的实际体积：
+当前交付产物的实际体积（本轮未重建 Rootfs，保留已有归档与校验文件）：
 
 | 产物 | 字节 | MiB |
 | --- | ---: | ---: |
 | Rootfs 文件内容合计 | 1,543,298,008 | 1471.80 |
 | `build/outputs/ubuntu-main-debug.tar.zst` | 404,312,713 | 385.58 |
-| Android Debug APK（不含 Rootfs） | 33,856,701 | 32.29 |
+| Android Debug APK（不含 Rootfs） | 40,147,759 | 38.29 |
 
 按已确认的完整功能优先策略，不执行原计划的 150–220 MB 硬上限。每次构建会重新生成 `.sha256` 与 `.sizes.json`，以后者的实际输出为准。构建缓存、Rootfs、APK、原生二进制和本地会话均不纳入源码提交，准备脚本可重建缺失输入。
 
@@ -157,5 +165,11 @@ DNS 修复已在完整交付 Rootfs 的 arm64 PRoot/QEMU 容器内验证：先�
 Slash、Ask 与富媒体本轮回归通过 109 项 Kotlin 测试（驱动 74、UI 35，无失败或跳过），Android Debug APK 与 Desktop JAR 构建通过。真实 OMP RPC 发现 52 条命令（含临时扩展），运行 `/todo help`，并验证同次 ask 的两道题按原生顺序一次提交、历史恢复及过期命令目录不重放；没有模型推理或认证使用。
 
 实际桌面已操作动态命令菜单、未知命令发送、多问题前后切换、推荐单选、多选、自定义输入、切页保留、完整答案检查与提交；正文及 Ask 预览均显示 SVG、Mermaid 和 PNG 图像，图表渲染生成有效彩色像素且始终仅一个应用窗口。另检查无效 Mermaid、不安全 SVG 与本机文件图像地址均显示中文原因，不执行内容。Android 富媒体仅完成编译打包，未将其标为设备端 WebView 渲染验收。
+
+本轮八项体验优化回归通过 153 项 Kotlin 测试（容器 19、驱动 86、UI 48，无失败或跳过）；Android Debug APK 与 Desktop JAR 构建通过。实际 APK 仅含 arm64-v8a 原生库，包含新终端 JNI 和代码高亮许可，不含 Rootfs。
+
+桌面实际操作验证实时耗时、三层吸顶及回跳、流式思考展开/选择、思考 Markdown、正文与读取工具代码高亮、全屏只读和原文复制。流式输出时，阅读选择区域间隔 2.2 秒的截图逐像素一致；全屏复制的 7,011 个字符与原文一致，键入不能修改内容。原生格式事件烟测确认下一轮 Todo 未变仍只有一份计划、状态变化后才追加，并保留先前计划。
+
+真实 arm64 Alpine PRoot/QEMU 容器验证独立终端的 ANSI 颜色、`tty`、Ctrl-C、历史方向键和复制，窗口调整后 `stty size` 从 `45 48` 更新为 `50 85`。同一隔离容器实际完成 Git 安装/卸载；打开或取消确认时包数据库校验值不变，确认后才改变，版本只显示 `2.47.3`。另用隔离的长版本文本样本检查同一行卡片等高，样本已移除。本轮不使用模型认证或计费推理；Android 的 Sora、TerminalView/JNI 仅完成编译打包，不标为真机交互验收。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。

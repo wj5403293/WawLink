@@ -1,0 +1,8 @@
+Termux terminal-emulator and terminal-view, directly ported from
+https://github.com/wsdx233/Love2Droid/tree/df583461887340a1031bfbf7b4fb6ee377750561
+Upstream Termux v0.118.0, imported there through r2droid f1c63598688027dcbf4404c27ef14a3893ccb9e1.
+These terminal modules are the Apache-2.0 exceptions identified by Termux.
+See licenses/TERMUX-TERMINAL-LICENSE.txt and the bundled assets/licenses copy.
+WawLink changes: Android SDK/arm64 build settings, runtime-owned Process transport,
+public Android PTY Process adapter, native fd/JNI correctness fixes, Chinese exit text.
+No game, editor or rootfs application sources are included.

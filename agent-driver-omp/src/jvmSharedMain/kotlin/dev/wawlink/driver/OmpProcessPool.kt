@@ -249,11 +249,12 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             actionJob = sessionScope.launch {
                 try {
                     stateMutex.withLock {
-                        replayJournal()
+                        val lastRecordedAt = replayJournal()
                         if (!hasExecutionPreference) recordLocal(buildJsonObject { put("action", "auto"); put("enabled", initialAutoApprove) })
                         // No child from a previous host lifetime is owned by this controller.
                         reducer.update { it.copy(id = id, title = title, workspace = workspace,
-                            feed = if (it.isRunning) stopFeed(it.feed) else it.feed,
+                            feed = stopFeed(it.feed, lastRecordedAt ?: System.currentTimeMillis(),
+                                if (it.status == SessionStatus.ERROR) NodeStatus.ERROR else NodeStatus.STOPPED),
                             status = if (it.isRunning) SessionStatus.STOPPED else it.status, actionText = "准备就绪",
                             slashCommands = emptyList(), slashCommandsLoading = false, slashCommandsError = null) }
                         synchronized(presentationLock) {
@@ -786,9 +787,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     }
                 }
                 // Command metadata is process-local; it must not replay stale plugins after restart.
-                if (type != "available_commands_update" && !(type == "response" &&
-                    (frame.string("id").startsWith("hb-") || frame.string("command") == "get_available_commands"))) appendJournal(frame)
-                reducer.reduce(frame)
+                val recorded = if (type != "available_commands_update" && !(type == "response" &&
+                    (frame.string("id").startsWith("hb-") || frame.string("command") == "get_available_commands"))) appendJournal(frame) else frame
+                reducer.reduce(recorded)
                 val automatic = type == "extension_ui_request" && reducer.state.autoApprove && isApprovalRequest(frame)
                 if (!automatic) publishState()
                 automatic
@@ -926,10 +927,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private suspend fun local(payload: JsonObject) = stateMutex.withLock { recordLocal(payload) }
 
         private fun recordLocal(payload: JsonObject) {
-            val frame = buildJsonObject {
+            val frame = appendJournal(buildJsonObject {
                 put("type", "wawlink_local"); put("localId", UUID.randomUUID().toString()); payload.forEach { (key, value) -> put(key, value) }
-            }
-            appendJournal(frame)
+            })
             applyLocal(frame)
             synchronized(presentationLock) {
                 val promptId = when (frame.string("action")) {
@@ -980,8 +980,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     hasExecutionPreference = true
                     reducer.update { it.copy(autoApprove = frame["enabled"]!!.jsonPrimitive.boolean) }
                 }
-                "stopped" -> reducer.update { it.copy(status = SessionStatus.STOPPED, actionText = "已停止", feed = stopFeed(it.feed)) }
-                "error" -> reducer.update { it.copy(status = SessionStatus.ERROR, error = frame.string("message"), actionText = "执行失败", feed = stopFeed(it.feed)) }
+                "stopped" -> reducer.update { it.copy(status = SessionStatus.STOPPED, actionText = "已停止",
+                    feed = stopFeed(it.feed, frame["_wawlinkAtMillis"]?.jsonPrimitive?.longOrNull ?: System.currentTimeMillis())) }
+                "error" -> reducer.update { it.copy(status = SessionStatus.ERROR, error = frame.string("message"), actionText = "执行失败",
+                    feed = stopFeed(it.feed, frame["_wawlinkAtMillis"]?.jsonPrimitive?.longOrNull ?: System.currentTimeMillis(), NodeStatus.ERROR)) }
                 "operation_error" -> reducer.update { it.copy(error = frame.string("message")) }
                 "elapsed" -> reducer.update { it.copy(elapsedSec = frame["seconds"]!!.jsonPrimitive.int) }
                 "approval" -> reducer.update { current ->
@@ -1013,14 +1015,16 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
         }
 
-        private fun replayJournal() {
+        private fun replayJournal(): Long? {
             val file = eventJournal
-            if (!file.exists()) return
+            if (!file.exists()) return null
+            var lastRecordedAt: Long? = null
             file.bufferedReader().useLines { lines ->
                 lines.forEach { line ->
                     if (line.isNotBlank()) {
                         try {
                             val frame = DriverJson.parseToJsonElement(line).jsonObject
+                            frame["_wawlinkAtMillis"]?.jsonPrimitive?.longOrNull?.let { lastRecordedAt = it }
                             if (frame.string("type") == "wawlink_local") {
                                 if (frame.string("action") == "ask" && frame["answers"] == null) {
                                     // Read old per-question journal answers into the grouped native card.
@@ -1047,12 +1051,15 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     }
                 }
             }
+            return lastRecordedAt
         }
 
-        private fun appendJournal(frame: JsonObject) {
+        private fun appendJournal(frame: JsonObject): JsonObject {
+            val recorded = JsonObject(frame + ("_wawlinkAtMillis" to JsonPrimitive(System.currentTimeMillis())))
             val file = eventJournal
             file.parentFile.mkdirs()
-            file.appendText(frame.toString() + "\n", Charsets.UTF_8)
+            file.appendText(recorded.toString() + "\n", Charsets.UTF_8)
+            return recorded
         }
 
         private fun saveMetadata() = writeMetadata(id, containerId, workspace, reducer.state.title, sessionFile)
@@ -1242,15 +1249,23 @@ private fun hasUnresolvedDialog(items: List<FeedItem>): Boolean = items.any { it
     is StepGroupNodeItem -> hasUnresolvedDialog(item.children)
     else -> false
 } }
-private fun stopFeed(items: List<FeedItem>): List<FeedItem> = mapFeed(items) { item -> when (item) {
-    is ToolNodeItem -> if (item.state == NodeStatus.RUNNING) item.copy(state = NodeStatus.STOPPED) else item
-    is StepGroupNodeItem -> if (item.state == NodeStatus.RUNNING) item.copy(state = NodeStatus.STOPPED) else item
-    is ThinkingNodeItem -> item.copy(isStreaming = false)
-    is AssistantMessageItem -> item.copy(isStreaming = false)
-    is ApprovalCardItem -> if (item.resolution == null) item.copy(resolution = ApprovalDecision.DENY) else item
-    is AskCardItem -> if (!item.isResolved) item.copy(cancelled = true) else item
-    else -> item
-} }
+internal fun stopFeed(items: List<FeedItem>, atMillis: Long = System.currentTimeMillis(), status: NodeStatus = NodeStatus.STOPPED): List<FeedItem> {
+    fun elapsed(start: Long?, previous: Int): Int = start?.let {
+        ((atMillis - it).coerceAtLeast(0) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(previous)
+    } ?: previous
+    return mapFeed(items) { item -> when (item) {
+        is ToolNodeItem -> if (item.state == NodeStatus.RUNNING) item.copy(state = status,
+            elapsedSec = elapsed(item.startedAtMillis, item.elapsedSec)) else item
+        is StepGroupNodeItem -> if (item.state == NodeStatus.RUNNING) item.copy(state = status,
+            elapsedSec = elapsed(item.startedAtMillis, item.elapsedSec), isExpanded = false) else item
+        is ThinkingNodeItem -> if (item.isStreaming) item.copy(isStreaming = false,
+            elapsedSec = elapsed(item.startedAtMillis, item.elapsedSec)) else item
+        is AssistantMessageItem -> item.copy(isStreaming = false)
+        is ApprovalCardItem -> if (item.resolution == null) item.copy(resolution = ApprovalDecision.DENY) else item
+        is AskCardItem -> if (!item.isResolved) item.copy(cancelled = true) else item
+        else -> item
+    } }
+}
 
 private fun findAskCard(items: List<FeedItem>, id: String): AskCardItem? {
     for (item in items) {

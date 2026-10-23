@@ -10,6 +10,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontStyle
@@ -23,16 +25,23 @@ import kotlinx.coroutines.delay
 @Composable
 internal fun streamedText(text: String, streaming: Boolean): String {
     val smooth = LocalAgentAppearance.current.smoothStreaming
-    var visible by remember { mutableStateOf(if (streaming && smooth) "" else text) }
-    LaunchedEffect(text, streaming, smooth) {
-        if (!streaming || !smooth || !text.startsWith(visible)) visible = text
-        else while (visible.length < text.length) {
-            val count = ((text.length - visible.length) / 12).coerceIn(1, 32)
-            visible = text.take((visible.length + count).coerceAtMost(text.length))
-            delay(16)
+    val latest by rememberUpdatedState(text)
+    var visible by remember { mutableStateOf(text) }
+    LaunchedEffect(streaming, smooth) {
+        while (streaming && smooth) {
+            val target = latest
+            if (!target.startsWith(visible)) visible = target
+            else if (visible.length < target.length) {
+                val count = ((target.length - visible.length) / 8).coerceIn(1, 64)
+                var end = (visible.length + count).coerceAtMost(target.length)
+                if (end < target.length && target[end - 1].isHighSurrogate() && target[end].isLowSurrogate()) end++
+                visible = target.take(end)
+            }
+            delay(32)
         }
+        visible = latest
     }
-    return visible
+    return if (streaming && smooth) visible else text
 }
 
 @Composable
@@ -42,6 +51,7 @@ internal fun Markdown(text: String, modifier: Modifier = Modifier) {
         parts.forEach { part ->
             when (part) {
                 is MarkdownPart.Text -> if (part.text.isNotBlank()) PlainMarkdown(part.text)
+                is MarkdownPart.Code -> MarkdownCode(part)
                 is MarkdownPart.Graphic -> RichGraphic(part)
             }
         }
@@ -52,9 +62,26 @@ internal fun Markdown(text: String, modifier: Modifier = Modifier) {
 internal fun AskRichPreview(text: String, modifier: Modifier = Modifier) = Markdown(text, modifier)
 
 @Composable
+private fun MarkdownCode(part: MarkdownPart.Code) {
+    val colors = LocalAgentColors.current
+    val clipboard = LocalClipboardManager.current
+    var detail by remember { mutableStateOf(false) }
+    Surface(color = colors.surfaceContainerLow, shape = RoundedCornerShape(14.dp)) {
+        Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(part.language ?: "代码", Modifier.weight(1f), color = colors.onSurfaceVariant, fontSize = 13.sp)
+                AgentIconButton("content_copy", "复制代码", { clipboard.setText(AnnotatedString(part.text)) })
+                AgentIconButton("open_in_full", "全屏查看代码", { detail = true })
+            }
+            HighlightedCode(part.text, part.language, Modifier.fillMaxWidth())
+        }
+    }
+    if (detail) CodeDetailScreen(part.language ?: "代码详情", part.text, part.language) { detail = false }
+}
+
+@Composable
 private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
     val c = LocalAgentColors.current
-    val mono = LocalAgentMono.current
     val uri = LocalUriHandler.current
     val lines = remember(text) { text.lines() }
     SelectionContainer(modifier) {
@@ -63,19 +90,6 @@ private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
             while (index < lines.size) {
                 val line = lines[index]
                 when {
-                    line.startsWith("```") || line.startsWith("~~~") -> {
-                        val fence = line.take(3)
-                        val language = line.drop(3).trim()
-                        val start = ++index
-                        while (index < lines.size && !lines[index].startsWith(fence)) index++
-                        val code = lines.subList(start, index).joinToString("\n")
-                        Surface(color = c.surfaceContainerLow, shape = RoundedCornerShape(14.dp)) {
-                            Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                                if (language.isNotEmpty()) Text(language, color = c.onSurfaceVariant, fontSize = 13.sp)
-                                Text(code, Modifier.horizontalScroll(rememberScrollState()), fontFamily = mono, fontSize = 14.sp, lineHeight = 22.4.sp)
-                            }
-                        }
-                    }
                     line.matches(Regex("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$")) -> HorizontalDivider(color = c.outlineVariant)
                     line.trim().startsWith("|") && index + 1 < lines.size && lines[index + 1].matches(Regex("^[| :\\-]+$")) -> {
                         val rows = mutableListOf(line)

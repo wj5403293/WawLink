@@ -11,7 +11,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -71,6 +70,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Text(c.config.name, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f)); if (c.config.isDefault) Symbol("verified", size = 20.dp, tint = MaterialTheme.colorScheme.primary) }
                             Row(Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) { Meta("terminal", "${c.config.distro} ${c.config.version}"); Meta("hard_drive", bytesLabel(c.sizeBytes)); Meta("forum", "${sessions.count { it.record.containerId == c.config.id && !it.record.archived }}") }
                         }
+                        AgentIconButton("terminal", "打开 ${c.config.name} 终端", { onTerminal(c.config.id) })
                         Switch(c.running, { run -> app.launch { if (run) app.runtime.start(c.config.id) else app.runtime.stop(c.config.id) } })
                     }
                     c.error?.let { Text(it, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
@@ -161,12 +161,12 @@ internal fun bytesLabel(bytes: Long): String = when {
 }
 @Composable private fun ShellSelector(value: String, onChange: (String) -> Unit) { HostChips(listOf("/bin/bash", "/bin/zsh", "/bin/sh"), value, { it.substringAfterLast('/').replaceFirstChar(Char::uppercase) }, onChange, "terminal") }
 
-@Composable internal fun ContainerDetailScreen(app: AppCoordinator, files: HostFiles, info: ContainerInfo, onBack: () -> Unit) {
+@Composable internal fun ContainerDetailScreen(app: AppCoordinator, files: HostFiles, info: ContainerInfo, onBack: () -> Unit, onTerminal: (String) -> Unit) {
     val c = info.config
     var tools by remember(c.id) { mutableStateOf<List<ToolchainInfo>?>(null) }
     var probeError by remember(c.id) { mutableStateOf<String?>(null) }
     var toolBusy by remember { mutableStateOf<String?>(null) }
-    var terminal by remember { mutableStateOf(false) }
+    var pendingTool by remember(c.id) { mutableStateOf<ToolchainInfo?>(null) }
     var mountEditor by remember { mutableStateOf<ContainerMount?>(null) }
     var addMount by remember { mutableStateOf(false) }
     var envEditor by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -182,7 +182,7 @@ internal fun bytesLabel(bytes: Long): String = when {
     fun update(next: ContainerConfig) { app.launch { app.runtime.update(next) } }
     Column {
         AgentTopBar(c.name, onBack, actions = {
-            AgentIconButton("terminal", "终端测试", { terminal = true })
+            AgentIconButton("terminal", "打开独立终端", { onTerminal(c.id) })
             AgentIconButton("delete", "删除容器", { delete = true })
             Switch(info.running, { run -> app.launch { if (run) app.runtime.start(c.id) else app.runtime.stop(c.id) } })
             Spacer(Modifier.width(8.dp))
@@ -200,21 +200,19 @@ internal fun bytesLabel(bytes: Long): String = when {
             SectionLabel("运行引擎", "deployed_code")
             EngineSelector(c.engine, app.isAndroid) { update(c.copy(engine = it)) }
             Text("切换引擎或配置会停止相关进程并应用新配置。chroot 需要 Root 权限。", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
-            SectionLabel("预装工具链", "construction", action = { TextButton({ uiScope.launch { probe() } }) { Text("重新探测") } })
+            SectionLabel("预装工具链", "construction", action = { TextButton({ uiScope.launch { probe() } }, enabled = toolBusy == null) { Text("重新探测") } })
             if (tools == null && probeError == null) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在容器内探测实际工具版本", Modifier.padding(12.dp)) }
             probeError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            tools?.chunked(2)?.forEach { row -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            tools?.chunked(2)?.forEach { row -> Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 row.forEach { tool ->
-                    Row(Modifier.weight(1f).heightIn(min = 76.dp).background(if (tool.installed) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(if (tool.installed) 24.dp else 18.dp)).clickable(enabled = toolBusy == null) {
-                        toolBusy = tool.id
-                        uiScope.launch {
-                            try { val output = withContext(Dispatchers.IO) { app.runtime.changeToolchain(c.id, tool.id, !tool.installed) }; app.report(output.ifBlank { "${tool.title} 操作已完成" }); probe() }
-                            catch (e: Exception) { app.showError(e) }
-                            finally { toolBusy = null }
-                        }
+                    Row(Modifier.weight(1f).fillMaxHeight().heightIn(min = 76.dp).background(if (tool.installed) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(if (tool.installed) 24.dp else 18.dp)).clickable(enabled = toolBusy == null) {
+                        pendingTool = tool
                     }.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (toolBusy == tool.id) CircularProgressIndicator(Modifier.size(28.dp)) else Symbol(tool.icon)
-                        Column(Modifier.weight(1f)) { Text(tool.title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold); Text(if (toolBusy == tool.id) "正在执行…" else if (tool.installed) tool.version else "未安装", fontSize = 13.sp, fontFamily = LocalAgentMono.current, maxLines = 2) }
+                        Column(Modifier.weight(1f)) {
+                            Text(tool.title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                            Text(if (toolBusy == tool.id) "正在执行…" else if (tool.installed) tool.version else "未安装", fontSize = 13.sp, fontFamily = LocalAgentMono.current, softWrap = true)
+                        }
                     }
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
@@ -240,7 +238,32 @@ internal fun bytesLabel(bytes: Long): String = when {
             c.environment.forEach { (key, value) -> HostRow(key, value, "data_object", { envEditor = key to value; addEnv = true }) { AgentIconButton("close", "删除变量", { update(c.copy(environment = c.environment - key)) }) } }
         }
     }
-    if (terminal) TerminalSheet(app, c.id, { terminal = false })
+    pendingTool?.let { tool ->
+        val operation = if (tool.installed) "卸载" else "安装"
+        AlertDialog(
+            onDismissRequest = { if (toolBusy == null) pendingTool = null },
+            title = { Text("确认${operation} ${tool.title}？") },
+            text = { Text("将在容器「${c.name}」内${operation}工具链「${tool.title}」。${if (tool.installed) "卸载可能同时移除不再需要的依赖软件包。" else "安装将下载软件包并占用容器存储空间。"}") },
+            confirmButton = {
+                TextButton({
+                    if (toolBusy == null && pendingTool != null) {
+                        pendingTool = null
+                        toolBusy = tool.id
+                        uiScope.launch {
+                            try {
+                                val output = withContext(Dispatchers.IO) { app.runtime.changeToolchain(c.id, tool.id, !tool.installed) }
+                                app.report(output.ifBlank { "${tool.title} ${operation}已完成" })
+                                probe()
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (failure: Exception) { app.showError(failure) }
+                            finally { toolBusy = null }
+                        }
+                    }
+                }, enabled = toolBusy == null) { Text("确认$operation") }
+            },
+            dismissButton = { TextButton({ pendingTool = null }, enabled = toolBusy == null) { Text("取消") } },
+        )
+    }
     if (clone) AgentSheet("克隆容器", { clone = false }) { HostField("新容器名称", cloneName, { cloneName = it }); HostAction("开始克隆", "content_copy", { app.launch { app.runtime.clone(c.id, cloneName); clone = false } }, Modifier.fillMaxWidth(), enabled = cloneName.isNotBlank()) }
     if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text("删除容器 ${c.name}？") }, text = { Text("将停止相关进程并删除此容器。受管导入的 rootfs 会永久删除；外部注册的开发 rootfs 将保留。存在关联会话时请先切换或删除会话。") }, confirmButton = { TextButton({ app.launch { app.deleteContainer(c.id); delete = false; onBack() } }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton({ delete = false }) { Text("取消") } })
     if (addMount) MountSheet(mountEditor, c.engine == ContainerEngineType.CHROOT, { addMount = false }) { mount ->
@@ -279,31 +302,3 @@ internal fun bytesLabel(bytes: Long): String = when {
     }
 }
 
-@Composable internal fun TerminalSheet(app: AppCoordinator, id: String, onDismiss: () -> Unit) {
-    var session by remember(id) { mutableStateOf<TerminalSession?>(null) }
-    var command by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    val containers by app.runtime.containers.collectAsState()
-    LaunchedEffect(id) {
-        var opened: TerminalSession? = null
-        try { withContext(Dispatchers.IO) { opened = app.runtime.openTerminal(id) }; session = opened; awaitCancellation() }
-        catch (e: CancellationException) { throw e }
-        catch (e: Exception) { error = e.message ?: e.toString(); app.showError(e) }
-        finally { opened?.close(); session = null }
-    }
-    val output = session?.output?.collectAsState()?.value.orEmpty()
-    val alive = session?.isAlive?.collectAsState()?.value ?: false
-    val scroll = rememberScrollState()
-    LaunchedEffect(output) { scroll.animateScrollTo(scroll.maxValue) }
-    fun send(text: String) { if (text.isNotBlank()) runCatching { require(alive) { "终端进程已退出" }; requireNotNull(session) { "终端未连接" }.send(text) }.onFailure { error = it.message; app.showError(it) } }
-    AgentSheet("${containers.firstOrNull { it.config.id == id }?.config?.name.orEmpty()} 终端", onDismiss) {
-        Column(Modifier.fillMaxWidth().heightIn(min = 240.dp, max = 340.dp).background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(22.dp)).verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (session == null && error == null) Text("正在启动真实交互式 Shell…")
-            output.forEach { Text(it, fontFamily = LocalAgentMono.current, fontSize = 14.sp) }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (session != null && !alive) Text("终端进程已退出", color = MaterialTheme.colorScheme.error)
-        }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("uname -a", "id", "df -h", "free -h", "ls -la /workspace").forEach { cmd -> AssistChip({ send(cmd) }, { Text(cmd) }, enabled = alive) } }
-        OutlinedTextField(command, { command = it }, Modifier.fillMaxWidth().onPreviewKeyEvent { if (it.type == KeyEventType.KeyDown && it.key == Key.Enter) { send(command); command = ""; true } else false }, label = { Text("输入命令测试容器环境") }, singleLine = true, enabled = alive, shape = RoundedCornerShape(16.dp), trailingIcon = { AgentIconButton("send", "执行命令", { send(command); command = "" }) })
-    }
-}

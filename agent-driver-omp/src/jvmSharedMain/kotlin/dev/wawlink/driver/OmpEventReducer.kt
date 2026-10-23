@@ -38,12 +38,13 @@ internal fun placeUserMessage(feed: List<FeedItem>, user: UserMessageItem, posit
  * Blocked/abandoned todo distinctions and automatic effort have no exact public enum equivalent;
  * blocked stays pending, abandoned completes, auto preserves the last effective fixed level.
  */
-class OmpEventReducer(initial: ChatSessionUiState) {
+class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long = System::currentTimeMillis) {
     var state: ChatSessionUiState = initial
         private set
 
     private var generation = 0L
     private var sequence = 0L
+    private var eventTimeMillis = clock()
     private var currentMessage: String? = null
     private val messageStack = mutableListOf<String>()
     private val messages = mutableMapOf<String, JsonObject>()
@@ -61,7 +62,9 @@ class OmpEventReducer(initial: ChatSessionUiState) {
     private val consumedQueue = mutableListOf<QueuedPrompt>()
     private val tools = mutableMapOf<String, ToolRecord>()
     private val argumentDeltas = mutableMapOf<String, String>()
-    private var planId: String? = null
+    private var planId: String? = initial.feed.filterIsInstance<PlanNodeItem>().lastOrNull()?.id
+    private var planSteps = initial.feed.filterIsInstance<PlanNodeItem>().lastOrNull()?.steps.orEmpty()
+    private var planAfterUser = false
     private var activeGroup: String? = null
     private var activeTitle: String? = null
     private var startedAt: Long? = null
@@ -72,18 +75,37 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         val id: String,
         var name: String,
         var args: JsonObject,
-        val startedAt: Long,
+        var startedAt: Long?,
         var output: String = "",
         var finished: Boolean = false,
         var finishedAt: Long? = null,
+        var elapsedSec: Int? = null,
+        var executionStarted: Boolean = false,
+        var terminalStatus: NodeStatus? = null,
         var failed: Boolean = false,
         var intent: String? = null,
+        var details: JsonObject? = null,
+        var diff: String? = null,
         var added: Int = 0,
         var removed: Int = 0,
     )
 
     fun update(transform: (ChatSessionUiState) -> ChatSessionUiState): ChatSessionUiState {
+        val previous = state
         state = transform(state)
+        if (previous.isRunning && (state.status == SessionStatus.STOPPED || state.status == SessionStatus.ERROR)) {
+            startedAt = null
+            activeGroup = null
+            activeTitle = null
+            tools.values.forEach { record ->
+                val node = item(record.id) as? ToolNodeItem
+                if (!record.finished && node != null && node.state != NodeStatus.RUNNING) {
+                    record.finished = true
+                    record.elapsedSec = node.elapsedSec
+                    record.terminalStatus = node.state
+                }
+            }
+        }
         return state
     }
     internal fun hasConfirmedUser(id: String): Boolean = id in reconciledUsers
@@ -107,6 +129,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
 
 
     fun reduce(frame: JsonObject): ChatSessionUiState {
+        eventTimeMillis = frame.number("_wawlinkAtMillis") ?: clock()
         when (frame.string("type")) {
             "ready" -> {
                 generation++
@@ -121,20 +144,22 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                 consumedQueue.clear()
                 activeGroup = null
                 activeTitle = null
-                planId = null
+                planAfterUser = true
+                startedAt = null
                 state = state.copy(slashCommands = emptyList(), slashCommandsError = null)
             }
             "agent_start" -> {
                 if (startedAt == null) {
-                    planId = null
+                    planAfterUser = true
                     activeGroup = null
                     activeTitle = null
-                    startedAt = System.currentTimeMillis()
+                    startedAt = eventTimeMillis
                     runError = null
                     aborted = false
                     state = state.copy(elapsedSec = 0)
                 }
                 state = state.copy(status = SessionStatus.RUNNING, actionText = "正在执行", error = null)
+                ensureActiveGroup()
             }
             "turn_start" -> state = state.copy(actionText = "正在生成")
             "message_start", "message_update", "message_end" -> messageFrame(frame)
@@ -241,9 +266,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                 } else previous
                 val streaming = nodeId !in completedBlocks
                 val narration = full?.array("content")?.getOrNull(index)?.asObject()?.bool("narration") == true
-                if (thinking && !narration) put(ThinkingNodeItem(nodeId, streaming,
-                    elapsedSec = thinkingElapsed(nodeId, streaming), text = text,
-                    isExpanded = (old as? ThinkingNodeItem)?.isExpanded ?: false))
+                if (thinking && !narration) put(thinkingNode(nodeId, streaming, text))
                 else put(AssistantMessageItem(nodeId, text, streaming))
             }
             type.startsWith("toolcall_") -> {
@@ -261,10 +284,11 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         }
     }
 
-    private fun snapshot(id: String, message: JsonObject, final: Boolean) {
+    private fun snapshot(id: String, message: JsonObject, final: Boolean, historical: Boolean = false) {
         messages[id] = message
         when (message.string("role")) {
             "user" -> {
+                if (historical) closeGroup(NodeStatus.OK)
                 val text = contentText(message["content"])
                 if (item(id) == null) {
                     val existing = allItems(state.feed).filterIsInstance<UserMessageItem>().firstOrNull {
@@ -297,9 +321,8 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                         "thinking" -> if (block.bool("narration") == true) {
                             put(AssistantMessageItem(nodeId, block.string("thinking").orEmpty(), streaming))
                         } else {
-                            val old = item(nodeId) as? ThinkingNodeItem
-                            put(ThinkingNodeItem(nodeId, streaming, thinkingElapsed(nodeId, streaming),
-                                block.string("thinking").orEmpty(), old?.isExpanded ?: false))
+                            if (historical && item(nodeId) == null) ensureActiveGroup(historical = true)
+                            put(thinkingNode(nodeId, streaming, block.string("thinking").orEmpty()))
                         }
                         "text" -> put(AssistantMessageItem(nodeId, block.string("text").orEmpty(), streaming))
                         "image" -> {
@@ -309,7 +332,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                                 put(AssistantMessageItem(nodeId, "![图像](data:$mime;base64,$data)", streaming))
                         }
                         "toolCall" -> block.string("id")?.let { tool(it, block.string("name").orEmpty(),
-                            block.obj("arguments") ?: JsonObject(emptyMap()), block.string("intent")) }
+                            block.obj("arguments") ?: JsonObject(emptyMap()), block.string("intent"), historical) }
                     }
                 }
                 message.obj("usage")?.let { accumulateUsage(id, it) }
@@ -334,7 +357,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                     put("toolName", message.string("toolName").orEmpty())
                     put("result", message)
                     put("isError", message.bool("isError") ?: false)
-                })
+                }, historical)
             }
             "compactionSummary", "branchSummary" -> message.string("summary")?.let {
                 put(AssistantMessageItem(id, it))
@@ -342,7 +365,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         }
     }
 
-    private fun tool(callId: String, name: String, args: JsonObject, intent: String? = null): ToolRecord {
+    private fun tool(callId: String, name: String, args: JsonObject, intent: String? = null, historical: Boolean = false): ToolRecord {
         val key = "omp:$generation:tool:$callId"
         val old = tools[key]
         if (old != null) {
@@ -352,10 +375,11 @@ class OmpEventReducer(initial: ChatSessionUiState) {
             renderTool(old, intent = intent)
             return old
         }
-        val record = ToolRecord(key, name, args, System.currentTimeMillis())
+        val record = ToolRecord(key, name, args, if (historical) null else eventTimeMillis)
         record.intent = intent
         tools[key] = record
         if (name !in todoNames) {
+            ensureActiveGroup(historical)
             val node = toolNode(record, intent = intent)
             val group = activeGroup?.let { item(it) as? StepGroupNodeItem }
             if (group == null) put(node) else put(group.copy(children = group.children + node,
@@ -363,22 +387,27 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                     editCount = group.stats.editCount + if (isEdit(name)) 1 else 0,
                     readCount = group.stats.readCount + if (name == "read") 1 else 0)))
         }
-        if (name in todoNames && (args["todos"] != null || args["phases"] != null)) applyPlan(args)
+        if (name in todoNames && !record.finished && (args["todos"] != null || args["phases"] != null)) applyPlan(args, historical)
         return record
     }
 
-    private fun toolFrame(frame: JsonObject) {
+    private fun toolFrame(frame: JsonObject, historical: Boolean = false) {
         val callId = frame.string("toolCallId") ?: return
-        val record = tool(callId, frame.string("toolName").orEmpty(), frame.obj("args") ?: JsonObject(emptyMap()), frame.string("intent"))
+        val record = tool(callId, frame.string("toolName").orEmpty(), frame.obj("args") ?: JsonObject(emptyMap()), frame.string("intent"), historical)
         val type = frame.string("type")
+        if (type == "tool_execution_start" && !record.executionStarted && !record.finished) {
+            record.startedAt = eventTimeMillis
+            record.executionStarted = true
+        }
         val resultElement = frame["result"] ?: frame["partialResult"] ?: frame["update"]
         val result = resultElement.asObject()
         val details = result?.obj("details")
+        if (details != null) record.details = details
         val isError = frame.bool("isError") == true || result?.bool("isError") == true
         // Native toolResult and agent_end snapshots repeat already applied Todo results.
         if (record.name in todoNames && !isError && !record.finished) {
-            if (details != null) applyPlan(details)
-            if (result != null && (result["todos"] != null || result["phases"] != null)) applyPlan(result)
+            if (details != null) applyPlan(details, historical)
+            if (result != null && (result["todos"] != null || result["phases"] != null)) applyPlan(result, historical)
         }
         if (resultElement != null) {
             val output = when {
@@ -396,20 +425,26 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         if (type == "tool_execution_end") {
             record.finished = true
             record.failed = record.failed || isError
-            if (record.finishedAt == null) record.finishedAt = System.currentTimeMillis()
+            if (record.finishedAt == null) record.finishedAt = eventTimeMillis
         }
         val diff = details?.string("diff") ?: result?.string("diff")
+        if (diff != null) record.diff = diff
         val elapsed = details?.number("durationMs") ?: result?.number("durationMs") ?: frame.number("elapsedMs")
+        if (type == "tool_execution_end" && record.elapsedSec == null) {
+            record.elapsedSec = elapsed?.let { (it.coerceAtLeast(0) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() }
+                ?: record.startedAt?.let { seconds(it, record.finishedAt ?: eventTimeMillis) } ?: 0
+        }
         val old = item(record.id) as? ToolNodeItem
-        var node = toolNode(record, isError, elapsed?.let { (it / 1000).toInt() }, frame.string("intent"))
+        var node = toolNode(record, isError, frame.string("intent"))
         if (diff != null) {
             val lines = diff.lines().map { line ->
-                DiffLine(line, when {
-                    line.startsWith("+++") || line.startsWith("---") -> DiffLineKind.CONTEXT
-                    line.startsWith("+") -> DiffLineKind.ADDED
-                    line.startsWith("-") -> DiffLineKind.REMOVED
-                    else -> DiffLineKind.CONTEXT
-                })
+                when {
+                    line.startsWith("+++ ") || line.startsWith("--- ") || line == "+++" || line == "---" -> DiffLine(line)
+                    line.startsWith("+") -> DiffLine(line.substring(1), DiffLineKind.ADDED)
+                    line.startsWith("-") -> DiffLine(line.substring(1), DiffLineKind.REMOVED)
+                    line.startsWith(" ") -> DiffLine(line.substring(1))
+                    else -> DiffLine(line)
+                }
             }
             val added = lines.count { it.kind == DiffLineKind.ADDED }
             val removed = lines.count { it.kind == DiffLineKind.REMOVED }
@@ -436,7 +471,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
             previewContent = if (old.detailContent is ToolDetail.DiffBlock) old.previewContent else fresh.previewContent))
     }
 
-    private fun toolNode(record: ToolRecord, error: Boolean = false, elapsed: Int? = null, intent: String? = null): ToolNodeItem {
+    private fun toolNode(record: ToolRecord, error: Boolean = false, intent: String? = null): ToolNodeItem {
         val command = record.args.string("command") ?: record.args.string("code") ?: record.args.toString()
         val path = record.args.string("path") ?: record.args.string("file_path")
         val shell = record.name == "bash" || record.name == "python"
@@ -444,15 +479,35 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         val failed = error || record.failed
         val detail = if (shell) ToolDetail.CommandAndOutput(command, output.lines().map { OutputLine(it, failed) })
             else ToolDetail.PlainText(listOf(record.args.toString(), output).filter { it.isNotEmpty() }.joinToString("\n\n"))
+        val details = record.details
+        val codePath = details?.string("path") ?: path
+        val interpreter = record.args.string("interpreter") ?: when (record.name) {
+            "bash", "python" -> record.name
+            else -> if (record.args.string("code") != null) record.args.string("language") else null
+        }
+        val diff = record.diff ?: record.args.string("patch")
+        val codeText = when {
+            diff != null -> diff
+            shell -> record.args.string("code") ?: record.args.string("command")
+            record.name in sourceOutputTools -> output.takeIf { it.isNotEmpty() }
+            record.name in sourceWriteTools -> record.args.string("content") ?: record.args.string("text") ?: record.args.string("code")
+            record.name == "edit" -> record.args.string("newText") ?: record.args.string("new_string") ?: record.args.string("replacement")
+            interpreter != null -> record.args.string("code") ?: record.args.string("command")
+            else -> record.args.string("code")
+        }
         return ToolNodeItem(record.id,
             icon = when { isEdit(record.name) -> "edit_document"; record.name == "read" -> "description"; shell -> "terminal"; else -> "build" },
             leadStyle = if (failed) LeadStyle.WARN else LeadStyle.SOFT,
             titleHtml = escape(intent ?: record.intent ?: record.name),
-            state = if (!record.finished) NodeStatus.RUNNING else if (failed) NodeStatus.ERROR else NodeStatus.OK,
-            elapsedSec = elapsed ?: seconds(record.startedAt, record.finishedAt ?: System.currentTimeMillis()),
+            state = record.terminalStatus ?: if (!record.finished && record.startedAt != null) NodeStatus.RUNNING else if (failed) NodeStatus.ERROR else NodeStatus.OK,
+            elapsedSec = record.elapsedSec ?: record.startedAt?.let { seconds(it, record.finishedAt ?: eventTimeMillis) } ?: 0,
             previewContent = if (path != null) pathPreview(path) else ToolPreview.CommandOneLine(if (shell) command else record.args.toString()),
             detailContent = detail, rawCopyText = if (output.isEmpty()) command else output,
-            fullSheetText = if (shell) "$command\n\n$output" else listOf(record.args.toString(), output).joinToString("\n\n"))
+            fullSheetText = if (shell) "$command\n\n$output" else listOf(record.args.toString(), output).joinToString("\n\n"),
+            startedAtMillis = record.startedAt,
+            codeLanguage = if (diff != null) "diff" else details?.string("language") ?: record.args.string("language"),
+            codePath = codePath, codeInterpreter = interpreter, codeText = codeText,
+            resultText = output.takeIf { it.isNotEmpty() && it != codeText })
     }
 
     private fun pathPreview(path: String, added: Int? = null, removed: Int? = null): ToolPreview.MidPath {
@@ -460,16 +515,15 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         return ToolPreview.MidPath(if (split >= 0) path.substring(0, split + 1) else "", path.substring(split + 1), added, removed)
     }
 
-    private fun applyPlan(value: JsonObject) {
+    private fun applyPlan(value: JsonObject, historical: Boolean = false) {
         val phases = value.array("phases") ?: value.array("todoPhases")
         val tasks = if (phases != null) phases.flatMap { it.asObject()?.array("tasks").orEmpty() }
             else value.array("todos") ?: value.array("tasks") ?: return
-        applyTasks(tasks.mapNotNull { it.asObject() })
+        applyTasks(tasks.mapNotNull { it.asObject() }, historical)
     }
 
-    private fun applyTasks(tasks: List<JsonObject>) {
+    private fun applyTasks(tasks: List<JsonObject>, historical: Boolean = false) {
         if (tasks.isEmpty() && planId == null) return
-        val id = planId ?: generated("plan").also { planId = it }
         val steps = tasks.map { task ->
             val status = when (task.string("status")) {
                 "in_progress" -> StepState.IN_PROGRESS
@@ -479,22 +533,35 @@ class OmpEventReducer(initial: ChatSessionUiState) {
             PlanStep(task.string("content") ?: task.string("title").orEmpty(),
                 if (status == StepState.COMPLETED) "check_circle" else if (status == StepState.IN_PROGRESS) "pending" else "radio_button_unchecked", status)
         }
-        put(PlanNodeItem(id, steps))
-        val title = steps.firstOrNull { it.state == StepState.IN_PROGRESS }?.title
-        if (title != activeTitle) {
-            closeGroup(NodeStatus.OK)
-            activeTitle = title
-            if (title != null) {
-                val group = StepGroupNodeItem(generated("group"), title)
-                activeGroup = group.id
-                put(group)
-            }
+        if (steps != planSteps || planId == null) {
+            val id = planId?.takeUnless { planAfterUser } ?: generated("plan")
+            planId = id
+            planSteps = steps
+            planAfterUser = false
+            val old = item(id) as? PlanNodeItem
+            put(PlanNodeItem(id, steps, old?.isExpanded ?: true))
         }
+        val title = steps.firstOrNull { it.state == StepState.IN_PROGRESS }?.title
+        if (title != activeTitle) closeGroup(NodeStatus.OK)
+        ensureActiveGroup(historical)
+    }
+
+    private fun ensureActiveGroup(historical: Boolean = false) {
+        if (activeGroup != null || !historical && !state.isRunning) return
+        val title = planSteps.firstOrNull { it.state == StepState.IN_PROGRESS }?.title ?: return
+        val group = StepGroupNodeItem(generated("group"), title,
+            state = if (historical) NodeStatus.OK else NodeStatus.RUNNING,
+            isExpanded = !historical, startedAtMillis = if (historical) null else eventTimeMillis)
+        activeGroup = group.id
+        activeTitle = title
+        put(group)
     }
 
     private fun closeGroup(status: NodeStatus) {
-        activeGroup?.let { id -> (item(id) as? StepGroupNodeItem)?.let { put(it.copy(state = status, isExpanded = false,
-            elapsedSec = it.children.filterIsInstance<ToolNodeItem>().sumOf { child -> child.elapsedSec })) } }
+        activeGroup?.let { id -> (item(id) as? StepGroupNodeItem)?.let {
+            if (it.state == NodeStatus.RUNNING) put(it.copy(state = status, isExpanded = false,
+                elapsedSec = it.startedAtMillis?.let { start -> seconds(start) } ?: it.elapsedSec))
+        } }
         activeGroup = null
         activeTitle = null
     }
@@ -638,8 +705,15 @@ class OmpEventReducer(initial: ChatSessionUiState) {
             "set_model", "cycle_model" -> model(data.obj("model") ?: data)
             "set_thinking_level", "cycle_thinking_level" -> thinking(data.string("level") ?: data.string("thinkingLevel"))
             "set_todos" -> applyPlan(data)
-            "get_messages", "get_branch_messages", "get_messages_page" -> data.array("messages")?.forEach { element ->
-                element.asObject()?.let { snapshot(generated("message"), it, true) }
+            "get_messages", "get_branch_messages", "get_messages_page" -> {
+                data.array("messages")?.forEach { element -> element.asObject()?.let { message ->
+                    val matching = messages.entries.lastOrNull { sameMessage(it.value, message) }?.key
+                    if (matching == null) snapshot(generated("message"), message, true, historical = true)
+                } }
+                if (!state.isRunning) {
+                    activeGroup = null
+                    activeTitle = null
+                }
             }
             "compact" -> {
                 state = state.copy(actionText = "上下文压缩完成")
@@ -689,11 +763,13 @@ class OmpEventReducer(initial: ChatSessionUiState) {
             contextTokens = next.contextTokens, cost = usage.cost + next.cost - previous.cost))
     }
 
-    private fun thinkingElapsed(id: String, streaming: Boolean): Int {
+    private fun thinkingNode(id: String, streaming: Boolean, text: String): ThinkingNodeItem {
         val old = item(id) as? ThinkingNodeItem
-        if (!streaming && old != null && !old.isStreaming) return old.elapsedSec
-        val start = blockStartedAt.getOrPut(id) { System.currentTimeMillis() }
-        return seconds(start)
+        val start = old?.startedAtMillis ?: blockStartedAt[id] ?: if (streaming) {
+            eventTimeMillis.also { blockStartedAt[id] = it }
+        } else null
+        val elapsed = if (old != null && !old.isStreaming) old.elapsedSec else start?.let { seconds(it) } ?: 0
+        return ThinkingNodeItem(id, streaming, elapsed, text, old?.isExpanded ?: false, start)
     }
 
     private fun reconcileEndMessages(frame: JsonObject) {
@@ -761,12 +837,22 @@ class OmpEventReducer(initial: ChatSessionUiState) {
 
     private fun finish() {
         val status = when { aborted -> NodeStatus.STOPPED; runError != null -> NodeStatus.ERROR; else -> NodeStatus.OK }
+        tools.values.forEach { record ->
+            if (record.finished) return@forEach
+            record.finished = true
+            record.finishedAt = eventTimeMillis
+            record.elapsedSec = record.startedAt?.let { seconds(it) } ?: 0
+            record.terminalStatus = status
+        }
         closeGroup(status)
         state = state.copy(feed = mapFeed(state.feed) {
+            if (it is ThinkingNodeItem || it is AssistantMessageItem) completedBlocks.add(it.id)
             when (it) {
-                is ThinkingNodeItem -> it.copy(isStreaming = false)
+                is ThinkingNodeItem -> if (it.isStreaming) it.copy(isStreaming = false,
+                    elapsedSec = it.startedAtMillis?.let { start -> seconds(start) } ?: it.elapsedSec) else it
                 is AssistantMessageItem -> it.copy(isStreaming = false)
-                is ToolNodeItem -> if (it.state == NodeStatus.RUNNING) it.copy(state = status) else it
+                is ToolNodeItem -> if (it.state == NodeStatus.RUNNING) it.copy(state = status,
+                    elapsedSec = it.startedAtMillis?.let { start -> seconds(start) } ?: it.elapsedSec) else it
                 else -> it
             }
         })
@@ -805,7 +891,9 @@ class OmpEventReducer(initial: ChatSessionUiState) {
     private fun item(id: String): FeedItem? = allItems(state.feed).firstOrNull { it.id == id }
     private fun put(value: FeedItem) {
         var found = false
+        if (value is ThinkingNodeItem && value.isStreaming && item(value.id) == null) ensureActiveGroup()
         val feed = mapFeed(state.feed) { if (it.id == value.id) { found = true; value } else it }
+        if (!found && value is UserMessageItem) planAfterUser = true
         val group = if (!found && value is ThinkingNodeItem) activeGroup?.let { item(it) as? StepGroupNodeItem } else null
         state = state.copy(feed = when {
             found -> feed
@@ -833,10 +921,12 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         is JsonArray -> value.mapNotNull { it.asObject()?.takeIf { block -> block.string("type") == "text" }?.string("text") }.joinToString("\n")
         else -> ""
     }
-    private fun seconds(since: Long, until: Long = System.currentTimeMillis()) = ((until - since).coerceAtLeast(0) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    private fun seconds(since: Long, until: Long = eventTimeMillis) = ((until - since).coerceAtLeast(0) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     private fun isEdit(name: String) = name == "edit" || name == "write" || name == "apply_patch" || name == "ast_edit"
     private fun escape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     private val todoNames = setOf("todo", "todo_write", "todowrite")
+    private val sourceOutputTools = setOf("read", "grep", "find")
+    private val sourceWriteTools = setOf("write", "create")
     private val imageMimeTypes = setOf("image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/svg+xml")
 }
 

@@ -46,4 +46,38 @@ class MarkdownPartsTest {
         assertEquals(GraphicKind.Svg, (parts.first() as MarkdownPart.Graphic).kind)
         assertEquals("**后文**", (parts.last() as MarkdownPart.Text).text)
     }
+    @Test fun fencedCodeRetainsExactSourceAndDoesNotLoadEmbeddedGraphics() {
+        val source = "before\n  ````TypeScript\nconst value = `x`;\n```\n![literal](file:///private.png)\n  ````\nafter"
+        val parts = markdownParts(source)
+        val code = parts.filterIsInstance<MarkdownPart.Code>().single()
+        assertEquals("typescript", code.language)
+        assertEquals("const value = `x`;\n```\n![literal](file:///private.png)", code.text)
+        assertTrue(parts.none { it is MarkdownPart.Graphic })
+        assertTrue(parts.filterIsInstance<MarkdownPart.Text>().any { "after" in it.text })
+    }
+
+    @Test fun unfinishedFenceRetainsTrailingNewlineAndUnknownLanguage() {
+        val part = markdownParts("~~~unknown\nfirst\n").filterIsInstance<MarkdownPart.Code>().single()
+        assertEquals("unknown", part.language)
+        assertEquals("first\n", part.text)
+        val diagram = markdownParts("```mermaid\ngraph LR; A-->B").filterIsInstance<MarkdownPart.Code>().single()
+        assertEquals("mermaid", diagram.language)
+    }
+
+    @Test fun explicitUnknownFenceCannotBeReclassifiedByItsShebang() {
+        val code = markdownParts("```unknown-runtime\n#!/usr/bin/python3\nprint('literal')\n```")
+            .filterIsInstance<MarkdownPart.Code>().single()
+        assertEquals("unknown-runtime", code.language)
+        assertEquals(null, inferCodeLanguage(explicit = code.language, text = code.text))
+        val unnamed = markdownParts("```\n#!/usr/bin/python3\nprint('inferred')\n```")
+            .filterIsInstance<MarkdownPart.Code>().single()
+        assertEquals("python", inferCodeLanguage(explicit = unnamed.language, text = unnamed.text))
+    }
+
+    @Test fun emptyFenceIsStillOneCodeBlock() {
+        val part = markdownParts("```\n```").filterIsInstance<MarkdownPart.Code>().single()
+        assertEquals("", part.text)
+        assertEquals(null, part.language)
+    }
+
 }

@@ -23,7 +23,7 @@ import dev.wawlink.runtime.*
 import dev.wawlink.ui.*
 
 @Composable
-internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSession: () -> Unit, onEnterSession: (String) -> Unit, onContainer: (String) -> Unit, onInstall: (Boolean) -> Unit) {
+internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSession: () -> Unit, onEnterSession: (String) -> Unit, onContainer: (String) -> Unit, onInstall: (Boolean) -> Unit, onTerminal: (String) -> Unit) {
     var tab by rememberSaveable { mutableStateOf(0) }
     var batch by rememberSaveable { mutableStateOf(false) }
     var selected by rememberSaveable { mutableStateOf(emptySet<String>()) }
@@ -35,7 +35,6 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
     var editing by remember { mutableStateOf<SessionRecord?>(null) }
     var switching by remember { mutableStateOf<SessionRecord?>(null) }
     var deleting by remember { mutableStateOf(emptySet<String>()) }
-    var terminal by remember { mutableStateOf<String?>(null) }
     val sessions by app.sessions.collectAsState()
     val containers by app.runtime.containers.collectAsState()
     val tabStates = rememberSaveableStateHolder()
@@ -63,7 +62,7 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
                     AgentIconButton("checklist", "批量管理", { batch = true })
                     AgentIconButton("edit_square", "新建会话", onNewSession)
                 } else {
-                    AgentIconButton("terminal", "默认终端", { terminal = (containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull())?.config?.id; if (terminal == null) app.report("请先安装容器") })
+                    AgentIconButton("terminal", "默认终端", { val id = (containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull())?.config?.id; if (id == null) app.report("请先安装容器") else onTerminal(id) })
                     AgentIconButton("power_settings_new", "全部休眠", { app.launch { containers.forEach { app.runtime.stop(it.config.id) } } })
                     AgentIconButton("add_box", "添加容器", { onInstall(false) })
                 }
@@ -118,7 +117,7 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
                         }
                     }
                 }
-            } else ContainersHome(app, onContainer, { terminal = it })
+            } else ContainersHome(app, onContainer, onTerminal)
             }
         }
     }
@@ -129,7 +128,6 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
         }) { if (record.containerId == c.config.id) Symbol("check_circle") } }
     } }
     if (deleting.isNotEmpty()) AlertDialog(onDismissRequest = { deleting = emptySet() }, title = { Text("删除 ${deleting.size} 个会话？") }, text = { Text("将停止相关进程并永久删除会话历史，无法撤销。") }, confirmButton = { TextButton({ val ids = deleting; deleting = emptySet(); app.launch { app.deleteSessions(ids) }; exitBatch() }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton({ deleting = emptySet() }) { Text("取消") } })
-    terminal?.let { id -> TerminalSheet(app, id, { terminal = null }) }
 }
 
 @Composable private fun RunningIndicator() {
@@ -155,8 +153,12 @@ private fun SessionCard(session: HomeSession, container: String, open: Boolean, 
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(r.title, Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (r.pinned) Symbol("push_pin", size = 16.dp, tint = MaterialTheme.colorScheme.primary)
-                    if (s.isRunning) { Symbol("timer", size = 18.dp, tint = MaterialTheme.colorScheme.primary); Text("${s.elapsedSec / 60}:${(s.elapsedSec % 60).toString().padStart(2, '0')}", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary) }
-                    else Text(remember(r.updatedAt) { java.time.Instant.ofEpochMilli(r.updatedAt).atZone(java.time.ZoneId.systemDefault()).toLocalTime().format(java.time.format.DateTimeFormatter.ISO_LOCAL_TIME).take(5) }, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (s.isRunning) {
+                        if (s.elapsedSec >= 1) {
+                            Symbol("timer", size = 18.dp, tint = MaterialTheme.colorScheme.primary)
+                            Text(if (s.elapsedSec < 60) "${s.elapsedSec}s" else "${s.elapsedSec / 60}:${(s.elapsedSec % 60).toString().padStart(2, '0')}", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    } else Text(remember(r.updatedAt) { java.time.Instant.ofEpochMilli(r.updatedAt).atZone(java.time.ZoneId.systemDefault()).toLocalTime().format(java.time.format.DateTimeFormatter.ISO_LOCAL_TIME).take(5) }, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Row(Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Meta("deployed_code", container); Meta("folder", r.workspace.substringAfterLast('/').ifBlank { "/" }); Text("+${s.addedLines}", color = Color(0xFF146C2E), fontSize = 16.sp); Text("−${s.removedLines}", color = MaterialTheme.colorScheme.error, fontSize = 16.sp); Meta("token", "${s.usage.totalTokens}")

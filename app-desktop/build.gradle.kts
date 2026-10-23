@@ -16,6 +16,8 @@ kotlin {
                 implementation(compose.desktop.currentOs)
                 implementation(compose.material3)
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
+                implementation("org.jetbrains.jediterm:jediterm-ui:3.63")
+                implementation("org.jetbrains.jediterm:jediterm-core:3.63")
             }
         }
     }

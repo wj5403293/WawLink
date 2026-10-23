@@ -5,7 +5,7 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class OmpEventReducerTest {
-    private fun reducer() = OmpEventReducer(ChatSessionUiState("session")).also {
+    private fun reducer(clock: () -> Long = System::currentTimeMillis) = OmpEventReducer(ChatSessionUiState("session"), clock).also {
         it.accept("""{"type":"ready"}""")
         it.accept("""{"type":"agent_start"}""")
     }
@@ -21,6 +21,291 @@ class OmpEventReducerTest {
     )
     private fun allItems(feed: List<FeedItem>): List<FeedItem> = feed.flatMap {
         listOf(it) + if (it is StepGroupNodeItem) allItems(it.children) else emptyList()
+    }
+    private fun OmpEventReducer.acceptAt(atMillis: Long, json: String) = reduce(JsonObject(
+        Json.parseToJsonElement(json).jsonObject + ("_wawlinkAtMillis" to JsonPrimitive(atMillis))
+    ))
+
+    @Test fun groupDurationIsWallTimeIncludingThinkingRatherThanParallelToolSum() {
+        var now = 1_000L
+        val reducer = reducer { now }
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Work","status":"in_progress"}]}""")
+        reducer.updateEvent("""{"type":"thinking_start","contentIndex":0}""")
+        now = 3_000L
+        reducer.updateEvent("""{"type":"thinking_end","contentIndex":0,"content":"Ready"}""")
+        reducer.startTool("parallel-a", "read")
+        now = 4_000L
+        reducer.startTool("parallel-b", "read")
+        now = 11_000L
+        reducer.endTool("parallel-a", "read", """{"content":[]}""")
+        reducer.endTool("parallel-b", "read", """{"content":[]}""")
+        now = 13_000L
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[]}""")
+        val group = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
+        assertEquals(1_000L, group.startedAtMillis)
+        assertEquals(12, group.elapsedSec)
+        assertEquals(2, group.children.filterIsInstance<ThinkingNodeItem>().single().elapsedSec)
+        assertEquals(listOf(8, 7), group.children.filterIsInstance<ToolNodeItem>().map { it.elapsedSec })
+        assertEquals(NodeStatus.OK, group.state)
+        now = 90_000L
+        reducer.accept("""{"type":"notice","message":"later"}""")
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[]}""")
+        assertEquals(group, reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single())
+    }
+
+    @Test fun everyTerminalOutcomeFreezesUnfinishedThinkingToolsAndGroups() {
+        for ((outcome, status) in listOf("completed" to NodeStatus.OK, "error" to NodeStatus.ERROR, "aborted" to NodeStatus.STOPPED)) {
+            var now = 1_000L
+            val reducer = reducer { now }
+            reducer.accept("""{"type":"todo_update","todos":[{"content":"Work","status":"in_progress"}]}""")
+            reducer.updateEvent("""{"type":"thinking_delta","contentIndex":0,"delta":"Working"}""")
+            reducer.startTool("unfinished", "bash", """{"command":"job"}""")
+            now = 6_500L
+            reducer.accept("""{"type":"prompt_result","status":"$outcome","agentInvoked":true,"sessionSettled":false}""")
+            reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[]}""")
+            val group = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
+            assertEquals(status, group.state)
+            assertEquals(5, group.elapsedSec)
+            val thinking = group.children.filterIsInstance<ThinkingNodeItem>().single()
+            assertFalse(thinking.isStreaming)
+            assertEquals(1_000L, thinking.startedAtMillis)
+            assertEquals(5, thinking.elapsedSec)
+            val tool = group.children.filterIsInstance<ToolNodeItem>().single()
+            assertEquals(status, tool.state)
+            assertEquals(1_000L, tool.startedAtMillis)
+            assertEquals(5, tool.elapsedSec)
+            now = 60_000L
+            reducer.endTool("unfinished", "bash", """{"content":[]}""")
+            reducer.updateEvent("""{"type":"thinking_end","contentIndex":0,"content":"Working"}""")
+            assertEquals(group, reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single())
+        }
+    }
+
+    @Test fun executionStartAndReportedFinalDurationSurviveLateSnapshots() {
+        var now = 1_000L
+        val reducer = reducer { now }
+        val call = """{"type":"toolCall","id":"call","name":"bash","arguments":{"command":"job"}}"""
+        reducer.updateEvent("""{"type":"toolcall_end","contentIndex":0,"toolCall":$call}""")
+        now = 4_000L
+        reducer.startTool("call", "bash", """{"command":"job"}""")
+        assertEquals(4_000L, reducer.state.feed.filterIsInstance<ToolNodeItem>().single().startedAtMillis)
+        now = 8_000L
+        reducer.endTool("call", "bash", """{"content":[],"details":{"durationMs":3500}}""")
+        now = 40_000L
+        reducer.endTool("call", "bash", """{"content":[]}""")
+        reducer.accept("""{"type":"message_end","messageId":"msg-1","message":{"role":"assistant","content":[$call]}}""")
+        val tool = reducer.state.feed.filterIsInstance<ToolNodeItem>().single()
+        assertEquals(3, tool.elapsedSec)
+        assertEquals(4_000L, tool.startedAtMillis)
+        assertEquals(NodeStatus.OK, tool.state)
+    }
+
+    @Test fun localStopAndFailureFreezeRunningNodesWithoutChangingCompletedDurations() {
+        val done = ToolNodeItem("done", titleHtml = "done", state = NodeStatus.OK, elapsedSec = 2, startedAtMillis = 1_000L)
+        val feed = listOf(StepGroupNodeItem("group", "Work", startedAtMillis = 500L, children = listOf(
+            ThinkingNodeItem("thinking", isStreaming = true, startedAtMillis = 2_000L),
+            ToolNodeItem("tool", titleHtml = "tool", startedAtMillis = 3_000L), done,
+        )))
+        for (status in listOf(NodeStatus.STOPPED, NodeStatus.ERROR)) {
+            val stopped = stopFeed(feed, 6_500L, status)
+            val group = stopped.single() as StepGroupNodeItem
+            assertEquals(status, group.state)
+            assertEquals(6, group.elapsedSec)
+            assertEquals(4, group.children.filterIsInstance<ThinkingNodeItem>().single().elapsedSec)
+            assertEquals(3, group.children.filterIsInstance<ToolNodeItem>().first().elapsedSec)
+            assertEquals(done, group.children.last())
+            assertEquals(stopped, stopFeed(stopped, 60_000L, status))
+        }
+    }
+
+    @Test fun journalEventTimesRestoreFinalDurationsInsteadOfReplaySpeed() {
+        fun replay(clock: Long): ChatSessionUiState {
+            val reducer = OmpEventReducer(ChatSessionUiState("session")) { clock }
+            reducer.acceptAt(1_000L, """{"type":"ready"}""")
+            reducer.acceptAt(1_000L, """{"type":"agent_start"}""")
+            reducer.acceptAt(2_000L, """{"type":"todo_update","todos":[{"content":"Work","status":"in_progress"}]}""")
+            reducer.acceptAt(3_000L, """{"type":"thinking_delta","delta":"Working"}""")
+            reducer.acceptAt(4_000L, """{"type":"tool_execution_start","toolCallId":"tool","toolName":"read","args":{}}""")
+            reducer.acceptAt(9_000L, """{"type":"agent_end","isTerminal":true,"messages":[]}""")
+            return reducer.state
+        }
+        val original = replay(10_000L)
+        assertEquals(original, replay(900_000L))
+        val group = original.feed.filterIsInstance<StepGroupNodeItem>().single()
+        assertEquals(7, group.elapsedSec)
+        assertEquals(6, group.children.filterIsInstance<ThinkingNodeItem>().single().elapsedSec)
+        assertEquals(5, group.children.filterIsInstance<ToolNodeItem>().single().elapsedSec)
+    }
+
+    @Test fun unchangedPlansSurviveNewUsersStartsRemindersResultsAndStateSnapshots() {
+        val reducer = reducer()
+        val tasks = """[{"content":"Read","status":"in_progress"},{"content":"Edit","status":"pending"}]"""
+        val details = """{"phases":[{"name":"Work","tasks":$tasks}]}"""
+        val result = """{"role":"toolResult","toolCallId":"todo-init","toolName":"todo","content":[],"details":$details}"""
+        reducer.endTool("todo-init", "todo", result)
+        reducer.startTool("first", "read")
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[$result]}""")
+        val plan = reducer.state.feed.filterIsInstance<PlanNodeItem>().single()
+        val oldGroup = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
+        val user = UserMessageItem("next-user", "Continue")
+        reducer.addUserMessage(user)
+        reducer.accept("""{"type":"agent_start"}""")
+        reducer.accept("""{"type":"todo_reminder","todos":$tasks}""")
+        reducer.accept("""{"type":"response","command":"get_state","success":true,"data":{"todoPhases":[{"name":"Renamed metadata","tasks":$tasks}]}}""")
+        reducer.accept("""{"type":"message_end","message":$result}""")
+        reducer.accept("""{"type":"response","command":"get_messages","success":true,"data":{"messages":[$result]}}""")
+        reducer.endTool("todo-query", "todo", """{"content":[],"details":$details}""")
+        reducer.accept("""{"type":"message_update","messageId":"next-thinking","assistantMessageEvent":{"type":"thinking_delta","delta":"Continue reading"}}""")
+        reducer.startTool("second", "read")
+        assertEquals(listOf(plan), reducer.state.feed.filterIsInstance<PlanNodeItem>())
+        val groups = reducer.state.feed.filterIsInstance<StepGroupNodeItem>()
+        assertEquals(2, groups.size)
+        assertEquals(oldGroup, groups.first())
+        assertEquals(NodeStatus.RUNNING, groups.last().state)
+        assertEquals("Continue reading", groups.last().children.filterIsInstance<ThinkingNodeItem>().single().text)
+        assertEquals("omp:1:tool:second", groups.last().children.filterIsInstance<ToolNodeItem>().single().id)
+        assertTrue(reducer.state.feed.indexOf(plan) < reducer.state.feed.indexOf(user))
+        assertTrue(reducer.state.feed.indexOf(user) < reducer.state.feed.indexOf(groups.last()))
+    }
+
+    @Test fun changedTaskStatusAndTitlesCreateNewPlansOnlyAfterConversationBoundaries() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[]}""")
+        val original = reducer.state.feed.filterIsInstance<PlanNodeItem>().single()
+        val user = UserMessageItem("next-user", "Edit instead")
+        reducer.addUserMessage(user)
+        reducer.accept("""{"type":"agent_start"}""")
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"completed"}]}""")
+        val second = reducer.state.feed.filterIsInstance<PlanNodeItem>().last()
+        assertNotEquals(original.id, second.id)
+        assertTrue(reducer.state.feed.indexOf(second) > reducer.state.feed.indexOf(user))
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Edit","status":"in_progress"}]}""")
+        assertEquals(listOf(original.id, second.id), reducer.state.feed.filterIsInstance<PlanNodeItem>().map { it.id })
+        assertEquals("Edit", reducer.state.feed.filterIsInstance<PlanNodeItem>().last().steps.single().title)
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[]}""")
+        reducer.accept("""{"type":"agent_start"}""")
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Verify","status":"in_progress"}]}""")
+        assertEquals(3, reducer.state.feed.filterIsInstance<PlanNodeItem>().size)
+        assertEquals(original, reducer.state.feed.filterIsInstance<PlanNodeItem>().first())
+    }
+
+    @Test fun unchangedActivePlanStillGroupsNextTurnWithoutAnotherTodoFrame() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
+        reducer.startTool("first", "read")
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[]}""")
+        val oldGroup = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
+        val user = UserMessageItem("next-user", "Continue")
+        reducer.addUserMessage(user)
+        reducer.accept("""{"type":"agent_start"}""")
+        reducer.startTool("next", "read")
+        val groups = reducer.state.feed.filterIsInstance<StepGroupNodeItem>()
+        assertEquals(listOf("Read", "Read"), groups.map { it.title })
+        assertEquals(oldGroup, groups.first())
+        assertEquals("omp:1:tool:next", groups.last().children.single().id)
+        assertEquals(1, reducer.state.feed.filterIsInstance<PlanNodeItem>().size)
+        assertEquals(listOf(user), allItems(reducer.state.feed).filterIsInstance<UserMessageItem>())
+    }
+
+    @Test fun importedHistoryKeepsUnchangedPlansAndPlacesChangedPlansAfterTheirUsers() {
+        val reducer = OmpEventReducer(ChatSessionUiState("session")) { 100_000L }
+        reducer.accept("""{"type":"ready"}""")
+        val messages = """[
+            {"role":"user","content":"Start","timestamp":1},
+            {"role":"toolResult","toolCallId":"todo-first","toolName":"todo","content":[],"details":{"tasks":[{"content":"Read","status":"in_progress"}]}},
+            {"role":"assistant","timestamp":2,"content":[{"type":"thinking","thinking":"First turn"}]},
+            {"role":"user","content":"Continue","timestamp":3},
+            {"role":"toolResult","toolCallId":"todo-reminder","toolName":"todo","content":[],"details":{"tasks":[{"content":"Read","status":"in_progress"}]}},
+            {"role":"assistant","timestamp":4,"content":[{"type":"thinking","thinking":"Second turn"}]},
+            {"role":"user","content":"Change","timestamp":5},
+            {"role":"toolResult","toolCallId":"todo-changed","toolName":"todo","content":[],"details":{"tasks":[{"content":"Read","status":"completed"},{"content":"Edit","status":"in_progress"}]}},
+            {"role":"assistant","timestamp":6,"content":[{"type":"thinking","thinking":"Third turn"}]}
+        ]"""
+        val response = """{"type":"response","command":"get_messages","success":true,"data":{"messages":$messages}}"""
+        reducer.accept(response)
+        val feed = reducer.state.feed
+        val plans = feed.filterIsInstance<PlanNodeItem>()
+        assertEquals(2, plans.size)
+        assertEquals(listOf("Read"), plans.first().steps.map { it.title })
+        assertEquals(listOf("Read", "Edit"), plans.last().steps.map { it.title })
+        val users = feed.filterIsInstance<UserMessageItem>()
+        assertEquals(listOf("Start", "Continue", "Change"), users.map { it.text })
+        assertTrue(feed.indexOf(plans.first()) < feed.indexOf(users[1]))
+        assertTrue(feed.indexOf(plans.last()) > feed.indexOf(users[2]))
+        val groups = feed.filterIsInstance<StepGroupNodeItem>()
+        assertEquals(listOf("Read", "Read", "Edit"), groups.map { it.title })
+        assertEquals(listOf("First turn", "Second turn", "Third turn"), groups.map {
+            it.children.filterIsInstance<ThinkingNodeItem>().single().text
+        })
+        assertTrue(groups.all { it.state == NodeStatus.OK && it.startedAtMillis == null })
+        reducer.accept(response)
+        assertEquals(feed, reducer.state.feed)
+    }
+
+    @Test fun importedHistoryNeverStartsLiveClocksOrDuplicatesAnUnchangedPlan() {
+        val reducer = OmpEventReducer(ChatSessionUiState("session")) { 100_000L }
+        reducer.accept("""{"type":"ready"}""")
+        val messages = """[
+            {"role":"toolResult","toolCallId":"todo","toolName":"todo","content":[],"details":{"phases":[{"tasks":[{"content":"Read","status":"in_progress"}]}]}},
+            {"role":"assistant","content":[{"type":"thinking","thinking":"History"},{"type":"toolCall","id":"read","name":"read","arguments":{"path":"Main.kt"}}]},
+            {"role":"toolResult","toolCallId":"read","toolName":"read","content":[{"type":"text","text":"val old = true"}],"details":{"durationMs":9000}}
+        ]"""
+        val response = """{"type":"response","command":"get_messages","success":true,"data":{"messages":$messages}}"""
+        reducer.accept(response)
+        val feed = reducer.state.feed
+        val group = feed.filterIsInstance<StepGroupNodeItem>().single()
+        assertEquals(NodeStatus.OK, group.state)
+        assertNull(group.startedAtMillis)
+        val thinking = group.children.filterIsInstance<ThinkingNodeItem>().single()
+        assertFalse(thinking.isStreaming)
+        assertNull(thinking.startedAtMillis)
+        val tool = group.children.filterIsInstance<ToolNodeItem>().single()
+        assertEquals(NodeStatus.OK, tool.state)
+        assertNull(tool.startedAtMillis)
+        assertEquals(9, tool.elapsedSec)
+        reducer.accept(response)
+        reducer.accept("""{"type":"response","command":"get_state","success":true,"data":{"todoPhases":[{"tasks":[{"content":"Read","status":"in_progress"}]}],"isSettled":true}}""")
+        assertEquals(feed, reducer.state.feed)
+    }
+
+    @Test fun toolSourceMetadataContainsOnlyActualPayloadAndPreservesReturnedLineNumbers() {
+        val reducer = reducer()
+        reducer.startTool("read", "read", """{"path":"Main.kt"}""")
+        reducer.endTool("read", "read", """{"content":[{"type":"text","text":"1: val x = 1\n2: println(x)"}]}""")
+        reducer.startTool("write", "write", """{"path":"out.py","content":"print('hello')","language":"python"}""")
+        reducer.endTool("write", "write", """{"content":[{"type":"text","text":"Permission denied"}]}""", error = true)
+        reducer.startTool("edit", "edit", """{"path":"Main.kt","newText":"val x = 2"}""")
+        reducer.startTool("create", "create", """{"file_path":"out.js","text":"const x = 1;"}""")
+        reducer.startTool("grep", "grep", """{"path":"Main.kt","pattern":"val"}""")
+        reducer.endTool("grep", "grep", """{"content":[{"type":"text","text":"Main.kt:1:val x = 1"}]}""")
+        reducer.startTool("find", "find", """{"pattern":"*.kt"}""")
+        reducer.endTool("find", "find", """{"content":[{"type":"text","text":"src/Main.kt"}]}""")
+        reducer.startTool("python", "python", """{"code":"print(1)"}""")
+        reducer.startTool("eval", "eval", """{"language":"js","code":"console.log(1)"}""")
+        reducer.endTool("eval", "eval", """{"content":[{"type":"text","text":"1"}]}""")
+        reducer.startTool("unknown", "custom", """{"query":"not source"}""")
+        val tools = reducer.state.feed.filterIsInstance<ToolNodeItem>().associateBy { it.id.substringAfterLast(':') }
+        assertEquals("1: val x = 1\n2: println(x)", tools.getValue("read").codeText)
+        assertEquals("Main.kt", tools.getValue("read").codePath)
+        assertNull(tools.getValue("read").resultText)
+        assertEquals("print('hello')", tools.getValue("write").codeText)
+        assertEquals("python", tools.getValue("write").codeLanguage)
+        assertEquals("Permission denied", tools.getValue("write").resultText)
+        assertEquals(NodeStatus.ERROR, tools.getValue("write").state)
+        assertEquals("val x = 2", tools.getValue("edit").codeText)
+        assertEquals("const x = 1;", tools.getValue("create").codeText)
+        assertEquals("out.js", tools.getValue("create").codePath)
+        assertEquals("Main.kt:1:val x = 1", tools.getValue("grep").codeText)
+        assertEquals("src/Main.kt", tools.getValue("find").codeText)
+        assertEquals("print(1)", tools.getValue("python").codeText)
+        assertEquals("python", tools.getValue("python").codeInterpreter)
+        assertEquals("console.log(1)", tools.getValue("eval").codeText)
+        assertEquals("js", tools.getValue("eval").codeLanguage)
+        assertEquals("js", tools.getValue("eval").codeInterpreter)
+        assertEquals("1", tools.getValue("eval").resultText)
+        assertNull(tools.getValue("unknown").codeText)
+        assertTrue(tools.getValue("read").fullSheetText.contains("\"path\""))
     }
 
     @Test fun userMessagesStayBetweenEarlierAndLaterTodoChildrenAcrossSnapshots() {
@@ -289,6 +574,31 @@ class OmpEventReducerTest {
         assertEquals(2, (node.previewContent as ToolPreview.MidPath).plusLines)
         assertEquals(1, (node.previewContent as ToolPreview.MidPath).minusLines)
         assertEquals(2, (node.detailContent as ToolDetail.DiffBlock).lines.count { it.kind == DiffLineKind.ADDED })
+    }
+
+    @Test fun diffSourceTextSeparatesExactlyOneMarkerAndPreservesMetadataAndLiteralPrefixes() {
+        val reducer = reducer()
+        reducer.startTool("edit", "edit", """{"path":"src/A.kt"}""")
+        val diff = "--- a/src/A.kt\n+++ b/src/A.kt\n@@ -1,3 +1,3 @@\n-old\n+new\n context\n++counter\n--counter\nplain metadata"
+        reducer.endTool("edit", "edit", buildJsonObject {
+            put("content", JsonArray(emptyList()))
+            put("details", buildJsonObject { put("diff", diff) })
+        }.toString())
+        val node = reducer.state.feed.filterIsInstance<ToolNodeItem>().single()
+        assertEquals(listOf(
+            DiffLine("--- a/src/A.kt"),
+            DiffLine("+++ b/src/A.kt"),
+            DiffLine("@@ -1,3 +1,3 @@"),
+            DiffLine("old", DiffLineKind.REMOVED),
+            DiffLine("new", DiffLineKind.ADDED),
+            DiffLine("context"),
+            DiffLine("+counter", DiffLineKind.ADDED),
+            DiffLine("-counter", DiffLineKind.REMOVED),
+            DiffLine("plain metadata"),
+        ), (node.detailContent as ToolDetail.DiffBlock).lines)
+        assertEquals(diff, node.codeText)
+        assertEquals(diff, node.fullSheetText)
+        assertEquals(diff, node.rawCopyText)
     }
 
     @Test fun usageIsCumulativeButStatsAndContextAreAuthoritative() {

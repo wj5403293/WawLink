@@ -99,10 +99,12 @@ data class ChatSessionUiState(
 
 sealed interface FeedItem { val id: String }
 data class UserMessageItem(override val id: String, val text: String, val attachments: List<AttachmentFile> = emptyList(), val timestamp: Long = 0) : FeedItem
-data class ThinkingNodeItem(override val id: String, val isStreaming: Boolean = false, val elapsedSec: Int = 0, val text: String = "", val isExpanded: Boolean = false) : FeedItem
+/** [startedAtMillis] is the original live start; completed nodes render their frozen [elapsedSec]. */
+data class ThinkingNodeItem(override val id: String, val isStreaming: Boolean = false, val elapsedSec: Int = 0, val text: String = "", val isExpanded: Boolean = false, val startedAtMillis: Long? = null) : FeedItem
 data class PlanStep(val title: String, val icon: String = "radio_button_unchecked", val state: StepState = StepState.PENDING)
 data class PlanNodeItem(override val id: String, val steps: List<PlanStep>, val isExpanded: Boolean = true) : FeedItem
 data class GroupStats(val editCount: Int = 0, val readCount: Int = 0, val toolCount: Int = 0)
+/** Elapsed wall time since activation, including thinking and overlapping tools; never a child-duration sum. */
 data class StepGroupNodeItem(
     override val id: String,
     val title: String,
@@ -112,7 +114,14 @@ data class StepGroupNodeItem(
     val stats: GroupStats = GroupStats(),
     val children: List<FeedItem> = emptyList(),
     val isExpanded: Boolean = true,
+    val startedAtMillis: Long? = null,
 ) : FeedItem
+/**
+ * Only RUNNING tools use [startedAtMillis] as a live clock; [elapsedSec] freezes at termination.
+ * [codeText] is actual source/command/result text, separate from diagnostic JSON in [fullSheetText].
+ * [resultText] preserves nonempty execution diagnostics when they differ from [codeText].
+ * Optional language, path, and interpreter are inference hints, not permission to read host files.
+ */
 data class ToolNodeItem(
     override val id: String,
     val icon: String = "terminal",
@@ -125,6 +134,12 @@ data class ToolNodeItem(
     val rawCopyText: String = "",
     val fullSheetText: String = "",
     val isExpanded: Boolean = false,
+    val startedAtMillis: Long? = null,
+    val codeLanguage: String? = null,
+    val codePath: String? = null,
+    val codeInterpreter: String? = null,
+    val codeText: String? = null,
+    val resultText: String? = null,
 ) : FeedItem
 sealed interface ToolPreview {
     data class CommandOneLine(val cmd: String) : ToolPreview

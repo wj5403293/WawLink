@@ -32,6 +32,7 @@ dependencies {
     implementation(project(":agent-ui"))
     implementation(project(":agent-driver-omp"))
     implementation(project(":container-runtime"))
+    implementation(project(":terminal-view"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")

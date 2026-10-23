@@ -18,6 +18,9 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -30,7 +33,6 @@ import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.*
 import kotlinx.coroutines.delay
 
-internal fun elapsed(seconds: Int) = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
 internal fun plainTitle(html: String) = html.replace(Regex("<[^>]*>"), "").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", "\"")
 
 @Composable
@@ -81,8 +83,10 @@ internal fun AgentProgressIndicator(size: androidx.compose.ui.unit.Dp = 20.dp, t
 }
 
 @Composable
-internal fun NodeStatusLabel(status: NodeStatus, seconds: Int, showTime: Boolean = true) {
+internal fun NodeStatusLabel(status: NodeStatus, seconds: Int, showTime: Boolean = true, startedAtMillis: Long? = null) {
     val c = LocalAgentColors.current
+    val now = LocalFeedClock.current?.value ?: feedEpochMillis()
+    val time = elapsed(runningElapsed(seconds, startedAtMillis, status == NodeStatus.RUNNING, now))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         when (status) {
             NodeStatus.RUNNING -> AgentProgressIndicator(tint = c.onSurfaceVariant)
@@ -90,12 +94,12 @@ internal fun NodeStatusLabel(status: NodeStatus, seconds: Int, showTime: Boolean
             NodeStatus.ERROR -> Symbol("error", size = 20.dp, tint = c.error, filled = true)
             NodeStatus.STOPPED -> Symbol("stop_circle", size = 20.dp, tint = c.onSurfaceVariant)
         }
-        if (showTime) Text(elapsed(seconds), fontFamily = LocalAgentMono.current, fontSize = 15.sp, color = c.onSurfaceVariant)
+        if (showTime && time.isNotEmpty()) Text(time, fontFamily = LocalAgentMono.current, fontSize = 15.sp, color = c.onSurfaceVariant)
     }
 }
 
 @Composable
-internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDetail: (String, String) -> Unit) {
+internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     if (LocalAgentAppearance.current.hideToolCalls && item is ToolNodeItem) return
     when (item) {
         is UserMessageItem -> {
@@ -119,7 +123,7 @@ internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expand
                 if (item.isStreaming) StreamingCaret()
             }
         }
-        is ThinkingNodeItem -> ThinkingNode(item, expanded)
+        is ThinkingNodeItem -> ThinkingNode(item, expanded, onDetail)
         is PlanNodeItem -> PlanNode(item, expanded)
         is StepGroupNodeItem -> GroupNode(item, controller, expanded, onDetail)
         is ToolNodeItem -> ToolNode(item, expanded, onDetail)
@@ -137,11 +141,15 @@ private fun StreamingCaret() {
 }
 
 @Composable
-private fun NodeFrame(icon: String, lead: LeadStyle, open: Boolean, title: String,
+private fun NodeFrame(nodeId: String, icon: String, lead: LeadStyle, open: Boolean, title: String,
     onToggle: (() -> Unit)?, status: @Composable RowScope.() -> Unit = {},
     rail: @Composable ColumnScope.() -> Unit = {}, titleContent: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit) {
     val c = LocalAgentColors.current
+    val bounds = LocalFeedBounds.current
+    val onInteract = LocalFeedInteraction.current
+    val toggle = onToggle?.let { action -> { onInteract(); action() } }
+    DisposableEffect(nodeId, bounds) { onDispose { bounds?.remove(nodeId) } }
     val radius by animateDpAsState(if (open) 24.dp else 14.dp, tween(450, easing = EmphEasing))
     val colors = when (lead) {
         LeadStyle.DARK -> c.onSurface to c.surface
@@ -149,17 +157,20 @@ private fun NodeFrame(icon: String, lead: LeadStyle, open: Boolean, title: Strin
         LeadStyle.TONE -> c.primaryContainer to c.onPrimaryContainer
         LeadStyle.WARN -> c.warnContainer to if (LocalAgentAppearance.current.darkTheme) c.onSurface else Color(0xFF2E1500)
     }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Row(Modifier.fillMaxWidth().onGloballyPositioned { coordinates ->
+        val origin = coordinates.positionInRoot()
+        bounds?.set(nodeId, Rect(origin.x, origin.y, origin.x + coordinates.size.width, origin.y + coordinates.size.height))
+    }, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.width(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(48.dp).clip(RoundedCornerShape(radius)).background(colors.first)
-                .then(if (onToggle != null) Modifier.clickable(onClick = onToggle) else Modifier), contentAlignment = Alignment.Center) {
+                .then(if (toggle != null) Modifier.clickable(onClick = toggle) else Modifier), contentAlignment = Alignment.Center) {
                 Symbol(icon, size = 28.dp, tint = colors.second)
             }
             rail()
         }
         Column(Modifier.weight(1f)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 30.dp).clip(RoundedCornerShape(12.dp))
-                .then(if (onToggle != null) Modifier.clickable(onClick = onToggle) else Modifier),
+                .then(if (toggle != null) Modifier.clickable(onClick = toggle) else Modifier),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.weight(1f)) {
                     if (titleContent != null) titleContent() else Text(nodeTitle(title), fontSize = 19.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -183,18 +194,19 @@ private fun Expand(visible: Boolean, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun ThinkingNode(node: ThinkingNodeItem, expanded: MutableMap<String, Boolean>) {
+private fun ThinkingNode(node: ThinkingNodeItem, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     val open = expanded[node.id] ?: node.isExpanded
     val c = LocalAgentColors.current
-    val text = streamedText(node.text, node.isStreaming)
-    NodeFrame("psychology", LeadStyle.SOFT, open, "思考", { expanded[node.id] = !open },
-        status = { NodeStatusLabel(if (node.isStreaming) NodeStatus.RUNNING else NodeStatus.OK, node.elapsedSec) },
+    val text = stableThinkingText(node.id, node.text, node.isStreaming)
+    NodeFrame(node.id, "psychology", LeadStyle.SOFT, open, "思考", { expanded[node.id] = !open },
+        status = { NodeStatusLabel(if (node.isStreaming) NodeStatus.RUNNING else NodeStatus.OK, node.elapsedSec, startedAtMillis = node.startedAtMillis) },
+        rail = { StagedRail(open, 0, "open_in_full", "全屏") { onDetail(FeedDetail(node.id, "思考", node.text, markdown = true)) } },
         titleContent = { if (node.isStreaming) ShimmerTitle("思考中") else Text("思考", fontSize = 19.sp, fontWeight = FontWeight.Bold) }) {
         Expand(!open) {
             if (node.isStreaming) ThinkingTail(text)
             else Text(text, color = c.onSurfaceVariant, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Expand(open) { SelectionContainer { Text(text, color = c.onSurfaceVariant, fontSize = 17.sp, lineHeight = 28.9.sp) } }
+        Expand(open) { ThinkingMarkdown(node.id, text) }
     }
 }
 
@@ -231,7 +243,7 @@ private fun ThinkingTail(text: String) {
 private fun PlanNode(node: PlanNodeItem, expanded: MutableMap<String, Boolean>) {
     val open = expanded[node.id] ?: node.isExpanded
     val c = LocalAgentColors.current
-    NodeFrame("checklist", LeadStyle.TONE, open, "计划", { expanded[node.id] = !open },
+    NodeFrame(node.id, "checklist", LeadStyle.TONE, open, "计划", { expanded[node.id] = !open },
         status = { Text(node.progressLabel(), fontSize = 16.sp, color = c.onSurfaceVariant, maxLines = 1) }) {
         val progress by animateFloatAsState(node.progress(), tween(800, easing = EmphEasing))
         LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp).height(4.dp),
@@ -256,11 +268,11 @@ private fun PlanNode(node: PlanNodeItem, expanded: MutableMap<String, Boolean>) 
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun GroupNode(node: StepGroupNodeItem, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDetail: (String, String) -> Unit) {
+private fun GroupNode(node: StepGroupNodeItem, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     val open = expanded[node.id] ?: node.isExpanded
     val c = LocalAgentColors.current
-    NodeFrame(node.icon, LeadStyle.DARK, open, node.title, { expanded[node.id] = !open },
-        status = { NodeStatusLabel(node.state, node.elapsedSec) }) {
+    NodeFrame(node.id, node.icon, LeadStyle.DARK, open, node.title, { expanded[node.id] = !open },
+        status = { NodeStatusLabel(node.state, node.elapsedSec, startedAtMillis = node.startedAtMillis) }) {
         FlowRow(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (node.stats.editCount > 0) Stat("edit", "修改了", node.stats.editCount, "个文件")
             if (node.stats.readCount > 0) Stat("description", "读取了", node.stats.readCount, "个文件")
@@ -285,21 +297,24 @@ private fun Stat(icon: String, prefix: String, count: Int, suffix: String) {
 }
 
 @Composable
-private fun ToolNode(node: ToolNodeItem, expanded: MutableMap<String, Boolean>, onDetail: (String, String) -> Unit) {
+private fun ToolNode(node: ToolNodeItem, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     val open = expanded[node.id] ?: node.isExpanded
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(1800); copied = false } }
     val copyText = node.rawCopyText.ifEmpty { node.fullSheetText.ifEmpty { toolDetailText(node.detailContent) } }
-    NodeFrame(node.icon, node.leadStyle, open, node.titleHtml, { expanded[node.id] = !open },
-        status = { NodeStatusLabel(node.state, node.elapsedSec) }, rail = {
-            StagedRail(open, 0, "open_in_full", "详情") { onDetail(plainTitle(node.titleHtml), node.fullSheetText.ifEmpty { toolDetailText(node.detailContent) }) }
+    NodeFrame(node.id, node.icon, node.leadStyle, open, node.titleHtml, { expanded[node.id] = !open },
+        status = { NodeStatusLabel(node.state, node.elapsedSec, startedAtMillis = node.startedAtMillis) }, rail = {
+            StagedRail(open, 0, "open_in_full", "详情") {
+                val text = node.codeText ?: node.fullSheetText.ifEmpty { toolDetailText(node.detailContent) }
+                onDetail(FeedDetail(node.id, plainTitle(node.titleHtml), text, inferCodeLanguage(node.codeLanguage?.takeUnless { it == "diff" }, node.codePath, text, node.codeInterpreter)))
+            }
             StagedRail(open, 60, if (copied) "check" else "content_copy", if (copied) "已复制" else "复制") {
                 clipboard.setText(AnnotatedString(copyText)); copied = true
             }
         }) {
         Expand(!open) { ToolPreviewContent(node.previewContent) }
-        Expand(open) { Box(Modifier.heightIn(min = 150.dp)) { ToolDetailContent(node.detailContent) } }
+        Expand(open) { Box(Modifier.heightIn(min = 150.dp)) { ToolDetailContent(node) } }
     }
 }
 
@@ -351,14 +366,16 @@ internal fun toolDetailText(detail: ToolDetail): String = when (detail) {
 }
 
 @Composable
-private fun ToolDetailContent(detail: ToolDetail) {
+private fun ToolDetailContent(node: ToolNodeItem) {
     val c = LocalAgentColors.current
     val mono = LocalAgentMono.current
+    val detail = node.detailContent
+    val language = inferCodeLanguage(node.codeLanguage?.takeUnless { it == "diff" }, node.codePath, node.codeText.orEmpty(), node.codeInterpreter)
     SelectionContainer {
         when (detail) {
             is ToolDetail.CommandAndOutput -> Column {
-                Text(detail.fullCmd, fontFamily = mono, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-                    color = if (LocalAgentAppearance.current.darkTheme) c.tertiary else Color(0xFF2D5016), lineHeight = 22.5.sp)
+                HighlightedCode(detail.fullCmd, inferCodeLanguage(node.codeLanguage, text = detail.fullCmd, interpreter = node.codeInterpreter),
+                    fontSize = 15.sp, lineHeight = 22.5.sp)
                 Column(Modifier.padding(top = 10.dp).drawWithContent {
                     drawContent(); drawLine(c.outlineVariant, androidx.compose.ui.geometry.Offset.Zero,
                         androidx.compose.ui.geometry.Offset(0f, size.height), 2.dp.toPx())
@@ -383,13 +400,22 @@ private fun ToolDetailContent(detail: ToolDetail) {
                             DiffLineKind.REMOVED -> if (accessible) c.error.copy(alpha = .12f) to c.error else if (dark) Color(0xFF4E2221) to Color(0xFFFFB4AB) else Color(0xFFFCE8E6) to Color(0xFFA50E0E)
                             DiffLineKind.CONTEXT -> c.surfaceContainerLow to c.onSurfaceVariant
                         }
-                        Text((when (line.kind) { DiffLineKind.ADDED -> "+"; DiffLineKind.REMOVED -> "−"; DiffLineKind.CONTEXT -> " " }) + line.text,
+                        val highlighted = rememberHighlightedCode(line.text, language)
+                        val rendered = remember(highlighted, line.kind) { buildAnnotatedString {
+                            append(when (line.kind) { DiffLineKind.ADDED -> "+"; DiffLineKind.REMOVED -> "−"; DiffLineKind.CONTEXT -> " " })
+                            append(highlighted)
+                        } }
+                        Text(rendered,
                             Modifier.fillMaxWidth().background(pair.first).padding(horizontal = 12.dp), color = pair.second,
                             fontFamily = mono, fontSize = 14.sp, lineHeight = 22.4.sp, softWrap = false)
                     }
                 }
             }
-            is ToolDetail.PlainText -> Text(detail.text, Modifier.padding(top = 10.dp), fontFamily = mono, fontSize = 14.5.sp, lineHeight = 22.5.sp, color = c.onSurfaceVariant)
+            is ToolDetail.PlainText -> Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                HighlightedCode(node.codeText ?: detail.text, language, fontSize = 14.5.sp, lineHeight = 22.5.sp)
+                node.resultText?.let { result -> Text(result, fontFamily = mono, fontSize = 14.5.sp, lineHeight = 22.5.sp,
+                    color = if (node.state == NodeStatus.ERROR) c.error else c.onSurfaceVariant) }
+            }
         }
     }
 }
@@ -399,7 +425,7 @@ private fun ApprovalCard(node: ApprovalCardItem, controller: AgentSessionControl
     val c = LocalAgentColors.current
     Surface(color = c.surfaceContainer, shape = RoundedCornerShape(28.dp)) {
         Box(Modifier.padding(20.dp)) {
-            NodeFrame("gpp_maybe", LeadStyle.WARN, false, node.title, null) {
+            NodeFrame(node.id, "gpp_maybe", LeadStyle.WARN, false, node.title, null) {
                 Expand(node.resolution == null) {
                     Column {
                         Text(node.description, Modifier.padding(top = 4.dp), fontSize = 18.sp)
@@ -444,7 +470,7 @@ private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
 
     Surface(color = c.surfaceContainer, shape = RoundedCornerShape(28.dp)) {
         Column(Modifier.padding(20.dp)) {
-            NodeFrame("help", LeadStyle.TONE, false, node.title, null) {
+            NodeFrame(node.id, "help", LeadStyle.TONE, false, node.title, null) {
                 if (node.isResolved) {
                     Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Symbol(if (node.cancelled) "block" else "check_circle", size = 20.dp, tint = c.onSurfaceVariant)

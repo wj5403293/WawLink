@@ -18,14 +18,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.geometry.Rect
 import dev.wawlink.protocol.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -54,10 +55,12 @@ fun AgentChatScreen(
         val previouslyRunning = rememberSaveable(state.id, saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
         LaunchedEffect(state.id, state.feed) { updateGroupExpansion(state.feed, expanded, previouslyRunning) }
         var settingsMenu by remember { mutableStateOf(false) }
-        var detail by remember { mutableStateOf<Pair<String, String>?>(null) }
+        var detail by remember(state.id) { mutableStateOf<FeedDetail?>(null) }
         var composerHeight by remember { mutableStateOf(156.dp) }
         var followTail by rememberSaveable(state.id) { mutableStateOf(true) }
         val density = LocalDensity.current
+        val nodeBounds = remember(state.id) { mutableStateMapOf<String, Rect>() }
+        var viewportTop by remember(state.id) { mutableFloatStateOf(0f) }
         val compactIndex = state.feed.indexOfFirst { it.id == state.compactedThroughId }
         var showCompacted by rememberSaveable(state.id, state.compactedThroughId, appearance.collapseCompacted) { mutableStateOf(!appearance.collapseCompacted) }
         val hasCompacted = compactIndex >= 0
@@ -65,25 +68,40 @@ fun AgentChatScreen(
             state.feed.drop(if (hasCompacted && !showCompacted) compactIndex + 1 else 0)
                 .filterNot { appearance.hideToolCalls && it is ToolNodeItem }
         }
-        val feedIndex = remember(visibleFeed, hasCompacted) { visibleFeed.mapIndexed { index, item -> item.id to index + 1 + if (hasCompacted) 1 else 0 }.toMap() }
-        val itemsById = remember(visibleFeed) { visibleFeed.associateBy { it.id } }
-        val plan = visibleFeed.lastOrNull { it is PlanNodeItem } as? PlanNodeItem
-        val globalPin by remember(plan, feedIndex, list) {
+        val feedIndex = remember(visibleFeed, hasCompacted) {
+            buildMap { visibleFeed.forEachIndexed { index, item ->
+                flattenedFeed(listOf(item)).forEach { put(it.id, index + if (hasCompacted) 1 else 0) }
+            } }
+        }
+        val allNodes = remember(visibleFeed) { flattenedFeed(visibleFeed) }
+        val itemsById = remember(allNodes) { allNodes.associateBy { it.id } }
+        val visibleNodes = visibleFeedNodes(visibleFeed, expanded, appearance.hideToolCalls)
+        val clock = rememberFeedClock(state.isRunning || allNodes.any {
+            it is ThinkingNodeItem && it.isStreaming || it is ToolNodeItem && it.state == NodeStatus.RUNNING || it is StepGroupNodeItem && it.state == NodeStatus.RUNNING
+        })
+        val plans = remember(visibleFeed) { visibleFeed.filterIsInstance<PlanNodeItem>() }
+        val pinHeight = with(density) { 56.dp.toPx() }
+        val pinThreshold = with(density) { 8.dp.toPx() }
+        val globalPin by remember(plans, feedIndex, list, pinThreshold) {
             derivedStateOf {
-                plan?.let { node ->
+                plans.lastOrNull { node ->
                     val position = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == node.id }
-                    val index = feedIndex[node.id] ?: return@let null
-                    if ((position != null && position.offset + with(density) { 30.dp.roundToPx() } < 4) || (position == null && list.firstVisibleItemIndex > index)) node else null
+                    val index = feedIndex[node.id] ?: return@lastOrNull false
+                    position?.let { it.offset + pinThreshold < 0 } ?: (list.firstVisibleItemIndex > index)
                 }
             }
         }
-        val parentPin by remember(itemsById, globalPin, list) {
-            derivedStateOf {
-                val line = if (globalPin != null) with(density) { 56.dp.roundToPx() } else 0
-                list.layoutInfo.visibleItemsInfo.firstNotNullOfOrNull { position ->
-                    val node = itemsById[position.key as? String ?: ""] as? StepGroupNodeItem
-                    if (node != null && position.offset < line - with(density) { 8.dp.roundToPx() } && position.offset + position.size > line + with(density) { 72.dp.roundToPx() }) node else null
-                }
+        val parentPin by derivedStateOf {
+            val line = viewportTop + if (globalPin != null) pinHeight else 0f
+            visibleNodes.filterIsInstance<StepGroupNodeItem>().lastOrNull { node ->
+                node.isExpanded(expanded) && nodeBounds[node.id]?.let { it.top + pinThreshold < line && it.bottom > line + pinHeight } == true
+            }
+        }
+        val contentPin by derivedStateOf {
+            val line = viewportTop + (if (globalPin != null) pinHeight else 0f) + (if (parentPin != null) pinHeight else 0f)
+            visibleNodes.lastOrNull { node ->
+                (node is ThinkingNodeItem || node is ToolNodeItem) && node.isExpanded(expanded) &&
+                    nodeBounds[node.id]?.let { it.top + pinThreshold < line && it.bottom > line + pinHeight } == true
             }
         }
         LaunchedEffect(list) {
@@ -94,24 +112,37 @@ fun AgentChatScreen(
                 if (!scrolling) followTail = !list.canScrollForward
             }
         }
-        val lastFeed = visibleFeed.lastOrNull()
-        LaunchedEffect(lastFeed, composerHeight, visibleFeed.size, state.error, state.queuedPrompts.size) {
-            if (followTail && !list.isScrollInProgress && (visibleFeed.isNotEmpty() || state.error != null)) {
-                val target = if (state.error != null) visibleFeed.size + 1 + if (hasCompacted) 1 else 0
-                    else feedIndex[visibleFeed.last().id] ?: return@LaunchedEffect
-                list.scrollToItem(target)
-                val itemHeight = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target }?.size ?: 0
-                list.scrollBy(itemHeight + with(density) { composerHeight.toPx() })
+        // Follow layout growth, not token events. Never reset a tall row to its beginning on each delta.
+        LaunchedEffect(list) {
+            snapshotFlow {
+                if (followTail && !list.isScrollInProgress && list.canScrollForward) {
+                    list.layoutInfo.totalItemsCount to list.layoutInfo.visibleItemsInfo.lastOrNull()?.let { it.index to it.size }
+                } else null
+            }.collect { target ->
+                if (target != null && target.first > 0) {
+                    val last = target.first - 1
+                    if (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index != last) list.scrollToItem(last)
+                    list.scrollBy(Float.MAX_VALUE)
+                }
             }
         }
         fun scrollTo(id: String) {
             val index = feedIndex[id] ?: return
             followTail = false
             scope.launch {
-                val headerHeight = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "chat-pins" }?.size ?: 0
-                list.animateScrollToItem(index, -headerHeight - with(density) { 8.dp.roundToPx() })
+                if (nodeBounds[id] == null) {
+                    list.animateScrollToItem(index)
+                    withFrameNanos { }
+                }
+                val ancestorPins = (if (globalPin != null && globalPin?.id != id) 1 else 0) +
+                    (if (parentPin != null && parentPin?.id != id && itemsById[id] !is PlanNodeItem) 1 else 0)
+                nodeBounds[id]?.let { bounds ->
+                    list.animateScrollBy(bounds.top - viewportTop - ancestorPins * pinHeight - with(density) { 8.dp.toPx() })
+                }
             }
         }
+        CompositionLocalProvider(LocalFeedClock provides clock, LocalFeedBounds provides nodeBounds,
+            LocalFeedInteraction provides { followTail = false }) {
         Surface(color = c.surface, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 Column(Modifier.widthIn(max = 460.dp).fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
@@ -123,25 +154,9 @@ fun AgentChatScreen(
                         AgentIconButton("edit_square", "新建会话", onNewSession)
                         AgentIconButton("settings", "设置", { settingsMenu = true })
                     }
-                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                    Box(Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { viewportTop = it.positionInRoot().y }) {
                         LazyColumn(state = list, modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(top = 8.dp, bottom = composerHeight + 20.dp)) {
-                            stickyHeader(key = "chat-pins") {
-                                Column(Modifier.fillMaxWidth().background(barColor)) {
-                                    PinSlot(globalPin != null) {
-                                        globalPin?.let { node ->
-                                            PinRow("checklist", node.progressLabel(), true, progress = node.progress(),
-                                                status = { NodeStatusLabel(if (node.steps.all { it.state == StepState.COMPLETED }) NodeStatus.OK else if (state.isRunning) NodeStatus.RUNNING else NodeStatus.STOPPED, 0, false) }) { scrollTo(node.id) }
-                                        }
-                                    }
-                                    PinSlot(parentPin != null) {
-                                        parentPin?.let { node ->
-                                            PinRow(node.icon, node.title, false, stats = node.stats,
-                                                status = { NodeStatusLabel(node.state, node.elapsedSec) }) { scrollTo(node.id) }
-                                        }
-                                    }
-                                }
-                            }
                             if (hasCompacted) item(key = "compacted-history") {
                                 Row(Modifier.padding(horizontal = 16.dp).padding(bottom = 20.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surfaceContainerLow)
                                     .clickable { showCompacted = !showCompacted }.padding(16.dp), verticalAlignment = Alignment.CenterVertically,
@@ -156,10 +171,10 @@ fun AgentChatScreen(
                                 LaunchedEffect(item.id) { entered = true }
                                 val enter by animateFloatAsState(if (entered) 1f else 0f, tween(600, easing = EmphDecelEasing))
                                 Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 20.dp).animateItem(
-                                    fadeInSpec = if (item is UserMessageItem) null else tween(600, easing = EmphDecelEasing), placementSpec = agentSpring(), fadeOutSpec = tween(200, easing = EmphAccelEasing)).graphicsLayer {
+                                    fadeInSpec = if (item is UserMessageItem) null else tween(600, easing = EmphDecelEasing), placementSpec = null, fadeOutSpec = tween(200, easing = EmphAccelEasing)).graphicsLayer {
                                         translationY = (1f - enter) * with(density) { 24.dp.toPx() }; scaleX = .98f + .02f * enter; scaleY = scaleX
                                     }) {
-                                    FeedNode(item, controller, expanded) { title, body -> detail = title to body }
+                                    FeedNode(item, controller, expanded) { request -> followTail = false; detail = request }
                                 }
                             }
                             if (state.error != null) item(key = "session-error") {
@@ -167,6 +182,33 @@ fun AgentChatScreen(
                                     Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                         Symbol("error", tint = c.error); SelectionContainer { Text(state.error.orEmpty(), color = c.onSurface) }
                                     }
+                                }
+                            }
+                        }
+                        // Overlay pins do not change feed height; streaming cannot create a sticky-header feedback loop.
+                        Column(Modifier.fillMaxWidth().align(Alignment.TopCenter).background(barColor)) {
+                            PinSlot(globalPin != null) {
+                                globalPin?.let { node ->
+                                    PinRow("checklist", node.progressLabel(), true, progress = node.progress(),
+                                        status = { NodeStatusLabel(if (node.steps.all { it.state == StepState.COMPLETED }) NodeStatus.OK else if (state.isRunning) NodeStatus.RUNNING else NodeStatus.STOPPED, 0, false) }) { scrollTo(node.id) }
+                                }
+                            }
+                            PinSlot(parentPin != null) {
+                                parentPin?.let { node ->
+                                    PinRow(node.icon, node.title, false, stats = node.stats,
+                                        status = { NodeStatusLabel(node.state, node.elapsedSec, startedAtMillis = node.startedAtMillis) }) { scrollTo(node.id) }
+                                }
+                            }
+                            PinSlot(contentPin != null) {
+                                contentPin?.let { node ->
+                                    val thinking = node as? ThinkingNodeItem
+                                    val tool = node as? ToolNodeItem
+                                    PinRow(if (thinking != null) "psychology" else tool?.icon ?: "code", if (thinking != null) "思考" else plainTitle(tool?.titleHtml.orEmpty()), false,
+                                        onCollapse = { followTail = false; expanded[node.id] = false; scrollTo(node.id) },
+                                        status = {
+                                            if (thinking != null) NodeStatusLabel(if (thinking.isStreaming) NodeStatus.RUNNING else NodeStatus.OK, thinking.elapsedSec, startedAtMillis = thinking.startedAtMillis)
+                                            else if (tool != null) NodeStatusLabel(tool.state, tool.elapsedSec, startedAtMillis = tool.startedAtMillis)
+                                        }) { scrollTo(node.id) }
                                 }
                             }
                         }
@@ -178,14 +220,7 @@ fun AgentChatScreen(
                         }
                         androidx.compose.animation.AnimatedVisibility(!followTail && list.canScrollForward, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = composerHeight + 12.dp),
                             enter = fadeIn(tween(300, easing = EmphDecelEasing)) + scaleIn(agentSpring()), exit = fadeOut(tween(150, easing = EmphAccelEasing))) {
-                            FilledTonalIconButton({ followTail = true; scope.launch {
-                                val last = visibleFeed.lastOrNull()?.id?.let { feedIndex[it] }
-                                if (last != null) {
-                                    list.animateScrollToItem(last)
-                                    val itemHeight = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == last }?.size ?: 0
-                                    list.animateScrollBy(itemHeight + with(density) { composerHeight.toPx() })
-                                }
-                            } }) { Symbol("arrow_downward", contentDescription = "回到最新消息") }
+                            FilledTonalIconButton({ followTail = true }) { Symbol("arrow_downward", contentDescription = "回到最新消息") }
                         }
                         ComposerArea(controller, state, providers, onOpenProviderSettings, onPickFiles, { followTail = true },
                             Modifier.align(Alignment.BottomCenter).onSizeChanged { size -> composerHeight = with(density) { size.height.toDp() } })
@@ -193,20 +228,18 @@ fun AgentChatScreen(
                 }
             }
         }
+        }
         if (settingsMenu) AgentSheet("设置", { settingsMenu = false }) {
             SettingsDestination("hub", "模型服务") { settingsMenu = false; onOpenProviderSettings() }
             SettingsDestination("tune", "Agent 设置") { settingsMenu = false; onOpenAgentSettings() }
         }
-        detail?.let { (title, body) ->
-            val clipboard = LocalClipboardManager.current
-            var copied by remember(body) { mutableStateOf(false) }
-            AgentSheet(title, { detail = null }) {
-                TextButton({ clipboard.setText(AnnotatedString(body)); copied = true }, Modifier.align(Alignment.End)) {
-                    Symbol(if (copied) "check" else "content_copy", size = 20.dp); Spacer(Modifier.width(8.dp)); Text(if (copied) "已复制" else "复制全部")
-                }
-                SelectionContainer(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-                    Text(body, fontFamily = LocalAgentMono.current, fontSize = 15.sp, lineHeight = 23.25.sp, color = c.onSurfaceVariant)
-                }
+        detail?.let { request ->
+            if (request.markdown) {
+                val thinking = itemsById[request.id] as? ThinkingNodeItem
+                ThinkingDetailScreen(request.id, thinking?.text ?: request.text, thinking?.isStreaming == true, { detail = null })
+            } else {
+                val tool = itemsById[request.id] as? ToolNodeItem
+                CodeDetailScreen(request.title, tool?.codeText ?: request.text, request.language, { detail = null })
             }
         }
     }
@@ -221,7 +254,7 @@ private fun PinSlot(visible: Boolean, content: @Composable () -> Unit) {
 
 @Composable
 private fun PinRow(icon: String, title: String, tone: Boolean, progress: Float? = null, stats: GroupStats? = null,
-    status: @Composable RowScope.() -> Unit, onClick: () -> Unit) {
+    onCollapse: (() -> Unit)? = null, status: @Composable RowScope.() -> Unit, onClick: () -> Unit) {
     val c = LocalAgentColors.current
     Box(Modifier.fillMaxWidth().height(56.dp).clickable(onClick = onClick)) {
         Row(Modifier.fillMaxSize().padding(start = 16.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -234,6 +267,7 @@ private fun PinRow(icon: String, title: String, tone: Boolean, progress: Float? 
                 Symbol("description", size = 20.dp, tint = c.onSurfaceVariant); Text(stats.readCount.toString(), fontSize = 17.sp, color = c.onSurfaceVariant)
             }
             status()
+            if (onCollapse != null) AgentIconButton("unfold_less", "收起内容", onCollapse)
             Symbol("vertical_align_top", size = 22.dp, tint = c.onSurfaceVariant)
         }
         progress?.let { value ->

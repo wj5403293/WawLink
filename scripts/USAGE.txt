@@ -161,3 +161,27 @@ revisions, SHA256s and the derived-font axes are in font-provenance.json and
 scripts/assets.lock.json. Noto/JetBrains licenses are OFL; Material Symbols is
 Apache2.0. Icon names must be converted to the supplied codepoints, never rendered
 as visible fallback strings or emoji.
+
+Interactive terminal and code viewer sources
+-------------------------------------------
+The Android terminal-emulator and terminal-view modules are ported directly from
+Love2Droid commit df583461887340a1031bfbf7b4fb6ee377750561:
+https://github.com/wsdx233/Love2Droid/tree/df583461887340a1031bfbf7b4fb6ee377750561
+They are the Apache-2.0 terminal-module exceptions from Termux v0.118.0, not the
+surrounding application. terminal-emulator/NOTICE records the source chain and
+local transport/JNI changes. The complete license is in licenses/ and the module
+assets. libtermux.so is built from this source with the Android NDK for arm64-v8a;
+it is not one of the unmodified prebuilt command executables listed above.
+
+Desktop uses unmodified JediTerm 3.63 (Apache-2.0 selected from its upstream dual
+license) and pty4j 0.13.4 (EPL-1.0) Maven dependencies. Their full licenses and
+source locations are retained in licenses/ and app-desktop desktop resources.
+
+Code highlighting uses Highlights 1.0.0 (Apache-2.0). Android fullscreen readonly
+code uses Sora Editor 0.23.6 (LGPL-2.1-or-later); Desktop uses RSyntaxTextArea 3.6.0
+(BSD-3-Clause). These dependencies are unmodified. Exact Maven coordinates,
+tagged complete-source download URLs, license SHA256s and full license texts are
+in agent-ui/src/commonMain/composeResources/files/code/ and are bundled as UI
+resources. Sora copyright remains with Rosemoe. Replacing its dependency version
+in agent-ui/build.gradle.kts and rebuilding the published project sources relinks
+the application; no proprietary replacement library or WebView shim is included.

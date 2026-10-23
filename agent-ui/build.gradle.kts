@@ -19,16 +19,22 @@ kotlin {
             implementation(compose.animation)
             implementation(compose.ui)
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+            implementation("dev.snipme:highlights:1.0.0")
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
         }
         commonTest.dependencies { implementation(kotlin("test")) }
         val jvmSharedMain by creating {
             dependsOn(commonMain.get())
         }
         androidMain.get().dependsOn(jvmSharedMain)
+        androidMain.dependencies {
+            implementation("io.github.Rosemoe.sora-editor:editor:0.23.6")
+        }
         val desktopMain by getting {
             dependsOn(jvmSharedMain)
             dependencies {
                 implementation(compose.desktop.currentOs)
+                implementation("com.fifesoft:rsyntaxtextarea:3.6.0")
                 // JavaFX 21 runs on the application's JDK 17. Ship WebKit natives with the app.
                 val os = System.getProperty("os.name").lowercase()
                 val arm = System.getProperty("os.arch") in setOf("aarch64", "arm64")
