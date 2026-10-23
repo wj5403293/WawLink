@@ -13,6 +13,9 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -25,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 
 class HostNavigation { var onBack: (() -> Boolean)? = null }
 
@@ -38,7 +42,8 @@ private data class HostRoute(
 ) {
     val stateKey: String = when (page) {
         "chat" -> "chat:$sessionId"
-        "providers", "agent", "container", "terminal", "files" -> "$page:$containerId"
+        "providers", "management" -> "$page:$containerId:${sessionId ?: "global"}"
+        "framework", "container", "terminal", "files" -> "$page:$containerId"
         "install" -> "install:$rootfs"
         else -> page
     }
@@ -60,6 +65,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     var settingsReturn by rememberSaveable { mutableStateOf("home") }
     var terminalReturn by rememberSaveable { mutableStateOf("home") }
     val fileNavigation = remember { HostNavigation() }
+    val settingsNavigation = remember { HostNavigation() }
     var containerAttachmentPick by remember { mutableStateOf<ContainerAttachmentPick?>(null) }
     val attachmentNavigation = remember { HostNavigation() }
     fun finishAttachmentPick(selection: List<ContainerFileSelection>) {
@@ -85,7 +91,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         page == "terminal" -> { page = terminalReturn; true }
         page == "files" && fileNavigation.onBack?.invoke() == true -> true
         page == "files" -> { page = "container"; true }
-        page == "providers" || page == "agent" -> { page = settingsReturn; true }
+        (page == "providers" || page == "management") && settingsNavigation.onBack?.invoke() == true -> true
+        page == "providers" || page == "management" || page == "framework" -> { page = settingsReturn; true }
         page != "home" -> { page = "home"; true }
         else -> false
     }
@@ -95,7 +102,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val configurationContainer = containers.firstOrNull { it.config.id == selectedContainer } ?: containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull()
     val route = when (page) {
         "chat" -> HostRoute(page, sessionId = selectedSession)
-        "providers", "agent", "container" -> HostRoute(page, containerId = configurationContainer?.config?.id)
+        "providers", "management" -> HostRoute(page, containerId = configurationContainer?.config?.id, sessionId = selectedSession.takeIf { settingsReturn == "chat" })
+        "framework", "container" -> HostRoute(page, containerId = configurationContainer?.config?.id)
         "terminal", "files" -> HostRoute(page, containerId = selectedContainer)
         "install" -> HostRoute(page, rootfs = installRootfs)
         else -> HostRoute(page)
@@ -110,7 +118,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     AgentTheme(appearance) {
         Surface(Modifier.fillMaxSize().onPreviewKeyEvent { page != "terminal" && it.type == KeyEventType.KeyDown && it.key == Key.Escape && goBack() }) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                Column(Modifier.widthIn(max = if (page == "terminal") 1200.dp else 460.dp).fillMaxSize()) {
+                Column(Modifier.widthIn(max = if (page == "terminal") 1200.dp / appearance.densityScale else AgentPageMaxWidth).fillMaxSize()) {
                     AnimatedContent(route, transitionSpec = {
                         (fadeIn(tween(380, easing = EmphDecelEasing)) + slideInHorizontally(tween(520, easing = EmphDecelEasing)) { it / 4 }) togetherWith
                             (fadeOut(tween(180, easing = EmphAccelEasing)) + slideOutHorizontally(tween(380, easing = EmphEasing)) { -it / 4 })
@@ -122,11 +130,13 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                 onContainer = { selectedContainer = it; page = "container" },
                                 onInstall = { installRootfs = it; page = "install" }, onTerminal = ::openTerminal)
                             "chat" -> {
-                                val controller = remember(current.sessionId) { runCatching { app.controller(requireNotNull(current.sessionId)) } }
+                                val controller = remember(current.sessionId) { runCatching { app.openSession(requireNotNull(current.sessionId)) } }
                                 controller.fold(onSuccess = {
                                     val record = sessions.firstOrNull { s -> s.record.id == current.sessionId }?.record
                                     if (record != null) AgentChatScreen(it, app.pool.providers(record.containerId), { page = "home" }, ::openNew,
-                                        { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" }, { selectedContainer = record.containerId; settingsReturn = "chat"; page = "agent" }, files::pickAttachments,
+                                        { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" },
+                                        { selectedContainer = record.containerId; settingsReturn = "chat"; page = "management" },
+                                        { selectedContainer = record.containerId; settingsReturn = "chat"; page = "framework" }, files::pickAttachments,
                                         onPickContainerFiles = {
                                             pickContainerAttachments(record.containerId, record.workspace).map { selected ->
                                                 AttachmentFile(java.util.UUID.randomUUID().toString(), selected.file.name, selected.path,
@@ -136,9 +146,19 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                     else EmptyHost("会话已删除")
                                 }, onFailure = { error -> Column { AgentTopBar("无法进入会话", { page = "home" }); EmptyHost(error.message ?: error.toString()) } })
                             }
-                            "providers" -> if (current.containerId != null) ProviderSettingsScreen(app.pool.providers(current.containerId), { page = settingsReturn }) else MissingContainer { page = "home" }
-                            "agent" -> if (current.containerId != null) AgentConfigScreen(app.pool.settings(current.containerId), { page = settingsReturn }) else MissingContainer { page = "home" }
-                            "appearance" -> AppearanceScreen(app, { page = "home" }, { if (configurationContainer != null) { settingsReturn = "appearance"; page = "providers" } else openNew() }, { if (configurationContainer != null) { settingsReturn = "appearance"; page = "agent" } else openNew() })
+                            "providers", "management" -> if (current.containerId != null) {
+                                val session = current.sessionId?.let(app::openedSession)
+                                val record = sessions.firstOrNull { session != null && it.record.id == current.sessionId && it.record.containerId == current.containerId }?.record
+                                val management = remember(current.containerId, record?.workspace, record?.id) { app.pool.management(current.containerId, record?.workspace, record?.id) }
+                                AgentManagementScreen(management, app.pool.providers(current.containerId), { page = settingsReturn },
+                                    session = session.takeIf { record != null }, initialSection = if (current.page == "providers") "providers" else "home",
+                                    registerBack = { settingsNavigation.onBack = it })
+                            } else MissingContainer { page = "home" }
+                            "framework" -> if (current.containerId != null) AgentConfigScreen(app.pool.settings(current.containerId), { page = settingsReturn }) else MissingContainer { page = "home" }
+                            "appearance" -> AppearanceScreen(app, { page = "home" },
+                                { if (configurationContainer != null) { settingsReturn = "appearance"; page = "providers" } else openNew() },
+                                { if (configurationContainer != null) { settingsReturn = "appearance"; page = "management" } else openNew() },
+                                { if (configurationContainer != null) { settingsReturn = "appearance"; page = "framework" } else openNew() })
                             "install" -> InstallContainerScreen(app, files, current.rootfs, { page = "home" })
                             "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }, ::openTerminal, { id -> selectedContainer = id; page = "files" }) } ?: MissingContainer { page = "home" }
                             "files" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerFilesScreen(app, files, it.config, { page = "container" }, { fileNavigation.onBack = it }) } ?: MissingContainer { page = "home" }
@@ -203,13 +223,30 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
         trailing()
     }
 }
-@Composable private fun AppearanceScreen(app: AppCoordinator, onBack: () -> Unit, providers: () -> Unit, agent: () -> Unit) {
+@Composable private fun AppearanceScreen(app: AppCoordinator, onBack: () -> Unit, providers: () -> Unit, agent: () -> Unit, framework: () -> Unit) {
     val appearance by app.appearance.collectAsState()
     val defaultAutoApprove by app.defaultAutoApprove.collectAsState()
     Column {
         AgentTopBar("应用设置", onBack)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             SectionLabel("外观与显示", "palette")
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(12.dp))) {
+                HostRow("整体缩放", "${appearance.effectiveUiScalePercent}%${if (appearance.effectiveUiScalePercent == AgentAppearance.DEFAULT_UI_SCALE_PERCENT) "（默认）" else ""}", "zoom_in") {
+                    TextButton({ app.updateAppearance(app.appearance.value.copy(uiScalePercent = AgentAppearance.DEFAULT_UI_SCALE_PERCENT)) },
+                        enabled = appearance.effectiveUiScalePercent != AgentAppearance.DEFAULT_UI_SCALE_PERCENT) { Text("恢复默认") }
+                }
+                Slider(
+                    value = appearance.effectiveUiScalePercent.toFloat(),
+                    onValueChange = { app.updateAppearance(app.appearance.value.copy(uiScalePercent = it.roundToInt()), persist = false) },
+                    onValueChangeFinished = { app.updateAppearance(app.appearance.value) },
+                    valueRange = AgentAppearance.MIN_UI_SCALE_PERCENT.toFloat()..AgentAppearance.MAX_UI_SCALE_PERCENT.toFloat(),
+                    steps = 8,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).semantics {
+                        contentDescription = "整体缩放"
+                        stateDescription = "${appearance.effectiveUiScalePercent}%"
+                    },
+                )
+            }
             HostRow("深色主题", icon = "dark_mode") { Switch(appearance.darkTheme, { app.updateAppearance(appearance.copy(darkTheme = it)) }) }
             HostRow("色觉辅助模式", icon = "visibility") { Switch(appearance.colorVisionAssist, { app.updateAppearance(appearance.copy(colorVisionAssist = it)) }) }
             HostRow("平滑流式输出", icon = "animation") { Switch(appearance.smoothStreaming, { app.updateAppearance(appearance.copy(smoothStreaming = it)) }) }
@@ -220,7 +257,8 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
             HostRow("新会话默认免审批", icon = "bolt") { Switch(defaultAutoApprove, app::updateDefaultAutoApprove) }
             SectionLabel("当前容器 Agent", "smart_toy")
             HostRow("模型服务", icon = "cloud", onClick = providers) { Symbol("chevron_right") }
-            HostRow("Agent 设置", icon = "tune", onClick = agent) { Symbol("chevron_right") }
+            HostRow("Agent 设置", icon = "smart_toy", onClick = agent) { Symbol("chevron_right") }
+            HostRow("框架设置", icon = "tune", onClick = framework) { Symbol("chevron_right") }
         }
     }
 }

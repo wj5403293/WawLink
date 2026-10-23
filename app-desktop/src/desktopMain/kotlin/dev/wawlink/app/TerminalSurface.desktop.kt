@@ -3,24 +3,32 @@ package dev.wawlink.app
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.SwingPanel
+import androidx.compose.ui.platform.LocalDensity
 import com.jediterm.core.util.TermSize
 import com.jediterm.terminal.TerminalColor
 import com.jediterm.terminal.TextStyle
 import com.jediterm.terminal.TtyConnector
+import com.jediterm.terminal.model.StyleState
+import com.jediterm.terminal.model.TerminalTextBuffer
 import com.jediterm.terminal.ui.TerminalActionPresentation
 import com.jediterm.terminal.ui.JediTermWidget
+import com.jediterm.terminal.ui.TerminalPanel
 import com.jediterm.terminal.ui.settings.DefaultSettingsProvider
+import com.jediterm.terminal.ui.settings.SettingsProvider
 import dev.wawlink.runtime.TerminalSession
+import dev.wawlink.ui.LocalAgentAppearance
 import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** JediTerm supplies ANSI/cursor emulation, raw keys, selection and Ctrl+Shift+C/V. */
 @Composable
 internal fun TerminalSurface(session: TerminalSession, modifier: Modifier) {
+    val scale = LocalAgentAppearance.current.densityScale * LocalDensity.current.fontScale
+    val currentScale by rememberUpdatedState(scale)
     val widget = remember(session) {
-        JediTermWidget(object : DefaultSettingsProvider() {
+        object : JediTermWidget(object : DefaultSettingsProvider() {
             override fun getDefaultStyle() = TextStyle(TerminalColor.rgb(230, 237, 243), TerminalColor.rgb(13, 17, 23))
-            override fun getTerminalFontSize() = 15f
+            override fun getTerminalFontSize() = 15f * currentScale
             override fun getBufferMaxLinesCount() = 10_000
             override fun audibleBell() = false
             override fun getCopyActionPresentation() = TerminalActionPresentation("复制", super.getCopyActionPresentation().keyStrokes)
@@ -29,13 +37,28 @@ internal fun TerminalSurface(session: TerminalSession, modifier: Modifier) {
             override fun getSelectAllActionPresentation() = TerminalActionPresentation("全选", super.getSelectAllActionPresentation().keyStrokes)
             override fun getFindActionPresentation() = TerminalActionPresentation("查找", super.getFindActionPresentation().keyStrokes)
             override fun getOpenUrlActionPresentation() = TerminalActionPresentation("打开链接", super.getOpenUrlActionPresentation().keyStrokes)
-        }).apply {
+        }) {
+            override fun createTerminalPanel(settings: SettingsProvider, style: StyleState, buffer: TerminalTextBuffer): TerminalPanel =
+                ScaledTerminalPanel(settings, buffer, style)
+        }.apply {
             ttyConnector = ContainerTtyConnector(session)
             start()
         }
     }
     DisposableEffect(widget) { onDispose { widget.close() } }
-    SwingPanel(factory = { widget.apply { requestFocusInWindow() } }, modifier = modifier)
+    SwingPanel(factory = { widget.apply { requestFocusInWindow() } }, modifier = modifier,
+        update = { (it.terminalPanel as ScaledTerminalPanel).updateScale(scale) })
+}
+
+private class ScaledTerminalPanel(settings: SettingsProvider, buffer: TerminalTextBuffer, style: StyleState) : TerminalPanel(settings, buffer, style) {
+    private var appliedScale = Float.NaN
+
+    fun updateScale(scale: Float) {
+        if (appliedScale != scale) {
+            appliedScale = scale
+            reinitFontAndResize()
+        }
+    }
 }
 
 private class ContainerTtyConnector(private val session: TerminalSession) : TtyConnector {

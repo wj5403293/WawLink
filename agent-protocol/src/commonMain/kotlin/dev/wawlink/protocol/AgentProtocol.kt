@@ -206,6 +206,7 @@ data class ProviderConfig(
     val enabled: Boolean = true,
     val models: List<ModelConfig> = emptyList(),
     val headers: Map<String, String> = emptyMap(),
+    val nativeApi: String? = null,
 )
 data class LatencyInfo(val latencyMs: Long, val statusCode: Int, val message: String = "连接成功")
 
@@ -235,4 +236,15 @@ data class AgentAppearance(
     val alwaysShowUsage: Boolean = false,
     val hideToolCalls: Boolean = false,
     val collapseCompacted: Boolean = true,
-)
+    val uiScalePercent: Int = DEFAULT_UI_SCALE_PERCENT,
+) {
+    val effectiveUiScalePercent: Int get() = uiScalePercent.coerceIn(MIN_UI_SCALE_PERCENT, MAX_UI_SCALE_PERCENT)
+    val densityScale: Float get() = effectiveUiScalePercent * UI_SCALE_BASELINE_PERCENT / 10_000f
+
+    companion object {
+        const val DEFAULT_UI_SCALE_PERCENT = 100
+        const val UI_SCALE_BASELINE_PERCENT = 115
+        const val MIN_UI_SCALE_PERCENT = 80
+        const val MAX_UI_SCALE_PERCENT = 125
+    }
+}

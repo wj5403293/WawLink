@@ -16,7 +16,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayInputStream
 import java.util.concurrent.atomic.AtomicBoolean
@@ -32,10 +31,10 @@ private class GraphicBridge(private val webView: WebView, private val result: (F
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 internal actual fun PlatformRichGraphic(html: String, modifier: Modifier, onResult: (Float?, String?) -> Unit) {
-    val context = LocalContext.current
+    val context = rememberAgentViewContext()
     val callback = rememberUpdatedState(onResult)
-    val alive = remember(html) { AtomicBoolean(true) }
-    val webView = remember(html) {
+    val alive = remember(html, context) { AtomicBoolean(true) }
+    val webView = remember(html, context) {
         runCatching { WebView(context).apply {
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
             settings.apply {
@@ -85,7 +84,7 @@ internal actual fun PlatformRichGraphic(html: String, modifier: Modifier, onResu
             webView.destroy()
         }
     }
-    key(html) { AndroidView(factory = { webView }, modifier = modifier) }
+    key(html, context) { AndroidView(factory = { webView }, modifier = modifier) }
 }
 
 internal actual fun rasterImage(bytes: ByteArray, type: String): ImageBitmap {

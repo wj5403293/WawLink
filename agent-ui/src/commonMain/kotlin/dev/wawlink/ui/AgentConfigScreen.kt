@@ -117,11 +117,11 @@ fun AgentConfigScreen(repository: AgentSettingsRepository, onBack: () -> Unit) {
         else queue.afterSaved(onBack)
     }
     Box(Modifier.fillMaxSize().background(colors.surface), contentAlignment = Alignment.TopCenter) {
-        Column(Modifier.widthIn(max = 460.dp).fillMaxSize()) {
+        Column(Modifier.widthIn(max = AgentPageMaxWidth).fillMaxSize()) {
             val scrolled by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 4 } }
             val headerColor by animateColorAsState(if (scrolled) colors.surfaceContainer else colors.surface, tween(350, easing = EmphEasing))
             Column(Modifier.fillMaxWidth().background(headerColor)) {
-                AgentTopBar("Agent 设置", ::back) {
+                AgentTopBar("框架设置", ::back) {
                     val shape by animateFloatAsState(if (onlyModified) 16f else 24f, tween(400, easing = EmphEasing))
                     Box(Modifier.background(if (onlyModified) colors.primaryContainer else androidx.compose.ui.graphics.Color.Transparent, RoundedCornerShape(shape.dp))) {
                         AgentIconButton("tune", "仅显示已修改项", { onlyModified = !onlyModified; scope.launch { listState.scrollToItem(0) }; notify(if (onlyModified) "仅显示已修改项" else "显示全部设置项") }, filled = onlyModified)
@@ -177,9 +177,9 @@ fun AgentConfigScreen(repository: AgentSettingsRepository, onBack: () -> Unit) {
                 if (visible.isEmpty()) item { SettingsEmpty(if (onlyModified) "暂无已修改的设置项" else if (categories.isEmpty()) "暂无可用设置" else "没有匹配的设置项", if (onlyModified) "tune" else "search_off") }
             }
         }
-        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).widthIn(max = 460.dp).padding(16.dp))
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).widthIn(max = AgentPageMaxWidth).padding(16.dp))
     }
-    if (resetDialog) AlertDialog(onDismissRequest = { resetDialog = false }, title = { Text("恢复全部默认设置？") }, text = { Text("将重置全部 Agent 配置。应用外观和终端界面配置不受影响。") }, confirmButton = { TextButton({ resetDialog = false; resetAll() }) { Text("恢复默认") } }, dismissButton = { TextButton({ resetDialog = false }) { Text("取消") } })
+    if (resetDialog) AlertDialog(onDismissRequest = { resetDialog = false }, title = { Text("恢复全部默认设置？") }, text = { Text("将重置全部框架配置。应用外观和终端界面配置不受影响。") }, confirmButton = { TextButton({ resetDialog = false; resetAll() }) { Text("恢复默认") } }, dismissButton = { TextButton({ resetDialog = false }) { Text("取消") } })
     val active = allItems.firstOrNull { it.id == activeId }
     if (active != null) key(active.id) {
         SettingEditorSheet(active, { activeId = null }, { value, close -> update(active, value); if (close) activeId = null }, { reset(active) })

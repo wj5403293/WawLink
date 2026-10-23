@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,9 +32,50 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 
+internal data class ProviderListEntry(
+    val id: String,
+    val name: String,
+    val builtin: Boolean,
+    val enabled: Boolean,
+    val apiLabel: String?,
+    val modelCount: Int,
+)
+
+internal fun providerListEntries(
+    configured: List<ProviderConfig>,
+    native: List<ManagedProvider>,
+    modelCounts: Map<String, Int>,
+): List<ProviderListEntry> {
+    val configuredById = configured.associateBy { it.id }
+    val nativeIds = HashSet<String>(native.size)
+    val entries = ArrayList<ProviderListEntry>(configured.size + native.size)
+    for (provider in native) {
+        nativeIds.add(provider.id)
+        val local = configuredById[provider.id]
+        entries.add(ProviderListEntry(
+            id = provider.id,
+            name = if (provider.builtin) provider.name else local?.name ?: provider.name,
+            builtin = provider.builtin,
+            enabled = provider.enabled,
+            apiLabel = if (provider.builtin) null else local?.let { it.nativeApi ?: it.apiType.label } ?: provider.api,
+            modelCount = modelCounts[provider.id] ?: local?.models?.size ?: 0,
+        ))
+    }
+    for (provider in configured) {
+        if (provider.id !in nativeIds) entries.add(ProviderListEntry(
+            provider.id, provider.name, false, provider.enabled,
+            provider.nativeApi ?: provider.apiType.label, provider.models.size,
+        ))
+    }
+    entries.sortWith(compareBy<ProviderListEntry> { it.builtin }.thenByDescending { it.enabled })
+    return entries
+}
+
 @Composable
-fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> Unit) {
+fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> Unit, onAdvanced: ((String) -> Unit)? = null, registerBack: ((() -> Boolean)?) -> Unit = {}) {
     val persisted by repository.providers.collectAsState()
+    val managementRepository = LocalManagementRepository.current
+    val managementState = managementRepository?.state?.collectAsState()?.value
     val synchronizationError by repository.error.collectAsState()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -59,13 +102,16 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
     }
     fun update(provider: ProviderConfig) { drafts[provider.id] = provider; persist(provider.id) }
     fun back() { queue.afterSaved { if (selectedId != null) selectedId = null else onBack() } }
+    val latestBack by rememberUpdatedState(::back)
+    val currentRegistration by rememberUpdatedState(registerBack)
+    DisposableEffect(repository) { currentRegistration { latestBack(); true }; onDispose { currentRegistration(null) } }
     val all = (persisted.map { drafts[it.id] ?: it } + drafts.values.filter { draft -> persisted.none { it.id == draft.id } })
         .filter { removed[it.id] != true }
     val selected = selectedId?.let { id -> all.firstOrNull { it.id == id } }
     val colors = LocalAgentColors.current
 
     Box(Modifier.fillMaxSize().background(colors.surface), contentAlignment = Alignment.TopCenter) {
-        Column(Modifier.widthIn(max = 460.dp).fillMaxSize()) {
+        Column(Modifier.widthIn(max = AgentPageMaxWidth).fillMaxSize()) {
             AnimatedContent(selected?.id, transitionSpec = {
                 (slideInHorizontally(tween(500, easing = EmphDecelEasing)) { if (targetState != null) it else -it / 4 } + fadeIn(tween(300))) togetherWith
                     (slideOutHorizontally(tween(350, easing = EmphAccelEasing)) { if (targetState != null) -it / 4 else it } + fadeOut(tween(250)))
@@ -75,32 +121,53 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
                 if (provider == null) {
                     Box(Modifier.fillMaxSize()) {
                         Column {
-                            AgentTopBar("设置", ::back)
+                            AgentTopBar("模型服务", ::back) {
+                                if (onAdvanced != null) ManagementScopeChip(ConfigurationScope.GLOBAL, {}, managementState?.context?.projectPath != null, globalOnly = true)
+                            }
                             SettingsFailure(queue) { queue.failures.keys.toList().forEach(::persist) }
                             SettingsSyncError(synchronizationError)
+                            if (managementState?.modelsLoading == true) LinearProgressIndicator(Modifier.fillMaxWidth())
+                            managementState?.modelsError?.let { message ->
+                                ManagementBanner(message, "sync_problem", error = true)
+                                TextButton({ scope.launch { try { managementRepository?.reload(online = true) } catch (cancelled: CancellationException) { throw cancelled } catch (failure: Exception) { notify(failure.message ?: "读取失败") } } }) { Text("重新读取") }
+                            }
                             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp)) {
                                 SettingsSearch(search, { search = it }, "搜索服务")
-                                Row(Modifier.padding(start = 4.dp, top = 20.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Symbol("hub", size = 20.dp, tint = colors.primary)
-                                    Text("模型服务", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = colors.primary)
-                                }
-                                val visible = all.filter { search.isBlank() || it.name.contains(search.trim(), true) }
+                                val nativeModels = managementState?.models.orEmpty()
+                                val modelCounts = remember(nativeModels) { nativeModels.groupingBy { it.provider }.eachCount() }
+                                val nativeProviders = if (onAdvanced != null) managementState?.providers.orEmpty() else emptyList()
+                                val entries = remember(all, nativeProviders, modelCounts) { providerListEntries(all, nativeProviders, modelCounts) }
+                                val query = search.trim()
+                                val visible = entries.filter { query.isEmpty() || it.name.contains(query, true) || it.id.contains(query, true) }
+                                val customCount = visible.count { !it.builtin }
                                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                     visible.forEachIndexed { index, item ->
-                                        Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).background(colors.surfaceContainerLow, segmentedSettingsShape(index, visible.size)).clickable { selectedId = item.id }.padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                            ProviderAvatar(item)
-                                            Column(Modifier.weight(1f)) {
-                                                Text(item.name.ifBlank { "未命名" }, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = if (item.enabled) colors.onSurface else colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                Text("${item.apiType.label} · ${item.models.size} 个模型", fontSize = 16.sp, color = colors.onSurfaceVariant)
+                                        if (index == customCount && customCount > 0) HorizontalDivider(Modifier.padding(vertical = 16.dp), color = colors.outline)
+                                        val position = if (item.builtin) index - customCount else index
+                                        val groupSize = if (item.builtin) visible.size - customCount else customCount
+                                        Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).background(colors.surfaceContainerLow, segmentedSettingsShape(position, groupSize)).clickable { if (onAdvanced != null) queue.afterSaved { onAdvanced(item.id) } else selectedId = item.id }.padding(start = 16.dp, end = if (item.builtin) 16.dp else 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                            ProviderInitialIcon(item.name.ifBlank { item.id }, Modifier.size(44.dp).alpha(if (item.enabled) 1f else .45f))
+                                            Column(Modifier.weight(1f).alpha(if (item.enabled) 1f else .5f)) {
+                                                Text(item.name.ifBlank { "未命名" }, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Text(if (item.apiLabel == null) "${item.modelCount} 个模型" else "${item.apiLabel} · ${item.modelCount} 个模型", fontSize = 16.sp, color = colors.onSurfaceVariant)
                                             }
-                                            Switch(item.enabled, { update((current(item.id) ?: item).copy(enabled = it)) })
+                                            Switch(item.enabled, { checked ->
+                                                if (managementRepository != null) scope.launch {
+                                                    try {
+                                                        val disabled = configurationStrings(configurationValue(managementRepository.state.value.effectiveValues, "disabledProviders"))
+                                                        managementRepository.updateSettings(ConfigurationScope.GLOBAL, mapOf("disabledProviders" to if (checked) disabled - item.id else (disabled + item.id).distinct()))
+                                                    } catch (cancelled: CancellationException) { throw cancelled }
+                                                    catch (failure: Exception) { notify(failure.message ?: "保存失败") }
+                                                } else current(item.id)?.let { update(it.copy(enabled = checked)) }
+                                            })
                                         }
                                     }
-                                    if (visible.isEmpty()) SettingsEmpty(if (all.isEmpty()) "还没有模型服务，点下方添加" else "没有匹配的服务", "hub")
+                                    if (visible.isEmpty() && managementState?.modelsLoading != true) SettingsEmpty(if (entries.isEmpty()) "还没有模型服务" else "没有匹配的服务", "cloud_off")
                                 }
                             }
                         }
                         ExtendedFloatingActionButton(onClick = {
+                            if (onAdvanced != null) { queue.afterSaved { onAdvanced("") }; return@ExtendedFloatingActionButton }
                             val id = generateSequence { "provider-" + Random.nextLong().toULong().toString(16) }.first { current(it) == null }
                             val new = ProviderConfig(id = id, name = "新服务", baseUrl = "")
                             update(new)
@@ -112,21 +179,15 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
                         removed[provider.id] = true
                         persist(provider.id)
                         queue.afterSaved { selectedId = null; notify("已删除服务") }
-                    }, { queue.failures.keys.toList().forEach(::persist) }, repository, notify)
+                    }, { queue.failures.keys.toList().forEach(::persist) }, repository, notify, onAdvanced?.let { open -> { queue.afterSaved { open(provider.id) } } })
                 }
                 }
             }
         }
-        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).widthIn(max = 460.dp).padding(16.dp))
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).widthIn(max = AgentPageMaxWidth).padding(16.dp))
     }
 }
 
-@Composable
-private fun ProviderAvatar(provider: ProviderConfig) {
-    Box(Modifier.size(44.dp).alpha(if (provider.enabled) 1f else .5f).background(LocalAgentColors.current.surfaceContainerHigh, CircleShape), contentAlignment = Alignment.Center) {
-        ProviderBrandIcon(provider.name, modifier = Modifier.size(28.dp))
-    }
-}
 
 
 @Composable
@@ -139,6 +200,7 @@ private fun ProviderDetailScreen(
     onRetry: () -> Unit,
     repository: ProviderConfigRepository,
     notify: (String) -> Unit,
+    onAdvanced: (() -> Unit)?,
 ) {
     val colors = LocalAgentColors.current
     val synchronizationError by repository.error.collectAsState()
@@ -155,6 +217,7 @@ private fun ProviderDetailScreen(
     LaunchedEffect(provider.apiType, provider.baseUrl, provider.apiKey) { testResult = null }
     Column(Modifier.fillMaxSize()) {
         AgentTopBar(provider.name.ifBlank { "未命名" }, onBack) {
+            if (onAdvanced != null) AgentIconButton("tune", "原生协议与完整模型配置", onAdvanced)
             AgentIconButton("delete", "删除服务", { confirmDelete = true })
             Switch(provider.enabled, { enabled -> modifyLatest { it.copy(enabled = enabled) } })
             Spacer(Modifier.width(12.dp))
@@ -167,11 +230,11 @@ private fun ProviderDetailScreen(
             SettingsLabel("接口类型")
             Row(Modifier.fillMaxWidth().height(52.dp).border(1.dp, colors.outline, RoundedCornerShape(26.dp))) {
                 ProviderApiType.entries.forEachIndexed { index, type ->
-                    val selected = type == provider.apiType
+                    val selected = provider.nativeApi == null && type == provider.apiType
                     val segmentShape = when (index) { 0 -> RoundedCornerShape(topStart = 26.dp, bottomStart = 26.dp); 2 -> RoundedCornerShape(topEnd = 26.dp, bottomEnd = 26.dp); else -> RoundedCornerShape(0.dp) }
                     val bg by animateColorAsState(if (selected) colors.secondaryContainer else colors.surface, tween(300, easing = EmphEasing))
                     Row(Modifier.weight(1f).fillMaxHeight().background(bg, segmentShape).clickable {
-                        modifyLatest { it.copy(apiType = type) }
+                        modifyLatest { it.copy(apiType = type, nativeApi = null) }
                     }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
                         AnimatedVisibility(selected, enter = expandHorizontally(tween(350, easing = EmphEasing)) + fadeIn(), exit = shrinkHorizontally() + fadeOut()) { Symbol("check", Modifier.padding(end = 6.dp), size = 20.dp) }
                         Text(type.label, fontSize = 17.sp, fontWeight = FontWeight.Medium)
@@ -181,12 +244,13 @@ private fun ProviderDetailScreen(
             }
             Row(Modifier.padding(start = 4.dp, top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Symbol("info", size = 20.dp, tint = colors.onSurfaceVariant)
-                Text(when (provider.apiType) { ProviderApiType.CHAT -> "经典 OpenAI 接口"; ProviderApiType.RESPONSE -> "新版 OpenAI 接口"; ProviderApiType.MESSAGE -> "Claude 接口" }, color = colors.onSurfaceVariant, fontSize = 16.sp)
+                Text(provider.nativeApi ?: when (provider.apiType) { ProviderApiType.CHAT -> "经典 OpenAI 接口"; ProviderApiType.RESPONSE -> "新版 OpenAI 接口"; ProviderApiType.MESSAGE -> "Claude 接口" }, modifier = Modifier.weight(1f), color = colors.onSurfaceVariant, fontSize = 16.sp)
+                if (onAdvanced != null) TextButton(onAdvanced) { Text("更多协议") }
             }
             SettingsLabel("接口地址")
             SettingsField(provider.baseUrl, { base -> modifyLatest { it.copy(baseUrl = base) } }, placeholder = "https://", mono = true, keyboardType = KeyboardType.Uri)
             SettingsLabel("请求路径")
-            SettingsField(when (provider.apiType) { ProviderApiType.CHAT -> "/chat/completions"; ProviderApiType.RESPONSE -> "/responses"; ProviderApiType.MESSAGE -> "/messages" }, {}, readOnly = true, mono = true)
+            SettingsField(if (provider.nativeApi != null) "由原生协议确定" else when (provider.apiType) { ProviderApiType.CHAT -> "/chat/completions"; ProviderApiType.RESPONSE -> "/responses"; ProviderApiType.MESSAGE -> "/messages" }, {}, readOnly = true, mono = true)
             SettingsLabel("API Key") {
                 TextButton(enabled = !testing, onClick = {
                     val snapshot = latest
@@ -219,7 +283,7 @@ private fun ProviderDetailScreen(
                 Surface(shape = CircleShape, color = colors.surfaceContainerHigh) { Text("${provider.models.size}", Modifier.padding(horizontal = 8.dp, vertical = 3.dp), fontSize = 15.sp) }
                 Spacer(Modifier.weight(1f))
                 if (syncing) Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
-                else AgentIconButton("sync", "获取远端模型", {
+                else TextButton(onClick = {
                     syncing = true
                     val snapshot = latest
                     scope.launch {
@@ -241,11 +305,11 @@ private fun ProviderDetailScreen(
                         catch (error: Exception) { notify("获取模型失败：${error.message ?: "未知错误"}") }
                         finally { syncing = false }
                     }
-                })
+                }) { Symbol("sync", size = 20.dp); Spacer(Modifier.width(6.dp)); Text("获取模型") }
                 AgentIconButton("add", "添加模型", { editModel = null; modelSheet = true })
             }
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                provider.models.forEachIndexed { index, model ->
+            LazyColumn(Modifier.fillMaxWidth().heightIn(min = 72.dp, max = 480.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                itemsIndexed(provider.models, key = { _, model -> model.id }) { index, model ->
                     Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).background(colors.surfaceContainerLow, segmentedSettingsShape(index, provider.models.size)).clickable { editModel = model; modelSheet = true }.padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         ModelIcon(model.id, model.name)
                         Column(Modifier.weight(1f)) {
@@ -262,7 +326,7 @@ private fun ProviderDetailScreen(
                         Symbol("chevron_right", tint = colors.onSurfaceVariant)
                     }
                 }
-                if (provider.models.isEmpty()) SettingsEmpty("还没有模型，点加号添加或同步获取", "neurology")
+                if (provider.models.isEmpty()) item { SettingsEmpty("还没有模型，读取目录或手工添加", "playlist_add") }
             }
         }
     }

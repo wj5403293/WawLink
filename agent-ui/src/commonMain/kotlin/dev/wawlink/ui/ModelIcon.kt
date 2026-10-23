@@ -41,12 +41,10 @@ internal fun ModelIcon(
 }
 
 @Composable
-internal fun ProviderBrandIcon(providerName: String, modifier: Modifier = Modifier) {
-    val artwork = remember(providerName) { modelArtwork(providerName) }
-    if (artwork == null) {
-        Symbol("neurology", modifier.size(24.dp), size = 24.dp, tint = LocalAgentColors.current.onSurfaceVariant)
-    } else {
-        Image(painterResource(artwork), contentDescription = null, modifier = modifier.size(24.dp))
+internal fun ProviderInitialIcon(providerName: String, modifier: Modifier = Modifier) {
+    val initial = remember(providerName) { modelInitial(providerName) }
+    Box(modifier.size(24.dp).background(modelInitialColor(initial), CircleShape), contentAlignment = Alignment.Center) {
+        Text(initial.toString(), color = Color(0xFF1F1F1F), fontSize = 20.sp, fontWeight = FontWeight.Medium)
     }
 }
 

@@ -45,6 +45,7 @@ import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
 import org.yaml.snakeyaml.constructor.SafeConstructor
 import org.yaml.snakeyaml.nodes.MappingNode
+import org.yaml.snakeyaml.error.MarkedYAMLException
 import org.yaml.snakeyaml.nodes.Node
 import org.yaml.snakeyaml.nodes.NodeTuple
 import org.yaml.snakeyaml.nodes.ScalarNode
@@ -53,7 +54,7 @@ import org.yaml.snakeyaml.nodes.Tag
 import org.yaml.snakeyaml.representer.Representer
 
 // Provider enable switches and ordinary settings share config.yml; serialize their reload/edit/write cycles.
-private val ompConfigMutex = Mutex()
+internal val ompConfigMutex = Mutex()
 private val providerApis = mapOf(
     ProviderApiType.CHAT to "openai-completions",
     ProviderApiType.RESPONSE to "openai-responses",
@@ -84,7 +85,13 @@ private fun mainConfigFile(directory: File): File {
     return if (yml.exists() || !yaml.exists()) yml else yaml
 }
 
-private fun repoAtomicWrite(file: File, content: String) {
+private fun modelsConfigFile(directory: File): File {
+    val yml = configFile(directory, "models.yml")
+    val yaml = configFile(directory, "models.yaml")
+    return if (yml.exists() || !yaml.exists()) yml else yaml
+}
+
+internal fun repoAtomicWrite(file: File, content: String) {
     Files.createDirectories(file.parentFile.toPath())
     val temporary = Files.createTempFile(file.parentFile.toPath(), ".${file.name}.", ".tmp")
     try {
@@ -107,23 +114,38 @@ private fun repoAtomicWrite(file: File, content: String) {
     }
 }
 
-/** Re-emit legacy pretty-flow documents before Bun reads them; credentials and YAML nodes stay intact. */
-internal suspend fun prepareOmpConfiguration(directory: () -> File) = ompConfigMutex.withLock {
-    val dir = agentDirectory(directory)
-    for (file in listOf(configFile(dir, "models.yml"), mainConfigFile(dir))) {
-        if (file.exists()) OmpYaml(file).write(file)
+/** Render every candidate before committing; restore originals if a later replacement fails. */
+private fun repoAtomicWriteBatch(documents: Map<File, String>) {
+    val previous = documents.keys.associateWith { if (it.exists()) it.readText(Charsets.UTF_8) else null }
+    val committed = ArrayList<File>(documents.size)
+    try {
+        for ((file, content) in documents) { repoAtomicWrite(file, content); committed.add(file) }
+    } catch (failure: Exception) {
+        for (file in committed.asReversed()) {
+            try {
+                previous[file]?.let { repoAtomicWrite(file, it) } ?: check(!file.exists() || file.delete()) { "Cannot restore newly created configuration file" }
+            } catch (restore: Exception) { failure.addSuppressed(restore) }
+        }
+        throw failure
     }
 }
 
+/** Re-emit legacy pretty-flow documents before Bun reads them; credentials and YAML nodes stay intact. */
+internal suspend fun prepareOmpConfiguration(directory: () -> File) = ompConfigMutex.withLock {
+    val dir = agentDirectory(directory)
+    for (file in listOf(modelsConfigFile(dir), mainConfigFile(dir))) normalizeOmpConfigurationFile(file)
+}
+
+internal fun normalizeOmpConfigurationFile(file: File) {
+    try { if (file.exists()) OmpYaml(file).write(file) }
+    catch (_: Exception) { throw IllegalArgumentException("配置文件格式无效，请修复原始配置") }
+}
+
 /** Mutate composed YAML nodes, not a load/dump map: comments, tags, unknown keys and scalar styles survive. */
-private class OmpYaml private constructor(private val yaml: Yaml, val root: MappingNode) {
+internal class OmpYaml private constructor(private val yaml: Yaml, val root: MappingNode) {
     constructor(file: File) : this(newYaml(), file)
     private constructor(yaml: Yaml, file: File) : this(yaml, if (file.exists()) {
-        file.reader(Charsets.UTF_8).use { reader ->
-            val node = yaml.compose(reader)
-            require(node == null || node is MappingNode) { "${file.name} must contain a YAML mapping" }
-            node as? MappingNode ?: mapping()
-        }
+        file.reader(Charsets.UTF_8).use { reader -> compose(yaml, reader, file.name) }
     } else mapping())
 
     fun node(vararg path: String): Node? {
@@ -167,6 +189,20 @@ private class OmpYaml private constructor(private val yaml: Yaml, val root: Mapp
                 value.value.forEach { replacement -> set(original, (replacement.keyNode as ScalarNode).value, replacement.valueNode) }
                 return
             }
+            if (old.valueNode is SequenceNode && value is SequenceNode) {
+                val original = old.valueNode as SequenceNode
+                fun identity(node: Node): String? = (node as? MappingNode)?.let { mapping ->
+                    ((mapping.entry("id") ?: mapping.entry("name"))?.valueNode as? ScalarNode)?.value
+                }
+                val byIdentity = original.value.mapNotNull { node -> identity(node)?.let { it to node } }.toMap()
+                val merged = value.value.mapIndexed { index, node ->
+                    val previous = identity(node)?.let(byIdentity::get) ?: original.value.getOrNull(index)?.takeIf { identity(it) == null }
+                    if (previous is MappingNode && node is MappingNode) { mergeMapping(previous, node); previous } else node
+                }
+                original.value.clear()
+                original.value.addAll(merged)
+                return
+            }
             value.blockComments = old.valueNode.blockComments
             value.inLineComments = old.valueNode.inLineComments
             value.endComments = old.valueNode.endComments
@@ -182,8 +218,30 @@ private class OmpYaml private constructor(private val yaml: Yaml, val root: Mapp
         if (!file.exists() || file.readText(Charsets.UTF_8) != content) repoAtomicWrite(file, content)
     }
     fun represent(value: Any): Node = yaml.represent(value)
+    fun render(): String = StringWriter().also { yaml.serialize(root, it) }.toString()
+    fun values(): Map<String, Any?> = value(root).asStringMap()
+    fun replace(values: Map<String, Any?>) { mergeMapping(root, yaml.represent(values) as MappingNode) }
+    private fun mergeMapping(original: MappingNode, replacement: MappingNode) {
+        val retained = replacement.value.map { (it.keyNode as ScalarNode).value }.toSet()
+        original.value.removeAll { (it.keyNode as? ScalarNode)?.value !in retained }
+        replacement.value.forEach { set(original, (it.keyNode as ScalarNode).value, it.valueNode) }
+    }
 
     companion object {
+        fun parse(content: String, path: String = "configuration"): OmpYaml {
+            val yaml = newYaml()
+            return OmpYaml(yaml, compose(yaml, content.reader(), path))
+        }
+        private fun compose(yaml: Yaml, reader: java.io.Reader, path: String): MappingNode {
+            val node = try { yaml.compose(reader) } catch (failure: MarkedYAMLException) {
+                val line = failure.problemMark?.let { ": line ${it.line + 1}, column ${it.column + 1}" }.orEmpty()
+                val problem = failure.problem.orEmpty()
+                val reason = if (problem.contains("duplicate", ignoreCase = true)) "duplicate mapping key" else problem.substringBefore("but found").replace(Regex("\"[^\"]*\"|'[^']*'|`[^`]*`"), "[value]").take(240)
+                throw IllegalArgumentException("$path$line: YAML ${reason.ifBlank { "syntax error" }}")
+            }
+            require(node == null || node is MappingNode) { "$path must contain a YAML mapping" }
+            return node as? MappingNode ?: mapping()
+        }
         fun mapping() = MappingNode(Tag.MAP, mutableListOf<NodeTuple>(), DumperOptions.FlowStyle.BLOCK)
         fun scalar(value: String) = ScalarNode(Tag.STR, value, null, null, DumperOptions.ScalarStyle.PLAIN)
         private fun newYaml(): Yaml {
@@ -239,7 +297,7 @@ internal class OmpProviderRepository(
 
     private fun refresh(): Boolean {
         val dir = agentDirectory(directory)
-        val modelsFile = configFile(dir, "models.yml")
+        val modelsFile = modelsConfigFile(dir)
         val config = mainConfigFile(dir)
         val namesFile = configFile(dir, "wawlink-provider-ui.json")
         val budgetsFile = configFile(dir, "wawlink-model-budgets.json")
@@ -250,19 +308,17 @@ internal class OmpProviderRepository(
         val disabled = (settings.value("disabledProviders") as? List<*>)?.filterIsInstance<String>().orEmpty()
         val metadata = namesFile.takeIf { it.exists() }?.let { Json.parseToJsonElement(it.readText()).jsonObject }.orEmpty()
         val budgets = ModelPayloadExtension.readBudgets(dir)
-        val unsupported = mutableListOf<String>()
         val result = models.mapNotNull { (id, raw) ->
             val provider = raw.asStringMap()
             val modelMaps = (provider["models"] as? List<*>)?.map { it.asStringMap() }.orEmpty()
             val apiName = provider.string("api") ?: modelMaps.mapNotNull { it.string("api") }.distinct().singleOrNull()
             val api = providerApis.entries.firstOrNull { it.value == apiName }?.key
-            if (api == null || modelMaps.any { it.string("api")?.let { modelApi -> modelApi != apiName } == true }) {
-                unsupported += "$id (${apiName ?: "继承内置协议"})"
+            if (apiName == null || modelMaps.any { it.string("api")?.let { modelApi -> modelApi != apiName } == true }) {
                 return@mapNotNull null
             }
             ProviderConfig(
                 id = id, name = (metadata[id] as? JsonObject)?.get("name")?.jsonPrimitive?.content ?: id,
-                apiType = api, baseUrl = provider.string("baseUrl") ?: modelMaps.firstNotNullOfOrNull { it.string("baseUrl") }.orEmpty(),
+                apiType = api ?: ProviderApiType.CHAT, nativeApi = apiName.takeIf { api == null }, baseUrl = provider.string("baseUrl") ?: modelMaps.firstNotNullOfOrNull { it.string("baseUrl") }.orEmpty(),
                 apiKey = provider.string("apiKey").orEmpty(), enabled = id !in disabled,
                 headers = provider["headers"].asStringMap().mapValues { it.value.toString() },
                 models = modelMaps.mapNotNull { model ->
@@ -289,7 +345,7 @@ internal class OmpProviderRepository(
         val changed = generation != null
         generation = next
         mutableProviders.value = result
-        mutableError.value = unsupported.takeIf { it.isNotEmpty() }?.joinToString(prefix = "当前界面不支持编辑这些上游协议（配置已保留）：")
+        mutableError.value = null // Inherited/mixed protocols are edited through native management.
         return changed
     }
 
@@ -310,15 +366,23 @@ internal class OmpProviderRepository(
         }
         ompConfigMutex.withLock {
             val dir = agentDirectory(directory)
-            val file = configFile(dir, "models.yml")
+            val file = modelsConfigFile(dir)
             val yaml = OmpYaml(file) // Reload immediately before editing; never save an old StateFlow snapshot.
             if (yaml.node("providers") == null) yaml.set(listOf("providers"), emptyMap<String, Any>())
             val all = yaml.node("providers") as? MappingNode ?: error("models.yml providers 必须是映射")
             val existing = all.entry(provider.id)?.valueNode
             require(existing == null || existing is MappingNode) { "提供商配置必须是映射" }
             val node = existing as? MappingNode ?: OmpYaml.mapping()
+            if (provider.models.isNotEmpty()) {
+                require(provider.baseUrl.isNotBlank()) { "providers.${provider.id}.baseUrl: 原生自定义模型必须配置接口地址" }
+                val authMode = (node.entry("auth")?.valueNode as? ScalarNode)?.value
+                require(provider.apiKey.isNotEmpty() || authMode == "none" || authMode == "oauth") { "providers.${provider.id}.apiKey: 原生自定义模型需要 API Key，或在原生配置中声明 auth: none / 已注册服务的 oauth" }
+            } else if (provider.baseUrl.isBlank() && provider.apiKey.isEmpty() && provider.headers.isEmpty()) {
+                val inherited = listOf("compat", "disableStrictTools", "guardrailIdentifier", "requestMetadata", "remoteCompaction", "modelOverrides", "discovery").any { node.entry(it) != null }
+                require(inherited || (node.entry("auth")?.valueNode as? ScalarNode)?.value == "none") { "providers.${provider.id}: 原生服务必须包含接口地址、认证、模型覆盖或发现配置" }
+            }
             fun set(key: String, value: Any?) = yaml.set(node, key, value?.let(yaml::represent))
-            set("api", providerApis.getValue(provider.apiType))
+            set("api", provider.nativeApi ?: providerApis.getValue(provider.apiType))
             set("baseUrl", provider.baseUrl.takeIf { it.isNotBlank() })
             set("apiKey", provider.apiKey.takeIf { it.isNotEmpty() })
             // Do not erase unknown header values when editing a representable provider.
@@ -329,7 +393,7 @@ internal class OmpProviderRepository(
                 val modelNode = old as? MappingNode ?: OmpYaml.mapping()
                 fun setModel(key: String, value: Any?) = yaml.set(modelNode, key, value?.let(yaml::represent))
                 setModel("id", model.id); setModel("name", model.name)
-                if (modelNode.entry("api") != null) setModel("api", providerApis.getValue(provider.apiType))
+                if (modelNode.entry("api") != null) setModel("api", provider.nativeApi ?: providerApis.getValue(provider.apiType))
                 setModel("contextWindow", model.contextWindow); setModel("maxTokens", model.maxTokens)
                 setModel("reasoning", model.reasoning)
                 setModel("input", model.input)
@@ -379,9 +443,9 @@ internal class OmpProviderRepository(
             val modelDefaults = JsonObject(provider.models.filter { it.thinkingLevel == ThinkingLevel.NONE && it.reasoning != false }
                 .associate { it.id to JsonPrimitive(it.thinkingLevel.name) })
             metadata[provider.id] = JsonObject(oldMetadata + mapOf("name" to JsonPrimitive(provider.name), "modelDefaults" to modelDefaults))
-            yaml.write(file); config.write(settingsFile)
-            repoAtomicWrite(metadataFile, JsonObject(metadata).toString() + "\n")
-            mergeProviderBudgets(dir, provider.id, provider.models)
+            val budgetsFile = configFile(dir, "wawlink-model-budgets.json")
+            val budgetsContent = renderProviderBudgets(dir, provider.id, provider.models)
+            repoAtomicWriteBatch(linkedMapOf(file to yaml.render(), settingsFile to config.render(), metadataFile to (JsonObject(metadata).toString() + "\n"), budgetsFile to budgetsContent))
             refresh()
         }
         onChanged(null, null)
@@ -390,33 +454,34 @@ internal class OmpProviderRepository(
     override suspend fun deleteProvider(providerId: String) = withContext(Dispatchers.IO) {
         ompConfigMutex.withLock {
             val dir = agentDirectory(directory)
-            val file = configFile(dir, "models.yml")
+            val file = modelsConfigFile(dir)
             val yaml = OmpYaml(file)
             (yaml.node("providers") as? MappingNode)?.let { yaml.set(it, providerId, null) }
-            yaml.write(file)
+            val documents = linkedMapOf(file to yaml.render())
             val settingsFile = mainConfigFile(dir)
             val config = OmpYaml(settingsFile)
             val disabled = (config.value("disabledProviders") as? List<*>)?.filter { it != providerId }
-            if (disabled != null) { config.set(listOf("disabledProviders"), disabled); config.write(settingsFile) }
+            if (disabled != null) { config.set(listOf("disabledProviders"), disabled); documents[settingsFile] = config.render() }
             val metadataFile = configFile(dir, "wawlink-provider-ui.json")
             if (metadataFile.exists()) {
                 val metadata = Json.parseToJsonElement(metadataFile.readText()).jsonObject.toMutableMap()
                 metadata.remove(providerId)
-                repoAtomicWrite(metadataFile, JsonObject(metadata).toString() + "\n")
+                documents[metadataFile] = JsonObject(metadata).toString() + "\n"
             }
             // Deliberately leave upstream-managed OAuth/account credentials intact.
-            mergeProviderBudgets(dir, providerId, emptyList())
+            documents[configFile(dir, "wawlink-model-budgets.json")] = renderProviderBudgets(dir, providerId, emptyList())
+            repoAtomicWriteBatch(documents)
             refresh()
         }
         onChanged(null, null)
     }
 
-    private fun mergeProviderBudgets(dir: File, providerId: String, models: List<ModelConfig>) {
+    private fun renderProviderBudgets(dir: File, providerId: String, models: List<ModelConfig>): String {
         val file = configFile(dir, "wawlink-model-budgets.json")
         val values = file.takeIf { it.exists() }?.let { Json.parseToJsonElement(it.readText()).jsonObject.toMutableMap() } ?: mutableMapOf()
         values.keys.removeAll { it.startsWith("$providerId/") }
         models.forEach { model -> model.thinkingBudget?.let { values["$providerId/${model.id}"] = JsonPrimitive(it) } }
-        repoAtomicWrite(file, JsonObject(values).toString() + "\n")
+        return JsonObject(values).toString() + "\n"
     }
 
     override suspend fun testConnection(provider: ProviderConfig): Result<LatencyInfo> = resultOnIo {
@@ -479,6 +544,7 @@ internal class OmpProviderRepository(
     override suspend fun matchModel(id: String): Result<ModelConfig?> = resultOnIo { catalog.index().match(id) }
 
     private fun request(provider: ProviderConfig, path: String, payload: String?): Pair<Int, String> {
+        require(provider.nativeApi == null) { "This native protocol must be tested through Agent management's native model probe" }
         require(!provider.apiKey.startsWith("!")) { "命令型 API 密钥只能由容器内 OMP 解析；请使用明文 API 密钥测试" }
         require(provider.headers.values.none { it.startsWith("!") }) { "命令型请求头只能由容器内 OMP 解析" }
         val rawBase = provider.baseUrl.trimEnd('/')
@@ -504,8 +570,20 @@ internal class OmpProviderRepository(
                 connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
             }
             val status = connection.responseCode
-            val response = (if (status in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            check(status in 200..299) { "HTTP $status：${response.take(1000).replace(provider.apiKey.takeIf { it.isNotEmpty() } ?: "\u0000", "[redacted]")}" }
+            check(status in 200..299) {
+                val reason = when (status) {
+                    401 -> "服务拒绝认证，请核对 API Key 和认证请求头"
+                    403 -> "服务拒绝访问，请核对账户权限"
+                    404 -> "服务未提供此接口，请核对接口地址"
+                    405 -> "服务不支持此请求方法"
+                    429 -> "服务请求频率或配额已达限制"
+                    in 500..599 -> "远端服务暂时不可用"
+                    else -> "服务拒绝请求"
+                }
+                // Error bodies can echo credentials and entire request documents.
+                "HTTP $status：$reason"
+            }
+            val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             return status to response
         } finally { connection.disconnect() }
     }

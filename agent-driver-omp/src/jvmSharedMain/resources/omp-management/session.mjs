@@ -1,0 +1,60 @@
+import { watch } from 'node:fs';
+import { mkdir, readdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+
+/** Native-session control, isolated by an app-owned request directory and acknowledged by that session. */
+export default function managementSessionExtension(pi) {
+  const directory = process.env.WAWLINK_MANAGEMENT_DIRECTORY;
+  if (!directory) return;
+  let watcher;
+  let context;
+  let chain = Promise.resolve();
+  async function drain() {
+    if (!context) return;
+    for (const name of await readdir(directory)) {
+      if (!/^request-[a-f0-9-]+\.json$/.test(name)) continue;
+      const file = join(directory, name);
+      let request;
+      try { request = JSON.parse(await readFile(file, 'utf8')); } catch { continue; }
+      await unlink(file);
+      let response;
+      try {
+        const storage = context.modelRegistry.authStorage;
+        const sessionId = context.sessionManager.getSessionId();
+        await storage.credentials.reload();
+        if (request.op === 'pin') {
+          if (!context.isIdle() || context.hasPendingMessages()) throw Error('Session is busy');
+          if (typeof request.provider !== 'string') throw Error('Invalid provider');
+          if (request.accountId == null) {
+            storage.sessions.release(request.provider, sessionId);
+          } else {
+            const id = Number(request.accountId);
+            if (!Number.isSafeInteger(id) || !storage.sessions.pin(request.provider, sessionId, id)) throw Error('Account is unavailable');
+          }
+          response = { success: true };
+        } else if (request.op === 'pins') {
+          const explicit = new Set();
+          // Native API reports explicitness while a false include predicate leaves every affinity unchanged.
+          storage.sessions.inherit(sessionId, `wawlink-inspect-${request.id}`, (provider, isExplicit) => { if (isExplicit) explicit.add(provider); return false; });
+          const pins = {};
+          for (const provider of explicit) {
+            const active = storage.oauth.accounts(provider, sessionId).find(account => account.active);
+            if (active) pins[provider] = String(active.credentialId);
+          }
+          response = { success: true, pins };
+        } else throw Error('Unknown management operation');
+      } catch { response = { success: false, error: 'Session is busy or account capability is unavailable' }; }
+      const destination = join(directory, `response-${request.id}.json`);
+      await writeFile(destination + '.tmp', JSON.stringify(response), { mode: 0o600 });
+      await rename(destination + '.tmp', destination);
+    }
+  }
+  pi.on('session_start', async (_event, ctx) => {
+    context = ctx;
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    watcher?.close();
+    watcher = watch(directory, { persistent: false }, () => { chain = chain.then(drain, drain); });
+    await drain();
+  });
+  pi.on('session_shutdown', () => { watcher?.close(); watcher = undefined; context = undefined; });
+}

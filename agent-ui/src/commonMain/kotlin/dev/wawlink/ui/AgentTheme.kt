@@ -13,6 +13,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -20,6 +22,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.AgentAppearance
@@ -64,12 +67,29 @@ val LocalAgentColors = staticCompositionLocalOf { AgentColorScheme() }
 val LocalAgentMono = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalAgentAppearance = staticCompositionLocalOf { AgentAppearance() }
 internal val LocalAgentThemeProvided = staticCompositionLocalOf { false }
+private val LocalAgentBaseDensity = staticCompositionLocalOf<Density?> { null }
+
+// Keep page width fixed while the user changes content zoom.
+val AgentPageMaxWidth: Dp
+    @Composable get() = 460.dp / LocalAgentAppearance.current.densityScale
 private val LocalSymbols = staticCompositionLocalOf { emptyMap<String, String>() }
 private val LocalSymbolFont = staticCompositionLocalOf<FontFamily> { FontFamily.Default }
 private val LocalFilledSymbolFont = staticCompositionLocalOf<FontFamily> { FontFamily.Default }
 
 @Composable
 fun AgentTheme(appearance: AgentAppearance = AgentAppearance(), colors: AgentColorScheme? = null, content: @Composable () -> Unit) {
+    val inheritedDensity = LocalAgentBaseDensity.current
+    val deviceDensity = LocalDensity.current
+    val windowWidth = if (inheritedDensity == null) LocalWindowInfo.current.containerSize.width else 0
+    val baseDensity = remember(inheritedDensity, deviceDensity, windowWidth) {
+        inheritedDensity ?: if (windowWidth > 0) {
+            val referenceDensity = minOf(deviceDensity.density, windowWidth / 460f)
+            if (referenceDensity == deviceDensity.density) deviceDensity else Density(referenceDensity, deviceDensity.fontScale)
+        } else deviceDensity
+    }
+    val density = remember(baseDensity, appearance.densityScale) {
+        if (appearance.densityScale == 1f) baseDensity else Density(baseDensity.density * appearance.densityScale, baseDensity.fontScale)
+    }
     val inheritedSymbols = LocalSymbols.current
     var symbols by remember { mutableStateOf(inheritedSymbols) }
     LaunchedEffect(Unit) {
@@ -108,7 +128,8 @@ fun AgentTheme(appearance: AgentAppearance = AgentAppearance(), colors: AgentCol
     val normal = TextStyle(fontFamily = font, fontSize = 17.sp, lineHeight = 26.35.sp)
     CompositionLocalProvider(LocalAgentColors provides c, LocalAgentAppearance provides appearance, LocalContentColor provides c.onSurface,
         LocalAgentMono provides mono, LocalSymbols provides symbols, LocalSymbolFont provides symbolFont,
-        LocalFilledSymbolFont provides filledFont, LocalAgentThemeProvided provides true) {
+        LocalFilledSymbolFont provides filledFont, LocalAgentThemeProvided provides true,
+        LocalAgentBaseDensity provides baseDensity, LocalDensity provides density) {
         MaterialTheme(colorScheme = scheme, typography = Typography(
             bodyLarge = normal.copy(fontSize = 18.sp, lineHeight = 30.6.sp), bodyMedium = normal,
             bodySmall = normal.copy(fontSize = 15.sp, lineHeight = 22.sp),
@@ -137,8 +158,8 @@ fun Symbol(name: String, modifier: Modifier = Modifier, size: Dp = 24.dp, tint: 
 }
 
 @Composable
-fun AgentIconButton(icon: String, description: String, onClick: () -> Unit, modifier: Modifier = Modifier, filled: Boolean = false) {
-    IconButton(onClick, modifier.size(48.dp)) { Symbol(icon, tint = LocalAgentColors.current.onSurfaceVariant, filled = filled, contentDescription = description) }
+fun AgentIconButton(icon: String, description: String, onClick: () -> Unit, modifier: Modifier = Modifier, filled: Boolean = false, enabled: Boolean = true) {
+    IconButton(onClick, modifier.size(48.dp), enabled = enabled) { Symbol(icon, tint = if (enabled) LocalAgentColors.current.onSurfaceVariant else LocalAgentColors.current.outline, filled = filled, contentDescription = description) }
 }
 
 @Composable
@@ -162,7 +183,7 @@ fun AgentSheet(title: String, onDismiss: () -> Unit, actions: @Composable RowSco
     content: @Composable ColumnScope.() -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = LocalAgentColors.current.surface, shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        modifier = Modifier.widthIn(max = 460.dp), dragHandle = {
+        modifier = Modifier.widthIn(max = AgentPageMaxWidth), dragHandle = {
             Box(Modifier.padding(top = 16.dp, bottom = 8.dp).size(32.dp, 4.dp).background(LocalAgentColors.current.outline.copy(alpha = .5f), RoundedCornerShape(2.dp)))
         }) {
         Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {

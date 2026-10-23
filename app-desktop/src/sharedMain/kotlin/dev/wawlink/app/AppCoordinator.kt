@@ -61,7 +61,20 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             val p = Properties()
             File(dataDir, "appearance.properties").takeIf { it.exists() }?.inputStream()?.use(p::load)
             fun flag(key: String, default: Boolean) = p.getProperty(key)?.toBooleanStrictOrNull() ?: default
-            _appearance.value = AgentAppearance(flag("dark", false), flag("vision", false), flag("smooth", true), flag("usage", false), flag("hideTools", false), flag("collapse", true))
+            val savedScale = p.getProperty("uiScalePercent")?.toIntOrNull()
+                ?.coerceIn(AgentAppearance.MIN_UI_SCALE_PERCENT, AgentAppearance.MAX_UI_SCALE_PERCENT)
+            val uiScale = when {
+                savedScale == null -> AgentAppearance.DEFAULT_UI_SCALE_PERCENT
+                p.getProperty("uiScaleBaseline") == AgentAppearance.UI_SCALE_BASELINE_PERCENT.toString() -> savedScale
+                savedScale == 100 -> AgentAppearance.DEFAULT_UI_SCALE_PERCENT
+                else -> (savedScale * 100 + AgentAppearance.UI_SCALE_BASELINE_PERCENT / 2) / AgentAppearance.UI_SCALE_BASELINE_PERCENT
+            }.coerceIn(AgentAppearance.MIN_UI_SCALE_PERCENT, AgentAppearance.MAX_UI_SCALE_PERCENT)
+            _appearance.value = AgentAppearance(
+                darkTheme = flag("dark", false), colorVisionAssist = flag("vision", false),
+                smoothStreaming = flag("smooth", true), alwaysShowUsage = flag("usage", false),
+                hideToolCalls = flag("hideTools", false), collapseCompacted = flag("collapse", true),
+                uiScalePercent = uiScale,
+            )
             _defaultAutoApprove.value = flag("defaultAutoApprove", true)
             val metadata = Properties()
             File(dataDir, "sessions.properties").takeIf { it.exists() }?.inputStream()?.use(metadata::load)
@@ -69,13 +82,6 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
                 SessionRecord(id, metadata.getProperty("$id.title", "新会话"), metadata.getProperty("$id.container", ""), metadata.getProperty("$id.workspace", "/workspace"), metadata.getProperty("$id.pinned").toBoolean(), metadata.getProperty("$id.archived").toBoolean(), metadata.getProperty("$id.updated", "0").toLong())
             }
         } catch (e: Exception) { showError(e) }
-        scope.launch {
-            runtime.containers.collect { available ->
-                records.value.filter { record -> available.any { it.config.id == record.containerId } }.forEach { record ->
-                    runCatching { controller(record.id) }.onFailure(::showError)
-                }
-            }
-        }
     }
     fun report(text: String) { notices.update { it + HostNotice(text = text) } }
     fun showError(error: Throwable) { notices.update { it + HostNotice(text = error.message ?: error.toString(), error = true) } }
@@ -89,7 +95,9 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     }
     fun hasSession(id: String): Boolean = records.value.any { it.id == id }
 
-    fun controller(id: String): AgentSessionController = synchronized(controllers) {
+    fun openedSession(id: String): AgentSessionController? = synchronized(controllers) { controllers[id] }
+
+    fun openSession(id: String): AgentSessionController = synchronized(controllers) {
         controllers.getOrPut(id) {
             val r = records.value.firstOrNull { it.id == id } ?: error("找不到会话 $id")
             require(runtime.containers.value.any { it.config.id == r.containerId }) { "会话绑定的容器已不存在，请切换运行容器" }
@@ -168,9 +176,9 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         require(records.value.none { it.containerId == id }) { "此容器仍有关联会话，请先切换会话容器或删除会话" }
         runtime.delete(id)
     }
-    fun updateAppearance(next: AgentAppearance) {
-        _appearance.value = next
-        launch { persistPreferences() }
+    fun updateAppearance(next: AgentAppearance, persist: Boolean = true) {
+        _appearance.value = next.copy(uiScalePercent = next.effectiveUiScalePercent)
+        if (persist) launch { persistPreferences() }
     }
     fun updateDefaultAutoApprove(enabled: Boolean) {
         _defaultAutoApprove.value = enabled
@@ -183,6 +191,8 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         p["smooth"] = current.smoothStreaming.toString(); p["usage"] = current.alwaysShowUsage.toString()
         p["hideTools"] = current.hideToolCalls.toString(); p["collapse"] = current.collapseCompacted.toString()
         p["defaultAutoApprove"] = _defaultAutoApprove.value.toString()
+        p["uiScalePercent"] = current.effectiveUiScalePercent.toString()
+        p["uiScaleBaseline"] = AgentAppearance.UI_SCALE_BASELINE_PERCENT.toString()
         saveProperties(File(dataDir, "appearance.properties"), p)
     }
     private fun persistSessions() = synchronized(persistenceLock) {

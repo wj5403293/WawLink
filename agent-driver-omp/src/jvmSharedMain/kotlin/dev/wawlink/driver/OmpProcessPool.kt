@@ -39,6 +39,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     private val sessions = LinkedHashMap<String, OmpSession>()
     private val providerRepositories = LinkedHashMap<String, OmpProviderRepository>()
     private val settingsRepositories = LinkedHashMap<String, OmpSettingsRepository>()
+    private val managementRepositories = LinkedHashMap<Triple<String, String?, String?>, OmpAgentManagementRepository>()
     private var closed = false
 
     @Synchronized
@@ -138,6 +139,29 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
     }
 
+    @Synchronized
+    fun management(containerId: String, workspace: String? = null, sessionId: String? = null): AgentManagementRepository {
+        check(!closed)
+        val project = workspace?.let(::normalizeGuest)
+        val configuration = config(containerId)
+        val selected = sessionId?.let { id -> requireNotNull(sessions[id]) { "Active session is unavailable" }.also {
+            require(it.containerId == containerId && (project == null || it.workspace == project)) { "Session belongs to another configuration context" }
+        } }
+        return managementRepositories.getOrPut(Triple(containerId, project, sessionId)) {
+            OmpAgentManagementRepository(runtime, AgentConfigurationContext(containerId, configuration.name, projectPath = project, sessionId = sessionId),
+                { agentDirectory(containerId) }, { guest, write -> resolveWorkspace(containerId, guest, write) }, scope,
+                changed = { changedScope, keys ->
+                    val roleOnly = keys.isNotEmpty() && keys.all { it.startsWith("modelRoles") || it.startsWith("modelPresets") || it in setOf("defaultThinkingLevel", "modelTags", "modelRoleStorage", "cycleOrder") }
+                    val affected = synchronized(this) { sessions.values.filter { it.containerId == containerId && (changedScope == ConfigurationScope.GLOBAL || it.workspace == project) && (!roleOnly || it === selected) } }
+                    affected.forEach { it.markConfigurationChanged() }
+                },
+                pin = { provider, account -> requireNotNull(selected) { "Runtime account pinning requires an active session" }.managementControl("pin", provider, account) },
+                pins = { if (selected?.managementAvailable() == true) selected.managementControl("pins")["pins"]?.jsonObject?.mapValues { it.value.jsonPrimitive.content }.orEmpty() else emptyMap() },
+                applyDefault = { role -> selected?.applyManagementDefault(role) },
+            )
+        }
+    }
+
     private suspend fun configurationChanged(containerId: String, key: String?, value: Any?) {
         val affected = synchronized(this) { sessions.values.filter { it.containerId == containerId } }
         affected.forEach { it.applyConfiguration(key, value) }
@@ -187,6 +211,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         synchronized(this) {
             providerRepositories.values.forEach { it.close() }
             settingsRepositories.values.forEach { it.close() }
+            managementRepositories.values.forEach { it.close() }
         }
         scope.cancel()
     }
@@ -237,6 +262,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         @Volatile private var disposed = false
         @Volatile private var restartRequired = false
         private var hasThinkingPreference = false
+        private var managementDefault: ManagedRole? = null
         private var hasExecutionPreference = false
         private var lastHeartbeatNanos = System.nanoTime()
         private var startedNanos = System.nanoTime()
@@ -632,6 +658,44 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
         }
 
+        fun markConfigurationChanged() { restartRequired = true }
+        fun managementAvailable(): Boolean = process?.isAlive == true
+
+        suspend fun applyManagementDefault(role: ManagedRole) = exclusive {
+            require(role.error == null && role.model != null) { "Default role has no available model" }
+            managementDefault = role
+            if (state.value.isRunning || !backendSettled) { restartRequired = true; return@exclusive }
+            val model = requireNotNull(role.model)
+            val provider = model.substringBefore('/')
+            val modelId = model.substringAfter('/', "")
+            require(modelId.isNotBlank()) { "Invalid native resolved model" }
+            if (process != null) {
+                command("set_model", buildJsonObject { put("provider", provider); put("modelId", modelId) })
+                role.thinking?.let { command("set_thinking_level", buildJsonObject { put("level", it) }) }
+                command("get_state")
+            } else {
+                reducer.update { it.copy(providerId = provider, modelId = modelId) }
+                presentState()
+            }
+        }
+
+        suspend fun managementControl(op: String, provider: String? = null, accountId: String? = null): JsonObject = exclusive {
+            check(process?.isAlive == true) { "Runtime account management requires a running session" }
+            require(op == "pins" || (!state.value.isRunning && backendSettled)) { "Session is busy" }
+            val requestId = UUID.randomUUID().toString()
+            val directory = confined(ownedSessionDirectory(containerId, id), "management")
+            check(directory.isDirectory || directory.mkdirs())
+            val requestFile = File(directory, "request-$requestId.json")
+            val responseFile = File(directory, "response-$requestId.json")
+            try {
+                atomicWrite(requestFile, buildJsonObject { put("id", requestId); put("op", op); provider?.let { put("provider", it) }; put("accountId", accountId?.let(::JsonPrimitive) ?: JsonNull) }.toString())
+                withTimeout(15_000) { while (!responseFile.exists()) { check(process?.isAlive == true) { "Session exited" }; delay(30) } }
+                val response = DriverJson.parseToJsonElement(responseFile.readText()).jsonObject
+                check(response["success"]?.jsonPrimitive?.booleanOrNull == true) { "Session is busy or account capability is unavailable" }
+                response
+            } finally { requestFile.delete(); responseFile.delete() }
+        }
+
         private suspend fun ensureStarted() = lifecycleMutex.withLock {
             check(!disposed) { "会话已关闭" }
             if (process?.isAlive == true) return@withLock
@@ -649,7 +713,17 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             prepareOmpConfiguration { agentDirectory(containerId) }
             confined(agentDirectory(containerId), "wawlink-model-payload.mjs")
             args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId)))
-            if (hasThinkingPreference) args += listOf("--thinking", thinkingWire(state.value.thinkingLevel))
+            val managementExtension = confined(agentDirectory(containerId), "wawlink/management/session.mjs")
+            val managementSource = requireNotNull(javaClass.getResourceAsStream("/omp-management/session.mjs")).bufferedReader().use { it.readText() }
+            if (!managementExtension.exists() || managementExtension.readText() != managementSource) repoAtomicWrite(managementExtension, managementSource)
+            args += listOf("--extension", "/root/.omp/agent/wawlink/management/session.mjs")
+            managementDefault?.model?.let { model ->
+                val providerIndex = args.indexOf("--provider")
+                if (providerIndex >= 0) { args[providerIndex + 1] = model.substringBefore('/'); args[args.indexOf("--model") + 1] = model.substringAfter('/') }
+                else args += listOf("--provider", model.substringBefore('/'), "--model", model.substringAfter('/'))
+            }
+            if (managementDefault?.thinking != null) args += listOf("--thinking", requireNotNull(managementDefault?.thinking))
+            else if (hasThinkingPreference) args += listOf("--thinking", thinkingWire(state.value.thinkingLevel))
             val restoredQueue = backendState.queuedPrompts.toList()
             val startupGeneration = stopGeneration.get()
             val startReady = CompletableDeferred<JsonObject>()
@@ -657,7 +731,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             synchronized(stderr) { stderr.clear() }
             // Bun snapshots DNS servers; resume a fresh process on the next idle send after a network change.
             startedResolvConf = resolvConf?.value
-            val child = runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1"))
+            val child = runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1", "WAWLINK_MANAGEMENT_DIRECTORY" to "${guestSessionDirectory(id)}/management"))
             process = child
             restartRequired = false
             val childJob = SupervisorJob(ownerJob)

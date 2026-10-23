@@ -112,7 +112,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                                     onEnter = { onEnterSession(session.record.id) }, onFork = { app.launch { val id = app.fork(session.record.id); onEnterSession(id) } },
                                     onEdit = { editing = session.record }, onSwitch = { switching = session.record },
                                     onPin = { app.launch { app.togglePin(setOf(session.record.id)) } }, onArchive = { app.launch { app.toggleArchive(setOf(session.record.id)) } }, onDelete = { deleting = setOf(session.record.id) },
-                                    onApproval = { node, decision -> runCatching { app.controller(session.record.id).respondApproval(node, decision) }.onFailure(app::showError) })
+                                    onApproval = { node, decision -> runCatching { requireNotNull(app.openedSession(session.record.id)) { "请先进入会话" }.respondApproval(node, decision) }.onFailure(app::showError) })
                             }
                         }
                     }

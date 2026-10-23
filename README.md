@@ -1,22 +1,36 @@
 # WawLink
 
-Android / Linux Desktop 跨端 Coding Agent。Kotlin Multiplatform、Compose Multiplatform 与 Material 3；界面、图标、布局和非线性过渡以 `ref-plan/` 的三个原型为基准。
+Android / Linux Desktop 跨端 Coding Agent。Kotlin Multiplatform、Compose Multiplatform 与 Material 3；主页、聊天与框架设置以既有 `ref-plan/` 原型为基准，新增 Agent 设置以 `ref-plan/agent-settings.html` 为基准。
 
 ## 模块与边界
 
 | 模块 | 职责与依赖边界 |
 | --- | --- |
 | `agent-protocol` | 会话控制、消息树、模型服务与设置契约；仅依赖 Kotlin 协程，不依赖 UI、OMP 或容器 |
-| `agent-ui` | 聊天、Composer、模型服务、Agent 设置；业务层仅依赖 `agent-protocol` |
+| `agent-ui` | 聊天、Composer、模型服务、Agent 管理与框架设置；业务层仅依赖 `agent-protocol` |
 | `agent-driver-omp` | 一会话一进程、真实 OMP RPC-UI / JSONL、条件式 Todo 分组与 YAML 双向同步 |
 | `container-runtime` | Proroot / PRoot / chroot、Rootfs、发行版部署、工具链与终端 |
 | `app-desktop` | 460 × 920 桌面窗口；`src/sharedMain/kotlin` 包含双端共用主页、容器管理与应用协调层 |
 | `app-android` | arm64-v8a 宿主、系统文件选择、前台服务；Rootfs 从容器页单独导入 |
 | `terminal-emulator` / `terminal-view` | 从 Love2Droid 固定提交移植的 Android Termux 终端与 JNI PTY；只构建 arm64-v8a |
 
-`agent-driver-omp/src/jvmSharedMain/resources/` 中的模型预算扩展和 OMP 设置 Schema 同时供两端使用。Android 驱动显式将该目录接入 `main.resources`，使两份文件作为 Java 类路径资源进入驱动 AAR 和宿主 APK；仅声明 Kotlin 共享源码集依赖不足以打包这些资源。修复此类 APK 资源遗漏不需要重新生成或导入 Rootfs。
+`agent-driver-omp/src/jvmSharedMain/resources/` 中的模型预算扩展、OMP 设置 Schema 和 `omp-management/` 原生管理桥同时供两端使用。Android 驱动显式将该目录接入 `main.resources`，使这些文件作为 Java 类路径资源进入驱动 AAR 和宿主 APK；仅声明 Kotlin 共享源码集依赖不足以打包这些资源。修复此类 APK 资源遗漏不需要重新生成或导入 Rootfs。
 
 OMP 启动前会将 `models.yml` 和主设置文件重新序列化为 Bun 可解析的 YAML，自动修复旧版本写出的 pretty-flow 格式；保留认证值、注释和未知字段，不改认证存储，也不重写内容已稳定的文件。Android PRoot 的版本化库名通过应用私有目录中的符号链接解析，不再把 Android `LD_PRELOAD` 传给第一个 Linux 程序。更新 APK 即可使用这些修复，无需重新导入 Rootfs。
+
+新增“Agent 设置”与原有“框架设置”独立导航。新页面按当前容器、工作区及可选会话建立管理上下文，直接使用已安装 OMP 的配置注册表、定义发现、角色解析、模型目录及认证实现：
+
+- Agent 支持全局/项目定义、来源和遮蔽关系、只读来源复制、启停、系统提示词、候选模型链、真实工具及技能目录、原始 YAML + Markdown，以及按名称生效的独立运行覆盖。
+- 顾问支持原生 WATCHDOG 配置、共享/专属指令、模型与工具、审查时机及输出预算；没有可靠运行状态时不伪造运行或暂停信息。
+- 默认模型与原生角色、候选顺序、模型预设、允许范围、快速切换和故障转移独立管理；`xhigh` 与 `max` 保持不同值。AI 生成 Agent 使用有效默认角色的原生补全，不自动保存定义。
+- 模型服务读取 OMP 原生可用状态与 OAuth 注册，不默认启用全部内置服务；用户项在前，内置项分隔置底，各组禁用项灰显下沉。Provider 使用稳定颜色与名称首字标识。“获取模型”执行实际远端目录请求或原生定向发现，只追加新模型，保留已有编辑；不支持的 OAuth 和协议操作不显示。内置模型通过原生字段覆盖编辑，认证由 OMP 独立存储。
+- 运行设置来自当前 OMP 注册表；原始配置保存前校验原生 Schema，原子写入并拒绝覆盖外部新修改。脱敏导出不包含凭据。Android 原文编辑使用可编辑 Sora 与离线 TextMate，Desktop 使用 RSyntaxTextArea；保存、舍弃与返回分别处理。
+
+Agent 设置先加载运行配置、Agent 与文件来源，再异步读取模型和认证目录，不用模型 SDK 初始化阻塞整页。模型列表以有界分页传输，完整字段仅在编辑模型时读取；无效 `models.yml` 或管理进程退出会显示可恢复错误，原始配置仍可打开修复并重新加载。配置错误保留文件、字段路径及可得行列，不回显凭据或服务响应正文；保存失败保留表单和模型子页草稿。旧版 pretty-flow YAML 先经原生校验，成功才转换为 Bun 可解析格式，拒绝的文档保留原字节。
+
+启动和容器列表更新仅加载会话元数据；进入某个会话时才恢复其消息与控制器，未打开的历史不批量恢复。已打开的会话仍持续更新主页状态。
+
+“应用设置 → 整体缩放”对主页、聊天、Agent 设置、框架设置及其他页面统一生效，支持 80%–125%、重启保留和恢复默认 100%。新版 100% 等于此前 115%，原有 115% 偏好自动迁移为 100%，旧默认值随新基线放大，其他自定义比例按基线换算且只迁移一次。窄屏仍按 460 逻辑像素视口统一校准；系统字体缩放保持有效，嵌套页面主题不重复缩放。
 
 ## 构建与运行
 
@@ -110,9 +124,11 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 | --- | --- |
 | `AgentChatScreen` | `AgentSessionController`、`ProviderConfigRepository`、返回/新建/设置导航、挂起的主机与容器附件选择回调、可选 `AgentAppearance` |
 | `ProviderSettingsScreen` | `ProviderConfigRepository`、返回回调 |
-| `AgentConfigScreen` | `AgentSettingsRepository`、返回回调 |
+| `AgentManagementScreen` | `AgentManagementRepository`、`ProviderConfigRepository`、返回回调；可选会话、初始分区及返回处理注册 |
+| `AgentConfigScreen` | `AgentSettingsRepository`、返回回调；对应框架设置 |
 | `AgentTheme` | 宿主外观状态；设置页可置于同一主题内 |
 | `CodeDetailScreen` | 标题、原文、可选语言、返回回调；外层提供 `AgentTheme` |
+| `EditableCodeScreen` | 标题、原文、可选语言、返回及保存回调；返回前确认未保存修改 |
 
 导航、文件选择、认证和 Agent 实现由宿主负责。协议使用 `StateFlow` / `Flow`；UI 只消费状态与控制契约，没有对具体驱动或容器的引用。
 
@@ -130,7 +146,7 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 | --- | ---: | ---: |
 | Rootfs 文件内容合计 | 1,543,298,008 | 1471.80 |
 | `build/outputs/ubuntu-main-debug.tar.zst` | 404,312,713 | 385.58 |
-| Android Debug APK（不含 Rootfs） | 51,734,572 | 49.34 |
+| Android Debug APK（不含 Rootfs） | 53,119,112 | 50.66 |
 
 按已确认的完整功能优先策略，不执行原计划的 150–220 MB 硬上限。每次构建会重新生成 `.sha256` 与 `.sizes.json`，以后者的实际输出为准。构建缓存、Rootfs、APK、原生二进制和本地会话均不纳入源码提交，准备脚本可重建缺失输入。
 
@@ -187,5 +203,27 @@ Slash、Ask 与富媒体本轮回归通过 109 项 Kotlin 测试（驱动 74、U
 真实 arm64 Alpine PRoot/QEMU 烟测通过 10 MiB 原始字节导入导出、含空格/引号/换行的文件名、文本原文、复制重命名、非空目录删除预检、覆写拒绝、导入失败清理、链接拒绝与 ZIP 内容检查；实际终端运行 `id`、`groups`、`stty size`，缺失补充组名已修复且无 `cannot find name`。容器外部路径图像附件经真实客体读取，验证 RPC 请求字节、即时消息对齐、无效附件回撤与历史重放；RPC 回执使用受控传输，不标为真实模型验收。本轮没有模型推理请求或认证使用。
 
 Sora 实际 TextMate 词法器另在 JVM 上验证全部语言映射、HTML 内嵌 JS/CSS、多行状态、明暗主题及 CRLF/UTF-16 原文保留；Android 原生 Sora 视图和软键盘只完成编译打包，不标为真机交互验收。
+
+新增 Agent 设置已在完整 arm64 PRoot/QEMU 容器中验证：读取 OMP 18.12.6 的真实工具、Agent、模型与角色目录；全局/项目 Agent 定义读写、未知 frontmatter 保留、项目遮蔽及删除后回退；独立的 `xhigh` / `max` 持久化；模型模式思考后缀、Prewalk、顾问、请求预算、服务等级、压缩阈值与账号池覆盖的写入及清除；顾问共享配置的作用域隔离，以及原始配置版本冲突拒绝且保留外部修改。
+
+桌面实际新建 Agent、从原生目录选择 `read` 工具，通过全屏 RSyntaxTextArea 输入并保存多行中文 Markdown；写出的定义与原文及工具选择一致。该轮没有模型推理请求，也未复制开发机认证。Android 可编辑 Sora 仅完成编译打包，不标为设备端输入与软键盘验收。
+
+原生模型配置另先复现了同进程中写入后仍读取旧 YAML 的问题；修复后，自定义服务及模型新增、名称修改、删除均即时回流原生目录，角色预览读取新模型及 `max`，脱敏导出不含注入的测试标记。不可用的有效默认角色会在 AI 生成前明确拒绝请求；未将这一失败路径标为真实模型成功生成或 OAuth 登录验收。
+
+最终构建通过 225 项 Kotlin 回归（Desktop UI 54、Android JVM UI 53、驱动 86、容器 27、应用文件服务 5）及 4 项 Node 回归，无失败或跳过。Android Debug APK 和 Desktop JAR 构建成功；实际 APK 中四份原生管理桥资源逐字节匹配源码，仅含 arm64-v8a 原生库且不含 Rootfs。本次未重建或修改交付 Rootfs 归档。
+
+Agent 设置加载与闪退修复后通过 235 项 Kotlin 回归（Desktop UI 54、Android JVM UI 53、驱动 92、容器 27、应用 9）及 4 项 Node 回归，无失败或跳过。Android Debug APK 与 Desktop JAR 构建成功；实际 APK 的五份原生管理桥逐字节匹配源码，仅含 arm64-v8a，不含 Rootfs，交付 Rootfs 归档保持不变。
+
+真实 arm64 PRoot/QEMU 管理流程在 `-Xmx256m` 下读取 5,952 个模型、16 个角色和 8 个 Agent：配置首屏数据 8.9 秒就绪，完整模型目录 23.2 秒就绪，采样堆峰值 219 MiB。已实际验证按需读取完整模型、服务新增/修改/删除、脱敏导出、无效模型配置的就地修复和旧 YAML 格式迁移；未调用模型推理、登录或复制开发机凭据。这是桌面 JVM 的堆测量，不是 Android 真机内存测量。
+
+真实桌面另验证 360 / 460 像素窗口的默认密度、作用域锚定 popup menu、大目录模型搜索，以及原生管理子进程退出后界面保留配置和重试入口、无效模型配置下仍可进入模型服务。历史会话按需恢复及并发打开复用由实际状态断言回归覆盖；启动不再批量创建未打开历史的控制器。整体缩放在应用设置中持久化，原生代码视图、图表和终端按同一应用缩放协调。
+
+Provider 与默认缩放调整后通过 253 项 Kotlin 回归（Desktop UI 58、Android JVM UI 57、驱动 100、容器 27、应用 11）及 4 项 Node 回归，无失败或跳过；Android Debug APK 与 Desktop JAR 构建成功。实际 APK 的六份原生管理桥逐字节匹配源码，仅含 arm64-v8a 且不含 Rootfs。
+
+真实 arm64 PRoot/QEMU 读取 97 个原生 Provider，其中 5 个可用、23 个注册 OAuth；验证无凭据内置项禁用、认证目录获取及已有模型保留、禁用后重新启用、无自定义声明时的内置模型覆盖，以及非法字段诊断和拒绝写入。`-Xmx256m` 下再次读取 5,952 个模型，配置与完整目录分别在 8.4 秒、23.0 秒就绪，采样堆峰值 219 MiB。
+
+实际桌面检查新版默认 100%、360 / 460 像素布局、服务分组与禁用灰显、蓝色获取按钮、重开表单回顶、内置 OAuth 入口和模型编辑；点击“获取模型”产生受控服务记录的认证 GET，追加两项模型。实际非法保存显示缺失 `baseUrl` 的原生原因，原配置 SHA256 不变，API Key 与已编辑模型草稿仍保留，修复后可直接重试保存。本轮未执行模型推理、OAuth 登录或复制开发机凭据。
+
+另在桌面实际复现并修复了未显式声明协议、尚无模型的服务保存后从列表消失；重开应用后的原生目录与用户列表均保留该服务，未把未知协议伪装成 Chat。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。

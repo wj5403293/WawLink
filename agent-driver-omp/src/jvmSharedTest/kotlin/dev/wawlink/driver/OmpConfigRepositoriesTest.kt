@@ -187,7 +187,7 @@ class OmpConfigRepositoriesTest {
                 assertEquals("2048", budgets.getValue("unsupported/model-z").jsonPrimitive.content)
                 assertEquals("2048", budgets.getValue("vendor/model-a").jsonPrimitive.content)
                 assertFalse(budgets.containsKey("vendor/old-model"))
-                val loaded = repo.providers.value.single()
+                val loaded = repo.providers.value.single { it.id == "vendor" }
                 assertEquals("自定义服务", loaded.name)
                 assertEquals(2048, loaded.models.single().thinkingBudget)
                 assertNull(loaded.models.single().reasoning)
@@ -210,7 +210,7 @@ class OmpConfigRepositoriesTest {
             try {
                 val expected = mapOf(ProviderApiType.CHAT to "openai-completions", ProviderApiType.RESPONSE to "openai-responses", ProviderApiType.MESSAGE to "anthropic-messages")
                 for ((api, wire) in expected) {
-                    repo.saveProvider(ProviderConfig(api.name, api.name, api, "https://example.invalid/v1", models = listOf(ModelConfig("model"))))
+                    repo.saveProvider(ProviderConfig(api.name, api.name, api, "https://example.invalid/v1", apiKey = "fixture-key", models = listOf(ModelConfig("model"))))
                     val saved = (load(File(dir, "models.yml"))["providers"] as Map<*, *>)[api.name] as Map<*, *>
                     assertEquals(wire, saved["api"])
                 }
@@ -242,6 +242,8 @@ class OmpConfigRepositoriesTest {
                 providers:
                   vendor:
                     api: openai-responses
+                    baseUrl: https://example.invalid/v1
+                    auth: none
                     models:
                       - id: known
                         name: Original
@@ -313,7 +315,7 @@ class OmpConfigRepositoriesTest {
             try {
                 val models = ThinkingLevel.entries.map { level -> ModelConfig(level.name, thinkingLevel = level, reasoning = true) } +
                     listOf(ModelConfig("unknown"), ModelConfig("explicitly-disabled", thinkingLevel = ThinkingLevel.NONE, reasoning = false))
-                repo.saveProvider(ProviderConfig("vendor", "Vendor", models = models))
+                repo.saveProvider(ProviderConfig("vendor", "Vendor", baseUrl = "https://example.invalid/v1", apiKey = "fixture-key", models = models))
                 val loaded = repo.providers.value.single().models.associateBy { it.id }
                 ThinkingLevel.entries.forEach { assertEquals(it, loaded.getValue(it.name).thinkingLevel) }
                 assertNull(loaded.getValue("unknown").reasoning)
@@ -363,6 +365,86 @@ class OmpConfigRepositoriesTest {
                 assertFalse(File(dir, "models.yml").exists())
                 assertEquals(emptyList(), repo.providers.value)
             } finally { repo.close(); server.stop(0) }
+        }
+    }
+
+    @Test
+    fun remoteDiscoveryUsesAuthenticatedGetAndNeverExposesErrorBody() = runBlocking {
+        withContainer { dir, scope ->
+            val requests = Collections.synchronizedList(mutableListOf<List<String?>>())
+            val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+            server.createContext("/v1/models") { exchange ->
+                requests.add(listOf(exchange.requestMethod, exchange.requestHeaders.getFirst("Authorization"), exchange.requestHeaders.getFirst("X-Private")))
+                val body = """{"error":"fixture-key fixture-header providers: entire-document-secret"}""".toByteArray()
+                exchange.sendResponseHeaders(401, body.size.toLong())
+                exchange.responseBody.use { it.write(body) }
+            }
+            server.start()
+            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            try {
+                val provider = ProviderConfig("vendor", "Vendor", baseUrl = "http://127.0.0.1:${server.address.port}/v1", apiKey = "fixture-key", headers = mapOf("X-Private" to "fixture-header"))
+                val message = repo.fetchRemoteModels(provider).exceptionOrNull()!!.message!!
+                assertEquals(listOf(listOf("GET", "Bearer fixture-key", "fixture-header")), requests.toList())
+                assertTrue(message.contains("HTTP 401"))
+                assertFalse(message.contains("fixture-key"))
+                assertFalse(message.contains("fixture-header"))
+                assertFalse(message.contains("entire-document-secret"))
+                assertFalse(File(dir, "models.yml").exists())
+            } finally { repo.close(); server.stop(0) }
+        }
+    }
+
+    @Test
+    fun yamlSyntaxDiagnosticsKeepLocationWithoutSourceExcerpts() {
+        val secret = "fixture-do-not-display"
+        val failure = assertFailsWith<IllegalArgumentException> {
+            OmpYaml.parse("providers:\n  vendor:\n    apiKey: $secret\n    models: [\n", "models.yml")
+        }
+        assertTrue(failure.message!!.contains("models.yml: line"))
+        assertFalse(failure.message!!.contains(secret))
+        assertFalse(failure.message!!.contains("apiKey:"))
+    }
+
+    @Test
+    fun rejectedProviderSavePreservesAllDocumentsAndReportsNativeField() = runBlocking {
+        withContainer { dir, scope ->
+            val models = File(dir, "models.yaml").apply { writeText("# retained fallback\nproviders: {}\n") }
+            val config = File(dir, "config.yml").apply { writeText("disabledProviders: [retained]\n") }
+            val metadata = File(dir, "wawlink-provider-ui.json").apply { writeText("{}\n") }
+            val budgets = File(dir, "wawlink-model-budgets.json").apply { writeText("{}\n") }
+            val originals = listOf(models, config, metadata, budgets).associateWith { it.readText() }
+            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            try {
+                val failure = assertFailsWith<IllegalArgumentException> {
+                    repo.saveProvider(ProviderConfig("vendor", "Vendor", baseUrl = "", models = listOf(ModelConfig("chat"))))
+                }
+                assertTrue(failure.message!!.contains("providers.vendor.baseUrl"))
+                originals.forEach { (file, content) -> assertEquals(content, file.readText()) }
+                assertFalse(File(dir, "models.yml").exists())
+                budgets.writeText("not-json")
+                val invalidBudgets = budgets.readText()
+                assertFailsWith<Exception> {
+                    repo.saveProvider(ProviderConfig("vendor", "Vendor", baseUrl = "https://example.invalid/v1", apiKey = "fixture-key", models = listOf(ModelConfig("chat"))))
+                }
+                originals.filterKeys { it != budgets }.forEach { (file, content) -> assertEquals(content, file.readText()) }
+                assertEquals(invalidBudgets, budgets.readText())
+                assertFalse(File(dir, "models.yml").exists())
+            } finally { repo.close() }
+        }
+    }
+
+    @Test
+    fun fallbackModelsYamlRemainsTheNativeWriteTarget() = runBlocking {
+        withContainer { dir, scope ->
+            val file = File(dir, "models.yaml").apply { writeText("providers: {}\n") }
+            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            try {
+                repo.saveProvider(ProviderConfig("vendor", "Vendor", baseUrl = "https://example.invalid/v1", apiKey = "fixture-key", models = listOf(ModelConfig("chat"))))
+                assertTrue((load(file)["providers"] as Map<*, *>).containsKey("vendor"))
+                assertFalse(File(dir, "models.yml").exists())
+                repo.deleteProvider("vendor")
+                assertFalse((load(file)["providers"] as Map<*, *>).containsKey("vendor"))
+            } finally { repo.close() }
         }
     }
 

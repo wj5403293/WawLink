@@ -1,6 +1,9 @@
 package dev.wawlink.ui
 
+import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Typeface
+import android.view.ContextThemeWrapper
 import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.compose.runtime.Composable
@@ -8,12 +11,14 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.viewinterop.AndroidView
@@ -26,6 +31,22 @@ import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
+
+// Native widgets read dp/sp from Context rather than Compose's LocalDensity.
+@Composable
+internal fun rememberAgentViewContext(): Context {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    return remember(context, density.density, density.fontScale) {
+        ContextThemeWrapper(context, 0).apply {
+            applyOverrideConfiguration(Configuration(context.resources.configuration).apply {
+                densityDpi = (density.density * 160f).roundToInt()
+                fontScale = density.fontScale
+            })
+        }
+    }
+}
 
 @Composable
 internal actual fun PlatformCodeDetail(onBack: () -> Unit, content: @Composable () -> Unit) {
@@ -46,7 +67,7 @@ internal actual fun PlatformCodeDetail(onBack: () -> Unit, content: @Composable 
 
 @Composable
 internal actual fun PlatformCodeViewer(text: String, language: String?, modifier: Modifier, selectionRequest: Int) {
-    val context = LocalContext.current
+    val context = rememberAgentViewContext()
     val colors = LocalAgentColors.current
     val dark = colors.surface.luminance() < 0.5f
     val supported = language?.let(::canonicalCodeLanguage) != null
@@ -71,7 +92,7 @@ internal actual fun PlatformCodeViewer(text: String, language: String?, modifier
     LaunchedEffect(editor, selectionRequest) {
         if (selectionRequest > 0) editor.selectAll()
     }
-    AndroidView(factory = { editor }, modifier = modifier, update = { view ->
+    key(editor) { AndroidView(factory = { editor }, modifier = modifier, update = { view ->
         if (applied.text != text) {
             view.setText(text)
             applied.text = text
@@ -103,7 +124,7 @@ internal actual fun PlatformCodeViewer(text: String, language: String?, modifier
         scheme.setColor(EditorColorScheme.TEXT_ACTION_WINDOW_ICON_COLOR, colors.onSurface.toArgb())
         // Sora owns asynchronous, document-local incremental spans. Recomposition changes only
         // chrome; it neither copies tokens onto the UI thread nor resets text/selection.
-    })
+    }) }
 }
 
 private class AppliedSoraState(

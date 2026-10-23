@@ -43,6 +43,7 @@ fun AgentChatScreen(
     onNewSession: () -> Unit,
     onOpenProviderSettings: () -> Unit,
     onOpenAgentSettings: () -> Unit,
+    onOpenFrameworkSettings: () -> Unit,
     onPickFiles: suspend () -> List<AttachmentFile>,
     onPickContainerFiles: suspend () -> List<AttachmentFile>,
     appearance: AgentAppearance = AgentAppearance(),
@@ -163,7 +164,7 @@ fun AgentChatScreen(
             LocalFeedInteraction provides { followTail = false }, LocalFeedItemNavigation provides { id -> anchorFeedItem(id) }) {
         Surface(color = c.surface, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                Column(Modifier.widthIn(max = 460.dp).fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+                Column(Modifier.widthIn(max = AgentPageMaxWidth).fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
                     val scrolled by remember(list) { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 4 } }
                     val barColor by animateColorAsState(if (scrolled) c.surfaceContainer else c.surface, tween(350, easing = EmphEasing))
                     Row(Modifier.fillMaxWidth().height(64.dp).background(barColor).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -249,7 +250,8 @@ fun AgentChatScreen(
         }
         if (settingsMenu) AgentSheet("设置", { settingsMenu = false }) {
             SettingsDestination("hub", "模型服务") { settingsMenu = false; onOpenProviderSettings() }
-            SettingsDestination("tune", "Agent 设置") { settingsMenu = false; onOpenAgentSettings() }
+            SettingsDestination("smart_toy", "Agent 设置") { settingsMenu = false; onOpenAgentSettings() }
+            SettingsDestination("tune", "框架设置") { settingsMenu = false; onOpenFrameworkSettings() }
         }
         detail?.let { request ->
             if (request.markdown) {

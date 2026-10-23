@@ -20,6 +20,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.res.ResourcesCompat
 import com.termux.terminal.TerminalSession as EmulatorSession
@@ -32,18 +35,21 @@ import dev.wawlink.runtime.TerminalSession
 @Composable
 internal fun TerminalSurface(session: TerminalSession, modifier: Modifier) {
     val context = LocalContext.current
-    val controller = remember(session, context) { AndroidTerminalController(context, session) }
+    val density = LocalDensity.current
+    val controller = remember(session, context) { AndroidTerminalController(context, session, density) }
     val alive by session.isAlive.collectAsState()
     val orientation = LocalConfiguration.current.orientation
     DisposableEffect(controller) { onDispose { controller.detach() } }
-    AndroidView(factory = { controller.host }, modifier = modifier, update = { controller.updateKeys(alive, orientation) })
+    AndroidView(factory = { controller.host }, modifier = modifier, update = { controller.updateKeys(alive, orientation, density) })
 }
 
-private class AndroidTerminalController(context: Context, private val transport: TerminalSession) : TerminalSessionClient, TerminalViewClient {
+private class AndroidTerminalController(context: Context, private val transport: TerminalSession, initialDensity: Density) : TerminalSessionClient, TerminalViewClient {
     private var ctrl = false
     private var alt = false
     private var disposed = false
-    private var fontSize = 12f * context.resources.displayMetrics.scaledDensity
+    private var density = initialDensity
+    private var fontSizeSp = 12f
+    private var appliedFontSize = 0
     private val typeface = requireNotNull(ResourcesCompat.getFont(context, R.font.maple_mono_nf_cn_regular))
     private val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private val input = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -52,6 +58,8 @@ private class AndroidTerminalController(context: Context, private val transport:
     private var altButton: TextView? = null
     val view = TerminalView(context, null)
     val host = LinearLayout(context)
+    private val keyBar = LinearLayout(context)
+    private val keySpacer = View(context)
     private val emulator = EmulatorSession(transport.process, transport.processId.toInt(), transport::resize, 10_000, this)
     private val windowFocusListener = android.view.ViewTreeObserver.OnWindowFocusChangeListener { focused ->
         if (focused) view.post { connectInput() } else view.setTerminalCursorBlinkerState(false, false)
@@ -74,7 +82,7 @@ private class AndroidTerminalController(context: Context, private val transport:
         view.isFocusable = true
         view.isFocusableInTouchMode = true
         view.setBackgroundColor(Color.BLACK)
-        view.setTextSize(fontSize.toInt())
+        applyFontSize()
         view.setTypeface(typeface)
         view.keepScreenOn = true
         view.setTerminalCursorBlinkerRate(500)
@@ -82,7 +90,7 @@ private class AndroidTerminalController(context: Context, private val transport:
         host.orientation = LinearLayout.VERTICAL
         host.setBackgroundColor(Color.BLACK)
         host.addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        val bar = LinearLayout(context).apply {
+        val bar = keyBar.apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFF2D2D2D.toInt())
             setPadding(dp(4), dp(3), dp(4), dp(3))
@@ -94,7 +102,7 @@ private class AndroidTerminalController(context: Context, private val transport:
             TerminalKey("HOME", "\u001b[H"), TerminalKey("↑", "\u001b[A"),
             TerminalKey("END", "\u001b[F"), TerminalKey("PGUP", "\u001b[5~"),
         )))
-        bar.addView(View(context), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)))
+        bar.addView(keySpacer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)))
         bar.addView(keyRow(listOf(
             TerminalKey("⇥", "\t"), TerminalKey("CTRL", modifier = KeyEvent.KEYCODE_CTRL_LEFT),
             TerminalKey("ALT", modifier = KeyEvent.KEYCODE_ALT_LEFT), TerminalKey("←", "\u001b[D"),
@@ -103,7 +111,14 @@ private class AndroidTerminalController(context: Context, private val transport:
         host.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
-    private fun dp(value: Int) = (value * view.resources.displayMetrics.density + .5f).toInt()
+    private fun dp(value: Int) = (value * density.density + .5f).toInt()
+    private fun applyFontSize() {
+        val pixels = with(density) { fontSizeSp.sp.roundToPx() }.coerceAtLeast(1)
+        if (appliedFontSize != pixels) {
+            appliedFontSize = pixels
+            view.setTextSize(pixels)
+        }
+    }
     private fun keyRow(row: List<TerminalKey>) = LinearLayout(view.context).apply {
         orientation = LinearLayout.HORIZONTAL
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -112,7 +127,7 @@ private class AndroidTerminalController(context: Context, private val transport:
                 text = key.label
                 contentDescription = if (key.label == "⇥") "TAB" else key.label
                 setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) 11f else 12f)
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, with(density) { (if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) 11 else 12).sp.toPx() })
                 typeface = this@AndroidTerminalController.typeface
                 gravity = Gravity.CENTER
                 background = GradientDrawable().apply { setColor(KEY_COLOR); cornerRadius = dp(4).toFloat() }
@@ -141,9 +156,19 @@ private class AndroidTerminalController(context: Context, private val transport:
         (ctrlButton?.background as? GradientDrawable)?.setColor(if (ctrl) MODIFIER_COLOR else KEY_COLOR)
         (altButton?.background as? GradientDrawable)?.setColor(if (alt) MODIFIER_COLOR else KEY_COLOR)
     }
-    fun updateKeys(alive: Boolean, orientation: Int) {
-        val size = if (orientation == Configuration.ORIENTATION_LANDSCAPE) 11f else 12f
-        keys.forEach { it.isEnabled = alive; it.setTextSize(TypedValue.COMPLEX_UNIT_SP, size) }
+    fun updateKeys(alive: Boolean, orientation: Int, density: Density) {
+        if (this.density != density) {
+            this.density = density
+            applyFontSize()
+            keyBar.setPadding(dp(4), dp(3), dp(4), dp(3))
+            keySpacer.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
+            keys.forEach { button ->
+                button.layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(1); marginEnd = dp(1) }
+                (button.background as? GradientDrawable)?.cornerRadius = dp(4).toFloat()
+            }
+        }
+        val pixels = with(density) { (if (orientation == Configuration.ORIENTATION_LANDSCAPE) 11 else 12).sp.toPx() }
+        keys.forEach { it.isEnabled = alive; it.setTextSize(TypedValue.COMPLEX_UNIT_PX, pixels) }
     }
     private fun connectInput() {
         if (disposed || !view.isAttachedToWindow || !view.hasWindowFocus()) return
@@ -188,8 +213,8 @@ private class AndroidTerminalController(context: Context, private val transport:
     override fun setTerminalShellPid(session: EmulatorSession, pid: Int) = Unit
     override fun getTerminalCursorStyle(): Int = 0
     override fun onScale(scale: Float): Float {
-        fontSize = (fontSize * scale).coerceIn(8f * view.resources.displayMetrics.scaledDensity, 32f * view.resources.displayMetrics.scaledDensity)
-        view.setTextSize(fontSize.toInt())
+        fontSizeSp = (fontSizeSp * scale).coerceIn(8f, 32f)
+        applyFontSize()
         return 1f
     }
     override fun onSingleTapUp(event: MotionEvent?) = keyboard()
