@@ -38,6 +38,8 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     private val observers = mutableMapOf<String, Job>()
     private val _appearance = MutableStateFlow(AgentAppearance())
     val appearance: StateFlow<AgentAppearance> = _appearance.asStateFlow()
+    private val _defaultAutoApprove = MutableStateFlow(true)
+    val defaultAutoApprove: StateFlow<Boolean> = _defaultAutoApprove.asStateFlow()
     private val notices = MutableStateFlow<List<HostNotice>>(emptyList())
     val notice: StateFlow<HostNotice?> = notices.map { it.firstOrNull() }.stateIn(scope, SharingStarted.Eagerly, null)
     private val _busy = MutableStateFlow(0)
@@ -56,6 +58,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             File(dataDir, "appearance.properties").takeIf { it.exists() }?.inputStream()?.use(p::load)
             fun flag(key: String, default: Boolean) = p.getProperty(key)?.toBooleanStrictOrNull() ?: default
             _appearance.value = AgentAppearance(flag("dark", false), flag("vision", false), flag("smooth", true), flag("usage", false), flag("hideTools", false), flag("collapse", true))
+            _defaultAutoApprove.value = flag("defaultAutoApprove", true)
             val metadata = Properties()
             File(dataDir, "sessions.properties").takeIf { it.exists() }?.inputStream()?.use(metadata::load)
             records.value = metadata.getProperty("ids", "").split(',').filter { it.isNotBlank() }.map { id ->
@@ -107,9 +110,13 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         require(runtime.containers.value.any { it.config.id == containerId }) { "请先安装或导入一个容器" }
         val id = UUID.randomUUID().toString()
         val record = SessionRecord(id, title.trim().ifBlank { "新会话" }, containerId, workspace.trim())
-        records.update { it + record }
+        synchronized(controllers) {
+            val controller = pool.session(record.id, record.containerId, record.workspace, record.title, autoApprove = _defaultAutoApprove.value)
+            controllers[id] = controller
+            records.update { it + record }
+            observe(id, controller)
+        }
         persistSessions()
-        controller(id)
         return id
     }
     suspend fun fork(id: String): String {
@@ -146,16 +153,20 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     }
     fun updateAppearance(next: AgentAppearance) {
         _appearance.value = next
-        launch {
-            synchronized(persistenceLock) {
-                val current = _appearance.value
-                val p = Properties()
-                p["dark"] = current.darkTheme.toString(); p["vision"] = current.colorVisionAssist.toString()
-                p["smooth"] = current.smoothStreaming.toString(); p["usage"] = current.alwaysShowUsage.toString()
-                p["hideTools"] = current.hideToolCalls.toString(); p["collapse"] = current.collapseCompacted.toString()
-                saveProperties(File(dataDir, "appearance.properties"), p)
-            }
-        }
+        launch { persistPreferences() }
+    }
+    fun updateDefaultAutoApprove(enabled: Boolean) {
+        _defaultAutoApprove.value = enabled
+        launch { persistPreferences() }
+    }
+    private fun persistPreferences() = synchronized(persistenceLock) {
+        val current = _appearance.value
+        val p = Properties()
+        p["dark"] = current.darkTheme.toString(); p["vision"] = current.colorVisionAssist.toString()
+        p["smooth"] = current.smoothStreaming.toString(); p["usage"] = current.alwaysShowUsage.toString()
+        p["hideTools"] = current.hideToolCalls.toString(); p["collapse"] = current.collapseCompacted.toString()
+        p["defaultAutoApprove"] = _defaultAutoApprove.value.toString()
+        saveProperties(File(dataDir, "appearance.properties"), p)
     }
     private fun persistSessions() = synchronized(persistenceLock) {
         val p = Properties()

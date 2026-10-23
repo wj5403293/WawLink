@@ -53,10 +53,8 @@ internal fun PlanNodeItem.progressLabel(): String {
 }
 
 @Composable
-internal fun RotatingSymbol(name: String = "progress_activity", size: androidx.compose.ui.unit.Dp = 20.dp, tint: Color = LocalAgentColors.current.primary) {
-    val transition = rememberInfiniteTransition()
-    val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(1000, easing = LinearEasing)))
-    Symbol(name, Modifier.graphicsLayer { rotationZ = angle }, size, tint)
+internal fun AgentProgressIndicator(size: androidx.compose.ui.unit.Dp = 20.dp, tint: Color = LocalAgentColors.current.primary) {
+    CircularProgressIndicator(Modifier.size(size), color = tint, strokeWidth = 2.dp)
 }
 
 @Composable
@@ -64,7 +62,7 @@ internal fun NodeStatusLabel(status: NodeStatus, seconds: Int, showTime: Boolean
     val c = LocalAgentColors.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         when (status) {
-            NodeStatus.RUNNING -> RotatingSymbol(tint = c.onSurfaceVariant)
+            NodeStatus.RUNNING -> AgentProgressIndicator(tint = c.onSurfaceVariant)
             NodeStatus.OK -> Symbol("check_circle", size = 20.dp, tint = c.tertiary, filled = true)
             NodeStatus.ERROR -> Symbol("error", size = 20.dp, tint = c.error, filled = true)
             NodeStatus.STOPPED -> Symbol("stop_circle", size = 20.dp, tint = c.onSurfaceVariant)
@@ -221,7 +219,7 @@ private fun PlanNode(node: PlanNodeItem, expanded: MutableMap<String, Boolean>) 
                     Row(Modifier.heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         when (step.state) {
                             StepState.COMPLETED -> Symbol("check_circle", tint = c.primary, filled = true)
-                            StepState.IN_PROGRESS -> RotatingSymbol(size = 24.dp)
+                            StepState.IN_PROGRESS -> AgentProgressIndicator(size = 24.dp)
                             StepState.PENDING -> Symbol("radio_button_unchecked", tint = c.outline)
                         }
                         Text(step.title, fontSize = 17.sp, fontWeight = if (step.state == StepState.IN_PROGRESS) FontWeight.Bold else FontWeight.Normal,

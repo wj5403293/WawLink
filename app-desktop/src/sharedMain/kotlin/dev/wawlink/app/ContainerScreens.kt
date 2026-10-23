@@ -47,7 +47,7 @@ internal fun bytesLabel(bytes: Long): String = when {
             Box { AgentIconButton("filter_list", "筛选状态", { filterMenu = true }, filled = filter != "全部容器"); DropdownMenu(filterMenu, { filterMenu = false }) { listOf("全部容器", "运行中", "已停止").forEach { label -> DropdownMenuItem({ Text(label) }, { filter = label; filterMenu = false }, trailingIcon = { if (label == filter) Symbol("check") }) } } }
         }
         if (deployments.isNotEmpty()) {
-            SectionLabel("正在部署", "progress_activity")
+            SectionLabel("正在部署", "deployed_code")
             deployments.forEach { task ->
                 key(task.id) {
                     Column(Modifier.fillMaxWidth().padding(bottom = 3.dp).background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(20.dp)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

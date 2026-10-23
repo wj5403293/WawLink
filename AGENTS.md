@@ -10,12 +10,16 @@
 - 不得擅自修改既有显示样式；视觉与非线性动画严格以 `ref-plan/ref-home.html`、`ref-plan/ref-coding-agent-ui.html`、`ref-plan/ref-agent-setting.html` 为准，功能遵循 `ref-plan/plan.md`。
 - 列表项使用“图标 + 标题 + 副标题（描述）”结构；右侧可放垂直三点按钮打开 popup menu。
 - popup menu 使用“图标 + 标题”结构。
+- 用户消息和运行中追加消息先即时本地显示，不等待 OMP 启动或 RPC 回执；按稳定 ID 与回执对齐，发送失败撤回对应的未接收消息并显示原因，已接收消息不因后续模型执行失败而撤回。
+- 加载状态使用 Compose Material 3 标准进度组件，不使用旋转图标模拟；静态“运行中”筛选、部署等语义使用对应的 Material Symbols 图标，不把进度圆圈当图标。
+- 新会话默认开启免审批；应用设置提供“新会话默认免审批”并持久化，仅影响之后创建的会话。会话内仍可独立切换；开启时立即放行已等待及后续工具审批，不自动回答普通提问。
+- 思考节点可归入创建时正在执行的 Todo 子任务；没有活动 Todo 时保持扁平。流式更新、完整快照和历史重放保留同一节点的归属与 ID，不因任务切换迁移或重复。
 
 ## 项目结构与索引
 
 - `agent-protocol/`：独立 Kotlin 领域模型、会话控制、模型服务与设置契约；仅使用协程状态流，不依赖驱动或容器。
 - `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonTest/kotlin/dev/wawlink/ui/MarkdownTest.kt` 覆盖标识符、强调与转义边界。
-- `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步。
+- `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpPromptDeliveryTest.kt` 覆盖即时消息、失败回撤、排队与审批/执行模式持久化边界。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端；`src/jvmSharedMain/kotlin/dev/wawlink/runtime/RuntimeDns.kt` 负责边界安全的原子 DNS 更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeDnsTest.kt` 覆盖链接边界与配置切换。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。

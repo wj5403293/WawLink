@@ -80,7 +80,7 @@ data class ChatSessionUiState(
     val providerId: String = "",
     val modelId: String = "",
     val thinkingLevel: ThinkingLevel = ThinkingLevel.MEDIUM,
-    val autoApprove: Boolean = false,
+    val autoApprove: Boolean = true,
     val elapsedSec: Int = 0,
     val actionText: String = "准备就绪",
     val usage: UsageInfo = UsageInfo(),

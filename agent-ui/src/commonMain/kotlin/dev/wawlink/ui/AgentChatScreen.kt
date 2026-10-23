@@ -92,9 +92,10 @@ fun AgentChatScreen(
             }
         }
         val lastFeed = visibleFeed.lastOrNull()
-        LaunchedEffect(lastFeed, composerHeight, visibleFeed.size) {
-            if (followTail && !list.isScrollInProgress && visibleFeed.isNotEmpty()) {
-                val target = feedIndex[visibleFeed.last().id] ?: return@LaunchedEffect
+        LaunchedEffect(lastFeed, composerHeight, visibleFeed.size, state.error, state.queuedPrompts.size) {
+            if (followTail && !list.isScrollInProgress && (visibleFeed.isNotEmpty() || state.error != null)) {
+                val target = if (state.error != null) visibleFeed.size + 1 + if (hasCompacted) 1 else 0
+                    else feedIndex[visibleFeed.last().id] ?: return@LaunchedEffect
                 list.scrollToItem(target)
                 val itemHeight = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target }?.size ?: 0
                 list.scrollBy(itemHeight + with(density) { composerHeight.toPx() })
@@ -148,11 +149,11 @@ fun AgentChatScreen(
                                 }
                             }
                             items(visibleFeed, key = { it.id }, contentType = { it::class.simpleName }) { item ->
-                                var entered by rememberSaveable(item.id) { mutableStateOf(false) }
+                                var entered by rememberSaveable(item.id) { mutableStateOf(item is UserMessageItem) }
                                 LaunchedEffect(item.id) { entered = true }
                                 val enter by animateFloatAsState(if (entered) 1f else 0f, tween(600, easing = EmphDecelEasing))
                                 Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 20.dp).animateItem(
-                                    fadeInSpec = tween(600, easing = EmphDecelEasing), placementSpec = agentSpring(), fadeOutSpec = tween(200, easing = EmphAccelEasing)).graphicsLayer {
+                                    fadeInSpec = if (item is UserMessageItem) null else tween(600, easing = EmphDecelEasing), placementSpec = agentSpring(), fadeOutSpec = tween(200, easing = EmphAccelEasing)).graphicsLayer {
                                         translationY = (1f - enter) * with(density) { 24.dp.toPx() }; scaleX = .98f + .02f * enter; scaleY = scaleX
                                     }) {
                                     FeedNode(item, controller, expanded) { title, body -> detail = title to body }
@@ -166,7 +167,7 @@ fun AgentChatScreen(
                                 }
                             }
                         }
-                        if (visibleFeed.isEmpty() && !hasCompacted) Column(Modifier.align(Alignment.Center).padding(bottom = composerHeight), horizontalAlignment = Alignment.CenterHorizontally,
+                        if (visibleFeed.isEmpty() && !hasCompacted && state.error == null) Column(Modifier.align(Alignment.Center).padding(bottom = composerHeight), horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Symbol("neurology", size = 40.dp, tint = c.primary)
                             Text("开始新的任务", style = MaterialTheme.typography.titleLarge)
@@ -183,7 +184,7 @@ fun AgentChatScreen(
                                 }
                             } }) { Symbol("arrow_downward", contentDescription = "回到最新消息") }
                         }
-                        ComposerArea(controller, state, providers, onOpenProviderSettings, onPickFiles,
+                        ComposerArea(controller, state, providers, onOpenProviderSettings, onPickFiles, { followTail = true },
                             Modifier.align(Alignment.BottomCenter).onSizeChanged { size -> composerHeight = with(density) { size.height.toDp() } })
                     }
                 }

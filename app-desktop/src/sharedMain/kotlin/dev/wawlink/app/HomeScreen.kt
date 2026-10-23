@@ -12,7 +12,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,7 +57,7 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
             } else {
                 if (tab == 0) {
                     val running = sessions.count { it.state.status == SessionStatus.RUNNING && !it.record.archived }
-                    if (running > 0) FilledTonalButton({ filter = if (filter == "运行中") "全部" else "运行中" }, contentPadding = PaddingValues(horizontal = 10.dp), modifier = Modifier.height(38.dp)) { RunningSymbol(18); Spacer(Modifier.width(4.dp)); Text("$running") }
+                    if (running > 0) FilledTonalButton({ filter = if (filter == "运行中") "全部" else "运行中" }, contentPadding = PaddingValues(horizontal = 10.dp), modifier = Modifier.height(38.dp)) { Symbol("play_arrow", size = 18.dp); Spacer(Modifier.width(4.dp)); Text("$running") }
                     AgentIconButton("checklist", "批量管理", { batch = true })
                     AgentIconButton("edit_square", "新建会话", onNewSession)
                 } else {
@@ -94,7 +93,7 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
                     }
                 }
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("全部" to "forum", "运行中" to "progress_activity", "待批准" to "gpp_maybe", "已置顶" to "push_pin", "已归档" to "inventory_2").forEach { (label, icon) ->
+                    listOf("全部" to "forum", "运行中" to "play_arrow", "待批准" to "gpp_maybe", "已置顶" to "push_pin", "已归档" to "inventory_2").forEach { (label, icon) ->
                         FilterChip(filter == label, { filter = label }, { Text(label, fontSize = 17.sp) }, leadingIcon = { Symbol(icon, size = 20.dp) }, shape = RoundedCornerShape(if (filter == label) 22.dp else 14.dp), modifier = Modifier.heightIn(min = 44.dp), colors = FilterChipDefaults.filterChipColors(iconColor = MaterialTheme.colorScheme.onSurfaceVariant, selectedContainerColor = MaterialTheme.colorScheme.primaryContainer, selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer, selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer), border = FilterChipDefaults.filterChipBorder(enabled = true, selected = filter == label, borderColor = MaterialTheme.colorScheme.outlineVariant))
                     }
                 }
@@ -129,10 +128,8 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
     terminal?.let { id -> TerminalSheet(app, id, { terminal = null }) }
 }
 
-@Composable private fun RunningSymbol(size: Int = 26) {
-    val transition = rememberInfiniteTransition()
-    val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(1000, easing = LinearEasing)))
-    Symbol("progress_activity", Modifier.rotate(angle), size = size.dp)
+@Composable private fun RunningIndicator() {
+    CircularProgressIndicator(Modifier.size(26.dp), color = LocalContentColor.current, strokeWidth = 2.dp)
 }
 
 @Composable
@@ -147,7 +144,7 @@ private fun SessionCard(session: HomeSession, container: String, open: Boolean, 
             val lead = if (selected || s.status == SessionStatus.RUNNING) MaterialTheme.colorScheme.primary else if (s.status == SessionStatus.WAITING) Color(0xFFFFDCC1) else if (s.status == SessionStatus.DONE) Color(0xFFC4EED0) else MaterialTheme.colorScheme.surfaceContainerHigh
             Box(Modifier.size(48.dp).background(lead, RoundedCornerShape(if (open || selected || s.status == SessionStatus.RUNNING) 24.dp else 14.dp)), contentAlignment = Alignment.Center) {
                 CompositionLocalProvider(LocalContentColor provides if (selected || s.status == SessionStatus.RUNNING) Color.White else MaterialTheme.colorScheme.onSurface) {
-                    if (!batch && s.status == SessionStatus.RUNNING) RunningSymbol() else Symbol(if (batch) if (selected) "check" else "radio_button_unchecked" else when (s.status) { SessionStatus.WAITING -> "gpp_maybe"; SessionStatus.DONE -> "check_circle"; SessionStatus.ERROR -> "info"; else -> "terminal" }, size = 26.dp)
+                    if (!batch && s.status == SessionStatus.RUNNING) RunningIndicator() else Symbol(if (batch) if (selected) "check" else "radio_button_unchecked" else when (s.status) { SessionStatus.WAITING -> "gpp_maybe"; SessionStatus.DONE -> "check_circle"; SessionStatus.ERROR -> "info"; else -> "terminal" }, size = 26.dp)
                 }
             }
             Column(Modifier.weight(1f)) {

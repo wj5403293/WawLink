@@ -93,7 +93,7 @@ private val slashCommands = listOf(
 @OptIn(ExperimentalAnimationApi::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun ComposerArea(controller: AgentSessionController, state: ChatSessionUiState, providerRepository: ProviderConfigRepository,
-    onOpenProviderSettings: () -> Unit, onPickFiles: suspend () -> List<AttachmentFile>, modifier: Modifier = Modifier) {
+    onOpenProviderSettings: () -> Unit, onPickFiles: suspend () -> List<AttachmentFile>, onPromptSubmitted: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalAgentColors.current
     val appearance = LocalAgentAppearance.current
     val scope = rememberCoroutineScope()
@@ -120,9 +120,16 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
         if (prompt.startsWith("/") && attachments.isEmpty()) {
             val command = prompt.drop(1).substringBefore(' ')
             val args = prompt.drop(1).substringAfter(' ', "")
-            when (command) { "model" -> menu = "model"; "cost" -> usageSheet = true; else -> controller.executeSlashCommand(command, args) }
-        } else if (state.isRunning && attachments.isEmpty()) controller.enqueuePrompt(prompt)
-        else controller.sendPrompt(prompt, attachments.toList())
+            when (command) {
+                "model" -> menu = "model"
+                "cost" -> usageSheet = true
+                else -> { onPromptSubmitted(); controller.executeSlashCommand(command, args) }
+            }
+        } else {
+            onPromptSubmitted()
+            if (state.isRunning && attachments.isEmpty()) controller.enqueuePrompt(prompt)
+            else controller.sendPrompt(prompt, attachments.toList())
+        }
         text = ""; attachments.clear(); focusManager.clearFocus()
     }
     Column(modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(c.surface.copy(alpha = 0f), c.surface, c.surface), endY = 90f))
@@ -152,7 +159,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                     exit = shrinkVertically(tween(450, easing = EmphEasing)) + fadeOut(tween(250, easing = EmphAccelEasing))) {
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (state.isRunning) RotatingSymbol()
+                        if (state.isRunning) AgentProgressIndicator()
                         AnimatedContent(if (state.isRunning) state.actionText else "用量", Modifier.weight(1f),
                             transitionSpec = { (fadeIn(tween(350, easing = EmphDecelEasing)) + slideInVertically(tween(350, easing = EmphDecelEasing)) { 10 }) togetherWith fadeOut(tween(150, easing = EmphAccelEasing)) }) { action ->
                             Text(action, fontSize = 16.sp, color = c.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -186,7 +193,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                     decorationBox = { inner -> Box { if (text.isEmpty()) Text("描述你的任务", color = c.onSurfaceVariant, fontSize = 18.sp); inner() } })
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Box {
-                        ComposerButton("更多附件", menu == "more", { menu = if (menu == "more") null else "more" }) { if (picking) RotatingSymbol() else Symbol("add") }
+                        ComposerButton("更多附件", menu == "more", { menu = if (menu == "more") null else "more" }) { if (picking) AgentProgressIndicator() else Symbol("add") }
                         ComposerMenu(menu == "more", { menu = null }) {
                             PopupRow("文件", "attach_file") {
                                 menu = null; picking = true
@@ -429,7 +436,7 @@ private fun WorkspaceBranch(controller: AgentSessionController, path: String, de
     val files by flow.collectAsState(initial = emptyList())
     val c = LocalAgentColors.current
     if (error != null) Text(error.orEmpty(), color = c.error, modifier = Modifier.padding(12.dp))
-    else if (!loaded) Row(Modifier.padding(12.dp)) { RotatingSymbol(); Text("正在读取文件…") }
+    else if (!loaded) Row(Modifier.padding(12.dp)) { AgentProgressIndicator(); Text("正在读取文件…") }
     else if (files.isEmpty()) Text("此目录为空", color = c.onSurfaceVariant, modifier = Modifier.padding(start = (depth * 16 + 12).dp, top = 12.dp, bottom = 12.dp))
     files.sortedWith(compareByDescending<WorkspaceFileItem> { it.isDirectory }.thenBy { it.name.lowercase() }).forEach { file ->
         val isOpen = expanded[file.relativePath] == true

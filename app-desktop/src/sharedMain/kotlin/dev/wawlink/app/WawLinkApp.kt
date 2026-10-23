@@ -124,6 +124,7 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
 }
 @Composable private fun AppearanceScreen(app: AppCoordinator, onBack: () -> Unit, providers: () -> Unit, agent: () -> Unit) {
     val appearance by app.appearance.collectAsState()
+    val defaultAutoApprove by app.defaultAutoApprove.collectAsState()
     Column {
         AgentTopBar("应用设置", onBack)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -134,6 +135,8 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
             HostRow("常驻显示词元用量", icon = "token") { Switch(appearance.alwaysShowUsage, { app.updateAppearance(appearance.copy(alwaysShowUsage = it)) }) }
             HostRow("隐藏工具调用过程", icon = "construction") { Switch(appearance.hideToolCalls, { app.updateAppearance(appearance.copy(hideToolCalls = it)) }) }
             HostRow("自动折叠已压缩记录", icon = "unfold_less") { Switch(appearance.collapseCompacted, { app.updateAppearance(appearance.copy(collapseCompacted = it)) }) }
+            SectionLabel("会话", "forum")
+            HostRow("新会话默认免审批", icon = "bolt") { Switch(defaultAutoApprove, app::updateDefaultAutoApprove) }
             SectionLabel("当前容器 Agent", "smart_toy")
             HostRow("模型服务", icon = "cloud", onClick = providers) { Symbol("chevron_right") }
             HostRow("Agent 设置", icon = "tune", onClick = agent) { Symbol("chevron_right") }

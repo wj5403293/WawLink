@@ -22,6 +22,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
+internal fun isApprovalRequest(frame: JsonObject): Boolean {
+    if (frame["method"]?.jsonPrimitive?.contentOrNull == "confirm") return true
+    if (frame["method"]?.jsonPrimitive?.contentOrNull != "select" ||
+        frame["title"]?.jsonPrimitive?.contentOrNull?.startsWith("Allow tool:") != true) return false
+    val options = frame["options"]?.jsonArray.orEmpty()
+    return options.any { it.jsonPrimitive.contentOrNull == "Deny" } &&
+        options.any { it.jsonPrimitive.contentOrNull == "Approve" || it.jsonPrimitive.contentOrNull == "Approve Once" }
+}
+
 /** Owns only the RPC children it starts. Creating a controller never starts a container/process. */
 class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private val resolvConf: StateFlow<String?>? = null) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -31,7 +40,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     private var closed = false
 
     @Synchronized
-    fun session(id: String, containerId: String, workspace: String, title: String = "新会话"): AgentSessionController {
+    fun session(id: String, containerId: String, workspace: String, title: String = "新会话", autoApprove: Boolean = true): AgentSessionController {
         check(!closed) { "进程池已关闭" }
         require(id.isNotBlank()) { "会话 ID 不能为空" }
         val existing = sessions[id]
@@ -42,7 +51,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             existing.rename(title)
             return existing
         }
-        return OmpSession(id, containerId, normalizeGuest(workspace), title).also { sessions[id] = it }
+        return OmpSession(id, containerId, normalizeGuest(workspace), title, autoApprove).also { sessions[id] = it }
     }
 
     suspend fun fork(sourceId: String, newId: String, containerId: String, workspace: String, title: String): AgentSessionController = withContext(Dispatchers.IO) {
@@ -62,7 +71,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val sourceJournal = journalFile(sourceId)
             if (sourceJournal.exists()) sourceJournal.copyTo(journalFile(newId).also { it.parentFile.mkdirs() }, overwrite = false)
             writeMetadata(newId, containerId, destinationWorkspace, title, history?.let { guestSessionDirectory(newId) + "/" + it.name })
-            session(newId, containerId, destinationWorkspace, title)
+            session(newId, containerId, destinationWorkspace, title, autoApprove = source.state.value.autoApprove)
         }
     }
 
@@ -88,7 +97,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         synchronized(this@OmpProcessPool) { sessions.remove(id) }
         source.dispose()
         if (oldDirectory.canonicalFile != newDirectory.canonicalFile && oldDirectory.exists()) deleteOwnedTree(oldDirectory)
-        session(id, containerId, nextWorkspace, title)
+        session(id, containerId, nextWorkspace, title, autoApprove = source.state.value.autoApprove)
     }
 
     suspend fun deleteSession(id: String) = withContext(Dispatchers.IO) {
@@ -180,7 +189,18 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         scope.cancel()
     }
 
-    private inner class OmpSession(val id: String, val containerId: String, val workspace: String, title: String) : AgentSessionController {
+    private data class OutgoingPrompt(
+        val id: String,
+        var text: String,
+        val attachments: List<AttachmentFile>,
+        val timestamp: Long,
+        val generation: Long,
+        val queued: Boolean,
+        var preview: Boolean = true,
+        var dispatching: Boolean = false,
+    )
+
+    private inner class OmpSession(val id: String, val containerId: String, val workspace: String, title: String, initialAutoApprove: Boolean) : AgentSessionController {
         private val ownerJob = SupervisorJob(scope.coroutineContext[Job])
         private val sessionScope = CoroutineScope(scope.coroutineContext + ownerJob)
         private val stateMutex = Mutex()
@@ -192,9 +212,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private val sequence = AtomicLong()
         private val stopGeneration = AtomicLong()
         private val requests = LinkedHashMap<String, JsonObject>()
+        private val answeringApprovals = HashSet<String>()
         private val askAnswers = LinkedHashMap<String, MutableMap<Int, String>>()
         private val eventJournal = journalFile(id)
-        private val reducer = OmpEventReducer(ChatSessionUiState(id = id, title = title, workspace = workspace))
+        private val reducer = OmpEventReducer(ChatSessionUiState(id = id, title = title, workspace = workspace, autoApprove = initialAutoApprove))
+        private val presentationLock = Any()
+        private val outgoingPrompts = LinkedHashMap<String, OutgoingPrompt>()
+        @Volatile private var backendState = reducer.state
         private val mutableState: MutableStateFlow<ChatSessionUiState>
         override val state: StateFlow<ChatSessionUiState>
         @Volatile private var process: Process? = null
@@ -205,8 +229,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private var ready: CompletableDeferred<JsonObject>? = null
         @Volatile private var stopping: CompletableDeferred<Unit>? = null
         @Volatile private var disposed = false
-        private var restartRequired = false
+        @Volatile private var restartRequired = false
         private var hasThinkingPreference = false
+        private var hasExecutionPreference = false
         private var lastHeartbeatNanos = System.nanoTime()
         private var startedNanos = System.nanoTime()
         private val stderr = StringBuilder()
@@ -220,11 +245,12 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 try {
                     stateMutex.withLock {
                         replayJournal()
+                        if (!hasExecutionPreference) recordLocal(buildJsonObject { put("action", "auto"); put("enabled", initialAutoApprove) })
                         // No child from a previous host lifetime is owned by this controller.
                         reducer.update { it.copy(id = id, title = title, workspace = workspace,
                             feed = if (it.isRunning) stopFeed(it.feed) else it.feed,
                             status = if (it.isRunning) SessionStatus.STOPPED else it.status, actionText = "准备就绪") }
-                        mutableState.value = reducer.state
+                        publishState()
                     }
                     val metadata = metadataFile(id)
                     if (metadata.exists()) sessionFile = DriverJson.parseToJsonElement(metadata.readText()).jsonObject["sessionFile"]?.jsonPrimitive?.contentOrNull
@@ -263,55 +289,68 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         override fun sendPrompt(text: String, attachments: List<AttachmentFile>) {
             if (text.isBlank() && attachments.isEmpty()) return
-            submit {
-                val promptGeneration = stopGeneration.get()
-                val prepared = prepareAttachments(text, attachments)
-                if (state.value.isRunning || !backendSettled) enqueue(prepared.first, prepared.second, prepared.third)
-                else {
-                    if (restartRequired || (process != null && startedResolvConf != resolvConf?.value)) park()
-                    ensureStarted()
-                    if (promptGeneration != stopGeneration.get()) return@submit
-                    if (state.value.isRunning || !backendSettled) {
-                        enqueue(prepared.first, prepared.second, prepared.third)
-                        return@submit
-                    }
-                    local(buildJsonObject {
-                        put("action", "user"); put("text", prepared.first); put("timestamp", System.currentTimeMillis())
-                        put("attachments", attachmentsJson(prepared.second))
-                    })
-                    mutate { it.copy(status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
-                    startedNanos = System.nanoTime()
-                    command("prompt", buildJsonObject { put("message", prepared.first); if (prepared.third.isNotEmpty()) put("images", prepared.third) }, timeoutMs = 180_000)
+            synchronized(presentationLock) {
+                if (disposed) return
+                val prompt = OutgoingPrompt(UUID.randomUUID().toString(), text, attachments.toList(),
+                    System.currentTimeMillis(), stopGeneration.get(), mutableState.value.isRunning || !backendSettled)
+                outgoingPrompts[prompt.id] = prompt
+                presentState()
+                if (actions.trySend { deliverPrompt(prompt) }.isFailure) {
+                    outgoingPrompts.remove(prompt.id)
+                    presentState()
                 }
             }
         }
 
-        override fun enqueuePrompt(text: String) {
-            if (text.isBlank()) return
-            submit {
-                val promptGeneration = stopGeneration.get()
-                if (!state.value.isRunning && backendSettled) {
-                    if (restartRequired || (process != null && startedResolvConf != resolvConf?.value)) park()
-                    ensureStarted()
-                    if (promptGeneration != stopGeneration.get()) return@submit
-                    if (state.value.isRunning || !backendSettled) {
-                        enqueue(text, emptyList(), JsonArray(emptyList()))
-                        return@submit
-                    }
-                    local(buildJsonObject { put("action", "user"); put("text", text); put("timestamp", System.currentTimeMillis()) })
-                    mutate { it.copy(status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
-                    startedNanos = System.nanoTime()
-                    command("prompt", buildJsonObject { put("message", text) }, timeoutMs = 180_000)
-                } else enqueue(text, emptyList(), JsonArray(emptyList()))
+        override fun enqueuePrompt(text: String) = sendPrompt(text)
+
+        private suspend fun deliverPrompt(prompt: OutgoingPrompt) {
+            suspend fun cancelled(): Boolean {
+                if (synchronized(presentationLock) { prompt.id !in outgoingPrompts }) return true
+                if (prompt.generation == stopGeneration.get()) return false
+                // A stop preserves follow-ups for the next run, but never sends a cancelled first prompt.
+                if (prompt.queued) local(buildJsonObject {
+                    put("action", "queue_add"); put("queueId", prompt.id); put("text", prompt.text)
+                    put("attachments", attachmentsJson(prompt.attachments))
+                })
+                completePrompt(prompt.id)
+                return true
             }
+            try {
+                if (cancelled()) return
+                val originalText = synchronized(presentationLock) { prompt.text }
+                val prepared = prepareAttachments(originalText, prompt.attachments)
+                if (cancelled()) return
+                if (!backendState.isRunning && backendSettled &&
+                    (restartRequired || (process != null && startedResolvConf != resolvConf?.value))) park()
+                ensureStarted()
+                if (cancelled()) return
+                val message = synchronized(presentationLock) {
+                    if (prompt.id !in outgoingPrompts) return
+                    prompt.dispatching = true
+                    if (prompt.text == originalText) prepared.first else attachmentPrompt(prompt.text, prepared.second)
+                }
+                if (backendState.isRunning || !backendSettled) {
+                    enqueue(message, prepared.second, prepared.third, prompt.id)
+                } else {
+                    startedNanos = System.nanoTime()
+                    local(buildJsonObject {
+                        put("action", "user"); put("localId", prompt.id); put("text", message)
+                        put("timestamp", prompt.timestamp); put("attachments", attachmentsJson(prepared.second))
+                    })
+                    command("prompt", buildJsonObject {
+                        put("message", message); if (prepared.third.isNotEmpty()) put("images", prepared.third)
+                    }, timeoutMs = 180_000, requestId = prompt.id)
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { rejectPrompt(prompt.id, failure.message ?: failure.javaClass.simpleName) }
         }
 
-        private suspend fun enqueue(text: String, attachments: List<AttachmentFile>, images: JsonArray) {
+        private suspend fun enqueue(text: String, attachments: List<AttachmentFile>, images: JsonArray, queuedId: String = UUID.randomUUID().toString()) {
             ensureStarted()
-            val queuedId = UUID.randomUUID().toString()
             local(buildJsonObject { put("action", "queue_add"); put("queueId", queuedId); put("text", text); put("attachments", attachmentsJson(attachments)) })
             try {
-                command("follow_up", buildJsonObject { put("message", text); if (images.isNotEmpty()) put("images", images) }, timeoutMs = 180_000)
+                command("follow_up", buildJsonObject { put("message", text); if (images.isNotEmpty()) put("images", images) }, timeoutMs = 180_000, requestId = queuedId)
             } catch (failure: Exception) {
                 local(buildJsonObject { put("action", "queue_remove"); put("queueId", queuedId) })
                 throw failure
@@ -320,6 +359,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         override fun updateQueuedPrompt(id: String, newText: String) {
             if (newText.isBlank()) return
+            synchronized(presentationLock) {
+                val prompt = outgoingPrompts[id]
+                if (prompt != null && prompt.queued && prompt.preview && !prompt.dispatching) {
+                    prompt.text = newText
+                    presentState()
+                    return
+                }
+            }
             submit {
                 val item = state.value.queuedPrompts.firstOrNull { it.id == id } ?: return@submit
                 if (process == null) {
@@ -339,6 +386,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         override fun removeQueuedPrompt(id: String) {
+            synchronized(presentationLock) {
+                val prompt = outgoingPrompts[id]
+                if (prompt != null && prompt.queued && prompt.preview && !prompt.dispatching) {
+                    outgoingPrompts.remove(id)
+                    presentState()
+                    return
+                }
+            }
             submit {
                 val item = state.value.queuedPrompts.firstOrNull { it.id == id } ?: return@submit
                 if (process == null || removeNativeQueued(item.text)) local(buildJsonObject { put("action", "queue_remove"); put("queueId", id) })
@@ -356,6 +411,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         override fun stopExecution() {
             stopGeneration.incrementAndGet()
+            synchronized(presentationLock) {
+                outgoingPrompts.values.removeAll { it.preview && !it.queued }
+                presentState()
+            }
             val barrier = CompletableDeferred<Unit>()
             stopping = barrier
             sessionScope.launch {
@@ -399,40 +458,59 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         override fun toggleExecutionMode(autoApprove: Boolean) {
-            submit {
-                local(buildJsonObject { put("action", "auto"); put("enabled", autoApprove) })
-                // --approval-mode is a session-local runtime override, not a globally persisted setting.
-                // There is no set_approval_mode RPC: keep the current run safe, apply at its next idle start.
-                restartRequired = true
-                if (!state.value.isRunning && backendSettled) park()
-                else mutate { it.copy(actionText = "执行模式将在本轮结束后生效") }
+            // UI responses cannot wait behind prompt admission: that admission may itself need approval.
+            sessionScope.launch {
+                try {
+                    local(buildJsonObject { put("action", "auto"); put("enabled", autoApprove) })
+                    restartRequired = true
+                    if (autoApprove) {
+                        val waiting = stateMutex.withLock { requests.mapNotNull { (nodeId, request) -> nodeId.takeIf { isApprovalRequest(request) } } }
+                        for (nodeId in waiting) answerApproval(nodeId, ApprovalDecision.ALLOW_ONCE)
+                    }
+                    if (!state.value.isRunning && backendSettled) park()
+                    else if (!autoApprove) mutate { it.copy(actionText = "审批模式将在本轮结束后生效") }
+                } catch (failure: Exception) { if (failure !is CancellationException) fail(failure) }
             }
         }
 
         override fun respondApproval(nodeId: String, decision: ApprovalDecision) {
             sessionScope.launch {
-                try {
-                    val request = stateMutex.withLock { requests[nodeId] } ?: error("审批请求已失效")
-                    val response = buildJsonObject {
-                        put("type", "extension_ui_response"); put("id", nodeId)
-                        when (request.string("method")) {
-                            "confirm" -> put("confirmed", decision != ApprovalDecision.DENY)
-                            "select" -> {
-                                val options = request["options"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }
-                                val value = when (decision) {
-                                    ApprovalDecision.DENY -> options.firstOrNull { it == "Deny" }
-                                    ApprovalDecision.ALLOW_ONCE -> options.firstOrNull { it == "Approve Once" } ?: options.firstOrNull { it == "Approve" }
-                                    ApprovalDecision.ALLOW_ALWAYS_IN_SESSION -> options.firstOrNull { it.startsWith("Approve ") && it.endsWith(" for this session") }
-                                } ?: error(if (decision == ApprovalDecision.ALLOW_ALWAYS_IN_SESSION) "此安全审批不允许会话级授权，请选择仅允许一次" else "上游未提供对应审批选项")
-                                put("value", value)
-                            }
-                            else -> error("不支持的审批方法")
+                try { answerApproval(nodeId, decision) }
+                catch (failure: Exception) { if (failure !is CancellationException) fail(failure) }
+            }
+        }
+
+        private suspend fun answerApproval(nodeId: String, decision: ApprovalDecision) {
+            val request = stateMutex.withLock {
+                val request = requests[nodeId] ?: return
+                if (!answeringApprovals.add(nodeId)) return
+                request
+            }
+            try {
+                val response = buildJsonObject {
+                    put("type", "extension_ui_response"); put("id", nodeId)
+                    when (request.string("method")) {
+                        "confirm" -> put("confirmed", decision != ApprovalDecision.DENY)
+                        "select" -> {
+                            val options = request["options"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }
+                            val value = when (decision) {
+                                ApprovalDecision.DENY -> options.firstOrNull { it == "Deny" }
+                                ApprovalDecision.ALLOW_ONCE -> options.firstOrNull { it == "Approve Once" } ?: options.firstOrNull { it == "Approve" }
+                                ApprovalDecision.ALLOW_ALWAYS_IN_SESSION -> options.firstOrNull { it.startsWith("Approve ") && it.endsWith(" for this session") }
+                            } ?: error(if (decision == ApprovalDecision.ALLOW_ALWAYS_IN_SESSION) "此安全审批不允许会话级授权，请选择仅允许一次" else "上游未提供对应审批选项")
+                            put("value", value)
                         }
+                        else -> error("不支持的审批方法")
                     }
-                    writeFrame(response)
-                    local(buildJsonObject { put("action", "approval"); put("nodeId", nodeId); put("decision", decision.name) })
-                    stateMutex.withLock { requests.remove(nodeId) }
-                } catch (failure: Exception) { if (failure !is CancellationException) fail(failure) }
+                }
+                writeFrame(response)
+                stateMutex.withLock {
+                    if (requests.remove(nodeId) != null) recordLocal(buildJsonObject {
+                        put("action", "approval"); put("nodeId", nodeId); put("decision", decision.name)
+                    })
+                }
+            } finally {
+                stateMutex.withLock { answeringApprovals.remove(nodeId) }
             }
         }
 
@@ -543,7 +621,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             confined(agentDirectory(containerId), "wawlink-model-payload.mjs")
             args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId)))
             if (hasThinkingPreference) args += listOf("--thinking", thinkingWire(state.value.thinkingLevel))
-            val restoredQueue = state.value.queuedPrompts.toList()
+            val restoredQueue = backendState.queuedPrompts.toList()
             val startupGeneration = stopGeneration.get()
             val startReady = CompletableDeferred<JsonObject>()
             ready = startReady
@@ -606,8 +684,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
         }
 
-        private suspend fun command(type: String, parameters: JsonObject = JsonObject(emptyMap()), timeoutMs: Long = 45_000, heartbeat: Boolean = false): JsonObject {
-            val requestId = if (heartbeat) "hb-${sequence.incrementAndGet()}" else "req-${sequence.incrementAndGet()}"
+        private suspend fun command(type: String, parameters: JsonObject = JsonObject(emptyMap()), timeoutMs: Long = 45_000, heartbeat: Boolean = false,
+            requestId: String = if (heartbeat) "hb-${sequence.incrementAndGet()}" else "req-${sequence.incrementAndGet()}"): JsonObject {
             val completion = CompletableDeferred<JsonObject>()
             pending[requestId] = completion
             try {
@@ -665,14 +743,6 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             if (type == "agent_start") { startedNanos = System.nanoTime(); backendSettled = false }
             if (type == "session_settled") backendSettled = true
             if (type == "prompt_result") frame["sessionSettled"]?.jsonPrimitive?.booleanOrNull?.let { backendSettled = it }
-            if (type == "extension_ui_request") {
-                stateMutex.withLock {
-                    when (frame.string("method")) {
-                        "select", "confirm", "ask", "input", "editor" -> requests[frame.string("id")] = frame
-                        "cancel" -> { requests.remove(frame.string("targetId")); askAnswers.remove(frame.string("targetId")) }
-                    }
-                }
-            }
             if (type == "response" && frame.string("command") == "get_state") {
                 frame["data"]?.jsonObject?.get("isSettled")?.jsonPrimitive?.booleanOrNull?.let { backendSettled = it }
                 frame["data"]?.jsonObject?.get("sessionFile")?.jsonPrimitive?.contentOrNull?.let { path ->
@@ -680,14 +750,34 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     if (sessionFile != path) { sessionFile = path; saveMetadata() }
                 }
             }
-            stateMutex.withLock {
+            val autoApproval = stateMutex.withLock {
+                if (type == "extension_ui_request") {
+                    when (frame.string("method")) {
+                        "select", "confirm", "ask", "input", "editor" -> requests[frame.string("id")] = frame
+                        "cancel" -> { requests.remove(frame.string("targetId")); askAnswers.remove(frame.string("targetId")) }
+                    }
+                }
                 // Heartbeat snapshots still reduce state but need not inflate the durable feed journal.
                 if (!(type == "response" && frame.string("id").startsWith("hb-"))) appendJournal(frame)
-                mutableState.value = reducer.reduce(frame)
+                reducer.reduce(frame)
+                val automatic = type == "extension_ui_request" && reducer.state.autoApprove && isApprovalRequest(frame)
+                if (!automatic) publishState()
+                automatic
             }
+            if (autoApproval) answerApproval(frame.string("id"), ApprovalDecision.ALLOW_ONCE)
             if (type == "agent_end" || type == "session_settled") local(buildJsonObject {
                 put("action", "elapsed"); put("seconds", ((System.nanoTime() - startedNanos) / 1_000_000_000).toInt())
             })
+            if (type == "response") {
+                if (frame["success"]?.jsonPrimitive?.booleanOrNull == false) rejectPrompt(frame.string("id"), frame.string("error", "OMP 请求失败"))
+                else if (frame.string("command") == "follow_up" ||
+                    (frame.string("command") == "prompt" && frame["data"]?.jsonObject?.get("agentInvoked")?.jsonPrimitive?.booleanOrNull == false)) completePrompt(frame.string("id"))
+            }
+            if (type == "prompt_result") {
+                if (frame["agentInvoked"]?.jsonPrimitive?.booleanOrNull == false && frame.string("status") == "error") {
+                    rejectPrompt(frame.string("id"), frame["error"]?.jsonObject?.string("message", "消息发送失败") ?: "消息发送失败")
+                } else completePrompt(frame.string("id"))
+            }
             if (type == "ready") ready?.complete(frame)
             if (type == "response") pending[frame.string("id")]?.complete(frame)
             if (type == "session_info_update") saveMetadata()
@@ -737,7 +827,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             pending.values.forEach { it.completeExceptionally(closedFailure) }
             pending.clear()
             stateMutex.withLock { requests.clear(); askAnswers.clear() }
-            if (state.value.isRunning) local(buildJsonObject { put("action", "stopped") })
+            if (backendState.isRunning) local(buildJsonObject { put("action", "stopped") })
             saveMetadata()
         }
 
@@ -754,22 +844,80 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             })
         }
 
-        private suspend fun mutate(transform: (ChatSessionUiState) -> ChatSessionUiState) = stateMutex.withLock {
-            mutableState.value = reducer.update(transform)
+        private fun publishState() = synchronized(presentationLock) {
+            backendState = reducer.state
+            presentState()
         }
 
-        private suspend fun local(payload: JsonObject) = stateMutex.withLock {
+        /** Called only under presentationLock; never waits for disk, attachments, or the RPC actor. */
+        private fun presentState() {
+            var feed: MutableList<FeedItem>? = null
+            var queue: MutableList<QueuedPrompt>? = null
+            for (prompt in outgoingPrompts.values) {
+                if (!prompt.preview) continue
+                if (prompt.queued) {
+                    if (queue == null) queue = backendState.queuedPrompts.toMutableList()
+                    queue.add(QueuedPrompt(prompt.id, prompt.text, prompt.attachments))
+                } else {
+                    if (feed == null) feed = backendState.feed.toMutableList()
+                    feed.add(UserMessageItem(prompt.id, prompt.text, prompt.attachments, prompt.timestamp))
+                }
+            }
+            mutableState.value = if (feed == null && queue == null) backendState else backendState.copy(
+                feed = feed ?: backendState.feed, queuedPrompts = queue ?: backendState.queuedPrompts,
+                status = if (feed != null) SessionStatus.RUNNING else backendState.status,
+                actionText = if (feed != null) "正在发送" else backendState.actionText,
+                error = if (feed != null) null else backendState.error,
+                elapsedSec = if (feed != null) 0 else backendState.elapsedSec)
+        }
+
+        private fun completePrompt(id: String) = synchronized(presentationLock) {
+            if (outgoingPrompts.remove(id) != null) presentState()
+        }
+
+        private suspend fun rejectPrompt(id: String, message: String) = stateMutex.withLock {
+            synchronized(presentationLock) { outgoingPrompts.remove(id) } ?: return@withLock
+            recordLocal(buildJsonObject {
+                put("action", if (reducer.hasConfirmedUser(id)) "operation_error" else "prompt_failed")
+                put("promptId", id); put("message", message); put("settled", backendSettled)
+            })
+        }
+
+        private suspend fun mutate(transform: (ChatSessionUiState) -> ChatSessionUiState) = stateMutex.withLock {
+            reducer.update(transform)
+            publishState()
+        }
+
+        private suspend fun local(payload: JsonObject) = stateMutex.withLock { recordLocal(payload) }
+
+        private fun recordLocal(payload: JsonObject) {
             val frame = buildJsonObject {
                 put("type", "wawlink_local"); put("localId", UUID.randomUUID().toString()); payload.forEach { (key, value) -> put(key, value) }
             }
             appendJournal(frame)
             applyLocal(frame)
-            mutableState.value = reducer.state
+            synchronized(presentationLock) {
+                val promptId = when (frame.string("action")) {
+                    "user" -> frame.string("localId")
+                    "queue_add" -> frame.string("queueId")
+                    else -> null
+                }
+                outgoingPrompts[promptId]?.preview = false
+                backendState = reducer.state
+                presentState()
+            }
         }
 
         private fun applyLocal(frame: JsonObject) {
             when (frame.string("action")) {
-                "user" -> reducer.update { it.copy(feed = it.feed + UserMessageItem(frame.string("localId"), frame.string("text"), parseAttachments(frame["attachments"]), frame["timestamp"]?.jsonPrimitive?.longOrNull ?: 0)) }
+                "user" -> reducer.update { it.copy(feed = it.feed + UserMessageItem(frame.string("localId"), frame.string("text"), parseAttachments(frame["attachments"]), frame["timestamp"]?.jsonPrimitive?.longOrNull ?: 0),
+                    status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
+                "prompt_failed" -> reducer.update { it.copy(
+                    feed = it.feed.filterNot { item -> item.id == frame.string("promptId") },
+                    queuedPrompts = it.queuedPrompts.filterNot { queued -> queued.id == frame.string("promptId") },
+                    status = if (frame["settled"]?.jsonPrimitive?.booleanOrNull == true) SessionStatus.ERROR else it.status,
+                    actionText = if (frame["settled"]?.jsonPrimitive?.booleanOrNull == true) "发送失败" else it.actionText,
+                    error = frame.string("message")) }
                 "queue_add" -> reducer.update { current -> current.copy(queuedPrompts =
                     current.queuedPrompts.filterNot { it.id == frame.string("queueId") } +
                         QueuedPrompt(frame.string("queueId"), frame.string("text"), parseAttachments(frame["attachments"]))) }
@@ -783,7 +931,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     hasThinkingPreference = true
                     reducer.update { it.copy(thinkingLevel = ThinkingLevel.valueOf(frame.string("level"))) }
                 }
-                "auto" -> reducer.update { it.copy(autoApprove = frame["enabled"]!!.jsonPrimitive.boolean) }
+                "auto" -> {
+                    hasExecutionPreference = true
+                    reducer.update { it.copy(autoApprove = frame["enabled"]!!.jsonPrimitive.boolean) }
+                }
                 "stopped" -> reducer.update { it.copy(status = SessionStatus.STOPPED, actionText = "已停止", feed = stopFeed(it.feed)) }
                 "error" -> reducer.update { it.copy(status = SessionStatus.ERROR, error = frame.string("message"), actionText = "执行失败", feed = stopFeed(it.feed)) }
                 "operation_error" -> reducer.update { it.copy(error = frame.string("message")) }
@@ -854,9 +1005,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     images += buildJsonObject { put("type", "image"); put("mimeType", attachment.mimeType); put("data", Base64.getEncoder().encodeToString(file.readBytes())) }
                 }
             }
-            val references = transferred.joinToString("\n") { "- ${it.name}: ${it.path}" }
+            return Triple(attachmentPrompt(text, transferred), transferred, JsonArray(images))
+        }
+
+        private fun attachmentPrompt(text: String, attachments: List<AttachmentFile>): String {
+            if (attachments.isEmpty()) return text
+            val references = attachments.joinToString("\n") { "- ${it.name}: ${it.path}" }
             val marker = "\n\n附件（工作区内真实文件）：\n$references"
-            return Triple(if (text.endsWith(marker)) text else text + marker, transferred, JsonArray(images))
+            return if (text.endsWith(marker)) text else text + marker
         }
     }
 }

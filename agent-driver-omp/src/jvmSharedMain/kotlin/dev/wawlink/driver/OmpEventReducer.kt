@@ -65,6 +65,8 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         state = transform(state)
         return state
     }
+    internal fun hasConfirmedUser(id: String): Boolean = id in reconciledUsers
+
 
     fun reduce(frame: JsonObject): ChatSessionUiState {
         when (frame.string("type")) {
@@ -236,8 +238,11 @@ class OmpEventReducer(initial: ChatSessionUiState) {
                     } else if (id !in reconciledUsers) {
                         val index = consumedQueue.indexOfFirst { it.text == text }
                         val queued = if (index >= 0) consumedQueue.removeAt(index) else null
-                        put(UserMessageItem(id, text, attachments = queued?.attachments.orEmpty(),
+                        val feedId = queued?.id ?: id
+                        put(UserMessageItem(feedId, text, attachments = queued?.attachments.orEmpty(),
                             timestamp = message.number("timestamp") ?: 0))
+                        reconciledUsers.add(feedId)
+                        userFeedIds[id] = feedId
                         reconciledUsers.add(id)
                     }
                 }
@@ -454,7 +459,7 @@ class OmpEventReducer(initial: ChatSessionUiState) {
         when (frame.string("method")) {
             "select" -> {
                 val options = frame.array("options").orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
-                if (title.startsWith("Allow tool:") && "Deny" in options && options.any { it == "Approve" || it == "Approve Once" }) {
+                if (isApprovalRequest(frame)) {
                     put(ApprovalCardItem(id, title.lineSequence().first(), title, title.substringAfter('\n', "")))
                 } else put(AskCardItem(id, title, title, options))
                 waiting()
@@ -731,7 +736,14 @@ class OmpEventReducer(initial: ChatSessionUiState) {
     private fun put(value: FeedItem) {
         var found = false
         val feed = mapFeed(state.feed) { if (it.id == value.id) { found = true; value } else it }
-        state = state.copy(feed = if (found) feed else feed + value)
+        val group = if (!found && value is ThinkingNodeItem) activeGroup?.let { item(it) as? StepGroupNodeItem } else null
+        state = state.copy(feed = when {
+            found -> feed
+            group != null -> mapFeed(feed) {
+                if (it is StepGroupNodeItem && it.id == group.id) it.copy(children = it.children + value) else it
+            }
+            else -> feed + value
+        })
     }
     private fun mapFeed(feed: List<FeedItem>, transform: (FeedItem) -> FeedItem): List<FeedItem> = feed.map {
         transform(if (it is StepGroupNodeItem) it.copy(children = mapFeed(it.children, transform)) else it)
