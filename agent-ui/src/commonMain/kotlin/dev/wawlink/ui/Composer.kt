@@ -90,18 +90,22 @@ internal fun tokens(value: Long): String = when { value >= 1_000_000 -> decimal(
 
 
 private val AttachmentDraftSaver = listSaver<SnapshotStateList<AttachmentFile>, Any>(
-    save = { files -> files.map { arrayListOf(it.id, it.name, it.path, it.mimeType, it.sizeBytes, it.isWorkspaceFile) } },
+    save = { files -> files.map { arrayListOf(it.id, it.name, it.path, it.mimeType, it.sizeBytes, it.source.name) } },
     restore = { rows -> rows.map { row ->
         val fields = row as List<*>
         AttachmentFile(fields[0] as String, fields[1] as String, fields[2] as String, fields[3] as String,
-            (fields[4] as Number).toLong(), fields[5] as Boolean)
+            (fields[4] as Number).toLong(), when (val source = fields[5]) {
+                is Boolean -> if (source) AttachmentSource.WORKSPACE else AttachmentSource.LOCAL
+                else -> AttachmentSource.valueOf(source as String)
+            })
     }.toMutableStateList() },
 )
 
 @OptIn(ExperimentalAnimationApi::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun ComposerArea(controller: AgentSessionController, state: ChatSessionUiState, providerRepository: ProviderConfigRepository,
-    onOpenProviderSettings: () -> Unit, onPickFiles: suspend () -> List<AttachmentFile>, onPromptSubmitted: () -> Unit, modifier: Modifier = Modifier) {
+    onOpenProviderSettings: () -> Unit, onPickFiles: suspend () -> List<AttachmentFile>, onPickContainerFiles: suspend () -> List<AttachmentFile>,
+    onPromptSubmitted: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalAgentColors.current
     val appearance = LocalAgentAppearance.current
     val scope = rememberCoroutineScope()
@@ -115,10 +119,15 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     var menu by remember { mutableStateOf<String?>(null) }
     var workspacePicker by remember { mutableStateOf(false) }
     var usageSheet by remember { mutableStateOf(false) }
+    var usageStarted by rememberSaveable(state.id) { mutableStateOf(false) }
     var pickerError by remember { mutableStateOf<String?>(null) }
     var picking by remember { mutableStateOf(false) }
     var slashIndex by remember { mutableStateOf(0) }
     var inputFocused by remember { mutableStateOf(false) }
+    val conversationStarted = usageStarted || state.isRunning || state.queuedPrompts.isNotEmpty() ||
+        state.feed.any { it is UserMessageItem } || state.usage.totalTokens > 0 || state.usage.contextTokens > 0 ||
+        state.usage.cacheReadTokens > 0 || state.usage.cacheWriteTokens > 0 || state.usage.cost > 0
+    LaunchedEffect(state.id, conversationStarted) { if (conversationStarted) usageStarted = true }
     val slashMode = slashQuery(text) != null
     val commands = remember(state.slashCommands) { composerSlashCommands(state.slashCommands) }
     val suggestions = slashQuery(text)?.let { matchingSlashCommands(commands, it) }.orEmpty()
@@ -154,9 +163,10 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
             when (localSlashAction(prompt)) {
                 LocalSlashAction.MODEL -> menu = "model"
                 LocalSlashAction.COST -> usageSheet = true
-                null -> { onPromptSubmitted(); controller.executeSlashCommand(command, args) }
+                null -> { usageStarted = true; onPromptSubmitted(); controller.executeSlashCommand(command, args) }
             }
         } else {
+            usageStarted = true
             onPromptSubmitted()
             if (state.isRunning && attachments.isEmpty()) controller.enqueuePrompt(prompt)
             else controller.sendPrompt(prompt, attachments.toList())
@@ -202,7 +212,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
         Surface(modifier = if (inputFocused) Modifier.border(2.dp, c.primary, RoundedCornerShape(28.dp)) else Modifier,
             shape = RoundedCornerShape(28.dp), color = c.surfaceContainerHigh) {
             Column(Modifier.padding(8.dp)) {
-                AnimatedVisibility(state.isRunning || appearance.alwaysShowUsage,
+                AnimatedVisibility(conversationStarted || appearance.alwaysShowUsage,
                     enter = expandVertically(tween(450, easing = EmphEasing)) + fadeIn(tween(350, 100, EmphDecelEasing)),
                     exit = shrinkVertically(tween(450, easing = EmphEasing)) + fadeOut(tween(250, easing = EmphAccelEasing))) {
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically,
@@ -248,6 +258,14 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                                 scope.launch {
                                     try { attachments.addAll(onPickFiles().filter { incoming -> attachments.none { it.path == incoming.path } }) }
                                     catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; pickerError = e.message ?: "无法选择文件" }
+                                    finally { picking = false }
+                                }
+                            }
+                            PopupRow("容器文件", "folder_managed") {
+                                menu = null; picking = true
+                                scope.launch {
+                                    try { attachments.addAll(onPickContainerFiles().filter { incoming -> attachments.none { it.path == incoming.path && it.source == incoming.source } }) }
+                                    catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; pickerError = e.message ?: "无法选择容器文件" }
                                     finally { picking = false }
                                 }
                             }
@@ -476,7 +494,7 @@ private fun WorkspacePicker(controller: AgentSessionController, workspace: Strin
         }
         Button({ onPick(selected.values.map { file -> AttachmentFile("workspace:${file.relativePath}", file.name,
             if (file.relativePath.startsWith('/')) file.relativePath else workspace.trimEnd('/') + "/" + file.relativePath,
-            sizeBytes = file.sizeBytes, isWorkspaceFile = true) }) }, Modifier.fillMaxWidth().padding(top = 16.dp).height(48.dp), enabled = selected.isNotEmpty()) {
+            sizeBytes = file.sizeBytes, source = AttachmentSource.WORKSPACE) }) }, Modifier.fillMaxWidth().padding(top = 16.dp).height(48.dp), enabled = selected.isNotEmpty()) {
             Symbol("attach_file", size = 20.dp); Spacer(Modifier.width(8.dp)); Text("添加 ${selected.size} 个文件")
         }
     }
@@ -493,10 +511,12 @@ private fun WorkspaceBranch(controller: AgentSessionController, path: String, de
     }.onEach { loaded = true } }
     val files by flow.collectAsState(initial = emptyList())
     val c = LocalAgentColors.current
+    Column(Modifier.fillMaxWidth()) {
     if (error != null) Text(error.orEmpty(), color = c.error, modifier = Modifier.padding(12.dp))
     else if (!loaded) Row(Modifier.padding(12.dp)) { AgentProgressIndicator(); Text("正在读取文件…") }
     else if (files.isEmpty()) Text("此目录为空", color = c.onSurfaceVariant, modifier = Modifier.padding(start = (depth * 16 + 12).dp, top = 12.dp, bottom = 12.dp))
     files.sortedWith(compareByDescending<WorkspaceFileItem> { it.isDirectory }.thenBy { it.name.lowercase() }).forEach { file ->
+        key(file.relativePath) {
         val isOpen = expanded[file.relativePath] == true
         val chosen = selected.containsKey(file.relativePath)
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (chosen) c.primaryContainer else Color.Transparent)
@@ -511,5 +531,7 @@ private fun WorkspaceBranch(controller: AgentSessionController, path: String, de
         AnimatedVisibility(file.isDirectory && isOpen, enter = expandVertically(tween(400, easing = EmphEasing)) + fadeIn(), exit = shrinkVertically(tween(400, easing = EmphEasing)) + fadeOut()) {
             WorkspaceBranch(controller, file.relativePath, depth + 1, expanded, selected)
         }
+        }
+    }
     }
 }

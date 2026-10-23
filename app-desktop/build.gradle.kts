@@ -20,6 +20,9 @@ kotlin {
                 implementation("org.jetbrains.jediterm:jediterm-core:3.63")
             }
         }
+        val desktopTest by getting {
+            dependencies { implementation(kotlin("test")) }
+        }
     }
 }
 compose.desktop {

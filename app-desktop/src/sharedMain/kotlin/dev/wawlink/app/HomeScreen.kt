@@ -23,7 +23,7 @@ import dev.wawlink.runtime.*
 import dev.wawlink.ui.*
 
 @Composable
-internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSession: () -> Unit, onEnterSession: (String) -> Unit, onContainer: (String) -> Unit, onInstall: (Boolean) -> Unit, onTerminal: (String) -> Unit) {
+internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () -> Unit, onNewSession: () -> Unit, onEnterSession: (String) -> Unit, onContainer: (String) -> Unit, onInstall: (Boolean) -> Unit, onTerminal: (String) -> Unit) {
     var tab by rememberSaveable { mutableStateOf(0) }
     var batch by rememberSaveable { mutableStateOf(false) }
     var selected by rememberSaveable { mutableStateOf(emptySet<String>()) }
@@ -121,7 +121,7 @@ internal fun HomeScreen(app: AppCoordinator, onSettings: () -> Unit, onNewSessio
             }
         }
     }
-    editing?.let { record -> SessionEditor(app, record, { editing = null }) { editing = null } }
+    editing?.let { record -> SessionEditor(app, files, record, { editing = null }) { editing = null } }
     switching?.let { record -> AgentSheet("切换绑定容器", { switching = null }) {
         containers.forEach { c -> HostRow(c.config.name, "${c.config.distro} ${c.config.version}", "deployed_code", {
             app.launch { app.editSession(record.id, record.title, record.workspace, c.config.id); switching = null }
@@ -202,23 +202,41 @@ private fun pendingApprovals(feed: List<FeedItem>): List<ApprovalCardItem> = fee
 @Composable internal fun Meta(icon: String, text: String) { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) { Symbol(icon, size = 19.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant); Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp, maxLines = 1) } }
 
 @Composable
-internal fun SessionEditor(app: AppCoordinator, record: SessionRecord?, onDismiss: () -> Unit, onSaved: (String) -> Unit) {
+internal fun SessionEditor(app: AppCoordinator, files: HostFiles, record: SessionRecord?, onDismiss: () -> Unit, onSaved: (String) -> Unit) {
     val containers by app.runtime.containers.collectAsState()
     var title by remember(record?.id) { mutableStateOf(record?.title ?: "") }
     var workspace by remember(record?.id) { mutableStateOf(record?.workspace ?: "/workspace") }
     var containerId by remember(record?.id) { mutableStateOf(record?.containerId ?: (containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull())?.config?.id.orEmpty()) }
     var saving by remember { mutableStateOf(false) }
+    var pickingWorkspace by remember { mutableStateOf(false) }
+    val pickerNavigation = remember { HostNavigation() }
     AgentSheet(if (record == null) "新建会话" else "重命名会话", onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             HostField("任务描述或标题", title, { title = it })
             SectionLabel("选择运行容器", "deployed_code")
             HostChips(containers.map { it.config.id }, containerId, { id -> containers.first { it.config.id == id }.config.name }, { containerId = it }, "deployed_code")
-            HostField("工作区目录", workspace, { workspace = it })
+            OutlinedTextField(workspace, { workspace = it }, Modifier.fillMaxWidth().padding(vertical = 6.dp), label = { Text("工作区目录") }, singleLine = true, shape = RoundedCornerShape(16.dp), trailingIcon = {
+                IconButton({ pickingWorkspace = true }, enabled = !saving && containers.any { it.config.id == containerId }) { Symbol("folder_open", contentDescription = "浏览容器目录选择工作区") }
+            })
             Text("使用容器内绝对路径。创建后可在聊天页输入任务；不会自动运行示例任务。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp)
             HostAction(if (saving) "正在保存" else if (record == null) "创建并进入" else "保存修改", "check", {
                 saving = true
                 app.launch { try { val id = if (record == null) app.create(title, containerId, workspace) else { app.editSession(record.id, title, workspace, containerId); record.id }; onSaved(id) } finally { saving = false } }
             }, Modifier.fillMaxWidth().padding(top = 16.dp), enabled = !saving && containerId.isNotEmpty() && workspace.isNotBlank())
+        }
+    }
+    if (pickingWorkspace) {
+        val selectedContainer = containers.firstOrNull { it.config.id == containerId }
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { if (pickerNavigation.onBack?.invoke() != true) pickingWorkspace = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(Modifier.fillMaxSize()) {
+                if (selectedContainer != null) key(selectedContainer.config.id) {
+                    ContainerFilesScreen(app, files, selectedContainer.config, { pickingWorkspace = false }, { pickerNavigation.onBack = it },
+                        initialPath = workspace.ifEmpty { "/workspace" }, onChooseDirectory = { chosen -> workspace = chosen; pickingWorkspace = false })
+                } else Column { AgentTopBar("容器不存在", { pickingWorkspace = false }); EmptyHost("请重新选择运行容器") }
+            }
         }
     }
 }

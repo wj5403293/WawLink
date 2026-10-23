@@ -11,10 +11,14 @@ import java.util.UUID
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
+data class HostImportFile(val name: String, val openInput: () -> java.io.InputStream)
+
 interface HostFiles {
     suspend fun pickAttachments(): List<AttachmentFile>
     suspend fun pickRootfs(): String?
     suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean
+    suspend fun pickImportFiles(): List<HostImportFile>
+    suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean
 }
 
 data class SessionRecord(
@@ -122,7 +126,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         require(workspace.startsWith('/')) { "工作区必须是容器内绝对路径" }
         require(runtime.containers.value.any { it.config.id == containerId }) { "请先安装或导入一个容器" }
         val id = UUID.randomUUID().toString()
-        val record = SessionRecord(id, title.trim().ifBlank { "新会话" }, containerId, workspace.trim())
+        val record = SessionRecord(id, title.trim().ifBlank { "新会话" }, containerId, workspace)
         synchronized(controllers) {
             val controller = pool.session(record.id, record.containerId, record.workspace, record.title, autoApprove = _defaultAutoApprove.value)
             controllers[id] = controller
@@ -146,7 +150,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         require(workspace.startsWith('/')) { "工作区必须是容器内绝对路径" }
         val controller = pool.relocateSession(id, containerId, workspace, title)
         synchronized(controllers) { controllers[id] = controller; observe(id, controller) }
-        records.update { all -> all.map { if (it.id == id) it.copy(title = title.trim(), workspace = workspace.trim(), containerId = containerId, updatedAt = System.currentTimeMillis()) else it } }
+        records.update { all -> all.map { if (it.id == id) it.copy(title = title.trim(), workspace = workspace, containerId = containerId, updatedAt = System.currentTimeMillis()) else it } }
         persistSessions()
     }
     suspend fun togglePin(ids: Set<String>) { records.update { all -> all.map { if (it.id in ids) it.copy(pinned = !it.pinned) else it } }; persistSessions() }

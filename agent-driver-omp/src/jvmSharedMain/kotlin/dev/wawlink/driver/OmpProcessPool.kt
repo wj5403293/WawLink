@@ -3,6 +3,7 @@ package dev.wawlink.driver
 import dev.wawlink.protocol.*
 import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
+import dev.wawlink.runtime.ContainerFileService
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.CodingErrorAction
@@ -1064,33 +1065,51 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         private fun saveMetadata() = writeMetadata(id, containerId, workspace, reducer.state.title, sessionFile)
 
-        private fun prepareAttachments(text: String, attachments: List<AttachmentFile>): Triple<String, List<AttachmentFile>, JsonArray> {
+        private suspend fun prepareAttachments(text: String, attachments: List<AttachmentFile>): Triple<String, List<AttachmentFile>, JsonArray> {
             if (attachments.isEmpty()) return Triple(text, emptyList(), JsonArray(emptyList()))
-            val workspaceRoot = resolveWorkspace(containerId, workspace, write = true)
-            workspaceRoot.mkdirs()
+            var workspaceRoot: File? = null
+            var containerFiles: ContainerFileService? = null
             val transferred = ArrayList<AttachmentFile>(attachments.size)
             val images = ArrayList<JsonElement>()
             for (attachment in attachments) {
-                val file: File
+                val image = when (attachment.mimeType) { "image/png", "image/jpeg", "image/webp", "image/gif" -> true; else -> false }
                 val guestPath: String
-                if (attachment.isWorkspaceFile) {
-                    val relative = if (attachment.path.startsWith(workspace.trimEnd('/') + "/")) attachment.path.removePrefix(workspace.trimEnd('/') + "/") else attachment.path
-                    require(!File(relative).isAbsolute) { "附件必须位于当前工作区" }
-                    file = confined(workspaceRoot, relative)
-                    guestPath = workspace.trimEnd('/') + "/" + file.relativeTo(workspaceRoot.canonicalFile).invariantSeparatorsPath
+                val sizeBytes: Long
+                val imageBytes: ByteArray?
+                val source: AttachmentSource
+                if (attachment.source == AttachmentSource.CONTAINER) {
+                    require(attachment.path.startsWith('/')) { "容器附件必须使用绝对路径" }
+                    val files = containerFiles ?: ContainerFileService(runtime, config(containerId)).also { containerFiles = it }
+                    guestPath = ContainerFileService.path(attachment.path)
+                    val file = files.stat(guestPath)
+                    require(file.regular && file.readable) { "无法读取容器附件：${attachment.name}" }
+                    sizeBytes = file.size
+                    imageBytes = if (image) ByteArrayOutputStream().use { output -> files.exportFile(guestPath, output); output.toByteArray() } else null
+                    source = AttachmentSource.CONTAINER
                 } else {
-                    val source = File(attachment.path)
-                    require(source.isFile && source.canRead()) { "无法读取附件：${attachment.name}" }
-                    val safeName = attachment.name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").ifBlank { "attachment" }
-                    file = confined(workspaceRoot, ".wawlink/attachments/${safeId(attachment.id)}/$safeName")
-                    file.parentFile.mkdirs()
-                    if (source.canonicalFile != file.canonicalFile) source.inputStream().use { input -> file.outputStream().use { input.copyTo(it) } }
-                    guestPath = workspace.trimEnd('/') + "/" + file.relativeTo(workspaceRoot.canonicalFile).invariantSeparatorsPath
+                    val root = workspaceRoot ?: resolveWorkspace(containerId, workspace, write = true).also { it.mkdirs(); workspaceRoot = it }
+                    val file: File
+                    if (attachment.source == AttachmentSource.WORKSPACE) {
+                        val relative = if (attachment.path.startsWith(workspace.trimEnd('/') + "/")) attachment.path.removePrefix(workspace.trimEnd('/') + "/") else attachment.path
+                        require(!File(relative).isAbsolute) { "附件必须位于当前工作区" }
+                        file = confined(root, relative)
+                    } else {
+                        val local = File(attachment.path)
+                        require(local.isFile && local.canRead()) { "无法读取附件：${attachment.name}" }
+                        val safeName = attachment.name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").ifBlank { "attachment" }
+                        file = confined(root, ".wawlink/attachments/${safeId(attachment.id)}/$safeName")
+                        file.parentFile.mkdirs()
+                        if (local.canonicalFile != file.canonicalFile) local.inputStream().use { input -> file.outputStream().use { input.copyTo(it) } }
+                    }
+                    require(file.isFile && file.canRead()) { "无法读取附件：${attachment.name}" }
+                    guestPath = workspace.trimEnd('/') + "/" + file.relativeTo(root.canonicalFile).invariantSeparatorsPath
+                    sizeBytes = file.length()
+                    imageBytes = if (image) file.readBytes() else null
+                    source = AttachmentSource.WORKSPACE
                 }
-                require(file.isFile) { "附件不存在：${attachment.name}" }
-                transferred += attachment.copy(path = guestPath, sizeBytes = file.length(), isWorkspaceFile = true)
-                if (attachment.mimeType in setOf("image/png", "image/jpeg", "image/webp", "image/gif")) {
-                    images += buildJsonObject { put("type", "image"); put("mimeType", attachment.mimeType); put("data", Base64.getEncoder().encodeToString(file.readBytes())) }
+                transferred += attachment.copy(path = guestPath, sizeBytes = sizeBytes, source = source)
+                if (imageBytes != null) images += buildJsonObject {
+                    put("type", "image"); put("mimeType", attachment.mimeType); put("data", Base64.getEncoder().encodeToString(imageBytes))
                 }
             }
             return Triple(attachmentPrompt(text, transferred), transferred, JsonArray(images))
@@ -1099,7 +1118,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private fun attachmentPrompt(text: String, attachments: List<AttachmentFile>): String {
             if (attachments.isEmpty()) return text
             val references = attachments.joinToString("\n") { "- ${it.name}: ${it.path}" }
-            val marker = "\n\n附件（工作区内真实文件）：\n$references"
+            val marker = "\n\n附件（容器内真实文件）：\n$references"
             return if (text.endsWith(marker)) text else text + marker
         }
     }
@@ -1236,11 +1255,13 @@ private fun stopProcess(process: Process) {
     runCatching { process.inputStream.close() }; runCatching { process.errorStream.close() }; runCatching { process.outputStream.close() }
 }
 private fun attachmentsJson(files: List<AttachmentFile>): JsonArray = JsonArray(files.map { file -> buildJsonObject {
-    put("id", file.id); put("name", file.name); put("path", file.path); put("mimeType", file.mimeType); put("sizeBytes", file.sizeBytes); put("isWorkspaceFile", file.isWorkspaceFile)
+    put("id", file.id); put("name", file.name); put("path", file.path); put("mimeType", file.mimeType); put("sizeBytes", file.sizeBytes); put("source", file.source.name)
 } })
 private fun parseAttachments(element: JsonElement?): List<AttachmentFile> = (element as? JsonArray).orEmpty().map { value ->
     val file = value.jsonObject
-    AttachmentFile(file.string("id"), file.string("name"), file.string("path"), file.string("mimeType", "application/octet-stream"), file["sizeBytes"]?.jsonPrimitive?.longOrNull ?: 0, file["isWorkspaceFile"]?.jsonPrimitive?.booleanOrNull ?: false)
+    val source = file["source"]?.jsonPrimitive?.contentOrNull?.let(AttachmentSource::valueOf)
+        ?: if (file["isWorkspaceFile"]?.jsonPrimitive?.booleanOrNull == true) AttachmentSource.WORKSPACE else AttachmentSource.LOCAL
+    AttachmentFile(file.string("id"), file.string("name"), file.string("path"), file.string("mimeType", "application/octet-stream"), file["sizeBytes"]?.jsonPrimitive?.longOrNull ?: 0, source)
 }
 private fun mapFeed(items: List<FeedItem>, transform: (FeedItem) -> FeedItem): List<FeedItem> = items.map { item -> transform(if (item is StepGroupNodeItem) item.copy(children = mapFeed(item.children, transform)) else item) }
 private fun hasUnresolvedDialog(items: List<FeedItem>): Boolean = items.any { item -> when (item) {

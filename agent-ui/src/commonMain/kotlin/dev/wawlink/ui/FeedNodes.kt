@@ -22,6 +22,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -187,17 +188,22 @@ private fun NodeFrame(nodeId: String, icon: String, lead: LeadStyle, open: Boole
 }
 
 @Composable
-private fun Expand(visible: Boolean, content: @Composable () -> Unit) {
-    AnimatedVisibility(visible,
+private fun Expand(visible: Boolean, transition: MutableTransitionState<Boolean> = remember { MutableTransitionState(visible) }, content: @Composable () -> Unit) {
+    transition.targetState = visible
+    AnimatedVisibility(transition,
         enter = expandVertically(tween(500, easing = EmphEasing)) + fadeIn(tween(400, 80, EmphDecelEasing)),
-        exit = shrinkVertically(tween(500, easing = EmphEasing)) + fadeOut(tween(200, easing = EmphAccelEasing))) { content() }
+        exit = shrinkVertically(tween(500, easing = EmphEasing)) + fadeOut(tween(200, easing = EmphAccelEasing))) {
+        CompositionLocalProvider(LocalFeedExpansionInProgress provides (!transition.isIdle || LocalFeedExpansionInProgress.current)) { content() }
+    }
 }
 
 @Composable
 private fun ThinkingNode(node: ThinkingNodeItem, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     val open = expanded[node.id] ?: node.isExpanded
     val c = LocalAgentColors.current
-    val text = stableThinkingText(node.id, node.text, node.isStreaming)
+    val expansion = remember(node.id) { MutableTransitionState(open) }
+    expansion.targetState = open
+    val text = streamedText(node.text, node.isStreaming, paused = !expansion.isIdle || LocalFeedExpansionInProgress.current)
     NodeFrame(node.id, "psychology", LeadStyle.SOFT, open, "思考", { expanded[node.id] = !open },
         status = { NodeStatusLabel(if (node.isStreaming) NodeStatus.RUNNING else NodeStatus.OK, node.elapsedSec, startedAtMillis = node.startedAtMillis) },
         rail = { StagedRail(open, 0, "open_in_full", "全屏") { onDetail(FeedDetail(node.id, "思考", node.text, markdown = true)) } },
@@ -206,7 +212,7 @@ private fun ThinkingNode(node: ThinkingNodeItem, expanded: MutableMap<String, Bo
             if (node.isStreaming) ThinkingTail(text)
             else Text(text, color = c.onSurfaceVariant, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Expand(open) { ThinkingMarkdown(node.id, text) }
+        Expand(open, expansion) { ThinkingMarkdown(node.id, text) }
     }
 }
 
@@ -313,7 +319,7 @@ private fun ToolNode(node: ToolNodeItem, expanded: MutableMap<String, Boolean>, 
                 clipboard.setText(AnnotatedString(copyText)); copied = true
             }
         }) {
-        Expand(!open) { ToolPreviewContent(node.previewContent) }
+        Expand(!open) { ToolPreviewContent(node) }
         Expand(open) { Box(Modifier.heightIn(min = 150.dp)) { ToolDetailContent(node) } }
     }
 }
@@ -342,11 +348,13 @@ internal fun MidTruncatedPath(prefix: String, file: String, modifier: Modifier =
 }
 
 @Composable
-private fun ToolPreviewContent(preview: ToolPreview) {
+private fun ToolPreviewContent(node: ToolNodeItem) {
+    val preview = node.previewContent
     val c = LocalAgentColors.current
     when (preview) {
-        is ToolPreview.CommandOneLine -> Text(preview.cmd, Modifier.padding(top = 2.dp), fontFamily = LocalAgentMono.current,
-            color = if (LocalAgentAppearance.current.darkTheme) c.tertiary else Color(0xFF2D5016),
+        is ToolPreview.CommandOneLine -> Text(rememberHighlightedCode(preview.cmd,
+            inferCodeLanguage(node.codeLanguage, node.codePath, preview.cmd, node.codeInterpreter) ?: "bash"),
+            Modifier.padding(top = 2.dp), fontFamily = LocalAgentMono.current, color = c.onSurfaceVariant,
             fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         is ToolPreview.MidPath -> Column {
             MidTruncatedPath(preview.dirPrefix, preview.fileName)
@@ -430,8 +438,8 @@ private fun ApprovalCard(node: ApprovalCardItem, controller: AgentSessionControl
                     Column {
                         Text(node.description, Modifier.padding(top = 4.dp), fontSize = 18.sp)
                         Surface(color = c.surface, shape = RoundedCornerShape(16.dp), modifier = Modifier.padding(top = 12.dp)) {
-                            Text(node.commandPreview, Modifier.padding(horizontal = 14.dp, vertical = 12.dp), fontFamily = LocalAgentMono.current,
-                                fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = if (LocalAgentAppearance.current.darkTheme) c.tertiary else Color(0xFF2D5016))
+                            Text(rememberHighlightedCode(node.commandPreview, "bash"), Modifier.padding(horizontal = 14.dp, vertical = 12.dp), fontFamily = LocalAgentMono.current,
+                                fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = c.onSurfaceVariant)
                         }
                         Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton({ controller.respondApproval(node.id, ApprovalDecision.DENY) }, Modifier.height(48.dp)) {
@@ -462,6 +470,13 @@ private fun ApprovalCard(node: ApprovalCardItem, controller: AgentSessionControl
 private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
     val c = LocalAgentColors.current
     var draft by rememberSaveable(node.id, stateSaver = AskRequestDraftSaver) { mutableStateOf(AskRequestDraft()) }
+    val focusManager = LocalFocusManager.current
+    val onNavigate = LocalFeedItemNavigation.current
+    fun navigate(next: AskRequestDraft) {
+        focusManager.clearFocus(force = true)
+        onNavigate(node.id)
+        draft = next
+    }
     val page = draft.page(node.questions)
     val active = node.questions.getOrNull(page)
     fun answer(question: AskQuestion): AskAnswer? = if (node.answers != null) {
@@ -489,7 +504,7 @@ private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
                                     val response = answer(question)
                                     Text(response?.let { (it.selectedOptions + listOfNotNull(it.customInput)).joinToString("\n").ifEmpty { "不选择任何选项" } } ?: "尚未作答",
                                         Modifier.padding(top = 8.dp), color = if (response == null && !node.isResolved) c.error else c.onSurfaceVariant)
-                                    TextButton({ draft = draft.show(question.id) }) {
+                                    TextButton({ navigate(draft.show(question.id)) }) {
                                         Text(if (node.isResolved) "查看问题" else "编辑答案")
                                     }
                                 }
@@ -516,6 +531,12 @@ private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
                                 resolved = node.isResolved,
                                 unanswered = draft.unansweredQuestionId == question.id && answer(question) == null,
                                 onChange = { if (!node.isResolved) draft = draft.edit(question.id, it) },
+                                onSelect = { label ->
+                                    if (!node.isResolved) {
+                                        val next = draft.selectOption(node.questions, question.id, label)
+                                        if (!question.multi && next != draft) navigate(next) else draft = next
+                                    }
+                                },
                                 onPreview = { label, selected -> draft = draft.edit(question.id, draft.question(question.id).togglePreview(label, selected)) },
                             )
                         }
@@ -525,14 +546,14 @@ private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
             if (node.questions.isNotEmpty()) {
                 Row(Modifier.fillMaxWidth().padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
-                        onClick = { draft = draft.show(node.questions[page - 1].id) },
+                        onClick = { navigate(draft.show(node.questions[page - 1].id)) },
                         enabled = !draft.reviewing && page > 0,
                         modifier = Modifier.size(44.dp),
                     ) {
                         Symbol("chevron_left", tint = c.onSurfaceVariant.copy(alpha = if (!draft.reviewing && page > 0) 1f else .38f), contentDescription = "上一题")
                     }
                     IconButton(
-                        onClick = { draft = draft.show(node.questions[page + 1].id) },
+                        onClick = { navigate(draft.show(node.questions[page + 1].id)) },
                         enabled = !draft.reviewing && page < node.questions.lastIndex,
                         modifier = Modifier.size(44.dp),
                     ) {
@@ -544,7 +565,7 @@ private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
                         Button({
                             val missing = draft.firstUnanswered(node.questions)
                             if (missing != null) {
-                                draft = draft.show(missing).copy(unansweredQuestionId = missing)
+                                navigate(draft.show(missing).copy(unansweredQuestionId = missing))
                             } else {
                                 draft.answers(node.questions)?.let { controller.respondAsk(node.id, it) }
                             }
@@ -552,9 +573,9 @@ private fun AskCard(node: AskCardItem, controller: AgentSessionController) {
                             Text("提交全部")
                         }
                     } else if (draft.reviewing) {
-                        TextButton({ draft = draft.copy(reviewing = false) }, Modifier.heightIn(min = 48.dp)) { Text("返回") }
+                        TextButton({ navigate(draft.copy(reviewing = false)) }, Modifier.heightIn(min = 48.dp)) { Text("返回") }
                     } else {
-                        TextButton({ draft = draft.copy(reviewing = true) }, Modifier.heightIn(min = 48.dp)) {
+                        TextButton({ navigate(draft.copy(reviewing = true)) }, Modifier.heightIn(min = 48.dp)) {
                             Text(if (node.isResolved) "查看全部" else "检查答案")
                         }
                     }
@@ -572,6 +593,7 @@ private fun AskQuestionPage(
     resolved: Boolean,
     unanswered: Boolean,
     onChange: (AskQuestionDraft) -> Unit,
+    onSelect: (String) -> Unit,
     onPreview: (String, Boolean) -> Unit,
 ) {
     val c = LocalAgentColors.current
@@ -592,7 +614,7 @@ private fun AskQuestionPage(
                         Row(
                             Modifier.fillMaxWidth().selectable(selected = chosen, enabled = !resolved,
                                 role = if (question.multi) Role.Checkbox else Role.RadioButton,
-                                onClick = { onChange(draft.select(question, option.label)) })
+                                onClick = { onSelect(option.label) })
                                 .heightIn(min = 60.dp).padding(horizontal = 18.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
                         ) {

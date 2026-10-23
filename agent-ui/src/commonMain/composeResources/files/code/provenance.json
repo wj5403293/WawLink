@@ -2,20 +2,19 @@
   "description": "Unmodified Maven dependencies used by readonly code viewers; exact upstream license texts retained verbatim.",
   "dependencies": [
     {
-      "dependency": "dev.snipme:highlights:1.0.0",
-      "licenseSource": "https://raw.githubusercontent.com/SnipMeDev/Highlights/1.0.0/LICENSE",
-      "licenseFile": "Highlights-1.0.0-APACHE-2.0.txt",
-      "licenseSha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
-      "completeSource": "https://github.com/SnipMeDev/Highlights/archive/refs/tags/1.0.0.tar.gz",
-      "modifications": "none; consumed as Maven dependency"
-    },
-    {
       "dependency": "io.github.Rosemoe.sora-editor:editor:0.23.6",
       "licenseSource": "https://raw.githubusercontent.com/Rosemoe/sora-editor/0.23.6/LICENSE",
       "licenseFile": "Sora-0.23.6-LGPL-2.1.txt",
       "licenseSha256": "7ffe1954587c77dfba1cf8eb9b2ea743671fa6e63f9e7a2f258119d42e14eefe",
       "completeSource": "https://github.com/Rosemoe/sora-editor/archive/refs/tags/0.23.6.tar.gz",
       "modifications": "none; consumed as Maven dependency"
+    },
+    {
+      "dependency": "io.github.Rosemoe.sora-editor:language-textmate:0.23.6",
+      "licenseFile": "Sora-0.23.6-LGPL-2.1.txt",
+      "completeSource": "https://github.com/Rosemoe/sora-editor/archive/b1777d0d465b42515739ffe529b4ec1634ac2175.tar.gz",
+      "resourcesAndFullLicenses": "textmate/provenance.json",
+      "modifications": "none; consumed as Maven dependency; per-document registry adapter loads bundled grammars"
     },
     {
       "dependency": "com.fifesoft:rsyntaxtextarea:3.6.0",

@@ -48,6 +48,7 @@ enum class NodeStatus { RUNNING, OK, ERROR, STOPPED }
 enum class StepState { PENDING, IN_PROGRESS, COMPLETED }
 enum class LeadStyle { DARK, SOFT, TONE, WARN }
 enum class DiffLineKind { CONTEXT, ADDED, REMOVED }
+enum class AttachmentSource { LOCAL, WORKSPACE, CONTAINER }
 
 data class AttachmentFile(
     val id: String,
@@ -55,7 +56,7 @@ data class AttachmentFile(
     val path: String,
     val mimeType: String = "application/octet-stream",
     val sizeBytes: Long = 0,
-    val isWorkspaceFile: Boolean = false,
+    val source: AttachmentSource = AttachmentSource.LOCAL,
 )
 data class WorkspaceFileItem(val name: String, val relativePath: String, val isDirectory: Boolean, val sizeBytes: Long = 0)
 data class QueuedPrompt(val id: String, val text: String, val attachments: List<AttachmentFile> = emptyList())

@@ -26,7 +26,7 @@ import androidx.compose.ui.unit.dp
 
 /** A separate full-window readonly viewer, never an AgentSheet or an editable text field. */
 @Composable
-internal fun CodeDetailScreen(title: String, text: String, language: String?, onBack: () -> Unit) {
+fun CodeDetailScreen(title: String, text: String, language: String?, onBack: () -> Unit) {
     val colors = LocalAgentColors.current
     val clipboard = LocalClipboardManager.current
     val canonical = remember(language, title, text) { inferCodeLanguage(language, title, text) }

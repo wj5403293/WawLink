@@ -20,8 +20,15 @@ import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.*
 import dev.wawlink.runtime.*
 import dev.wawlink.ui.*
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 class HostNavigation { var onBack: (() -> Boolean)? = null }
+
+private data class ContainerAttachmentPick(val container: ContainerConfig, val initialPath: String, val continuation: CancellableContinuation<List<ContainerFileSelection>>)
 
 private data class HostRoute(
     val page: String,
@@ -31,7 +38,7 @@ private data class HostRoute(
 ) {
     val stateKey: String = when (page) {
         "chat" -> "chat:$sessionId"
-        "providers", "agent", "container", "terminal" -> "$page:$containerId"
+        "providers", "agent", "container", "terminal", "files" -> "$page:$containerId"
         "install" -> "install:$rootfs"
         else -> page
     }
@@ -52,11 +59,32 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     var installRootfs by rememberSaveable { mutableStateOf(false) }
     var settingsReturn by rememberSaveable { mutableStateOf("home") }
     var terminalReturn by rememberSaveable { mutableStateOf("home") }
+    val fileNavigation = remember { HostNavigation() }
+    var containerAttachmentPick by remember { mutableStateOf<ContainerAttachmentPick?>(null) }
+    val attachmentNavigation = remember { HostNavigation() }
+    fun finishAttachmentPick(selection: List<ContainerFileSelection>) {
+        val request = containerAttachmentPick
+        containerAttachmentPick = null
+        if (request?.continuation?.isActive == true) request.continuation.resume(selection)
+    }
+    suspend fun pickContainerAttachments(containerId: String, workspace: String): List<ContainerFileSelection> = withContext(Dispatchers.Main.immediate) {
+        check(containerAttachmentPick == null) { "容器文件选择器已打开" }
+        val container = app.runtime.containers.value.firstOrNull { it.config.id == containerId }?.config ?: error("会话容器已不存在")
+        suspendCancellableCoroutine { continuation ->
+            val request = ContainerAttachmentPick(container, workspace, continuation)
+            containerAttachmentPick = request
+            continuation.invokeOnCancellation { if (containerAttachmentPick === request) containerAttachmentPick = null }
+        }
+    }
+    DisposableEffect(Unit) { onDispose { containerAttachmentPick?.continuation?.cancel() } }
     fun openTerminal(id: String) { selectedContainer = id; terminalReturn = page; page = "terminal" }
     var savedSessionIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     fun goBack(): Boolean = when {
+        containerAttachmentPick != null -> { if (attachmentNavigation.onBack?.invoke() != true) finishAttachmentPick(emptyList()); true }
         newSession -> { newSession = false; true }
         page == "terminal" -> { page = terminalReturn; true }
+        page == "files" && fileNavigation.onBack?.invoke() == true -> true
+        page == "files" -> { page = "container"; true }
         page == "providers" || page == "agent" -> { page = settingsReturn; true }
         page != "home" -> { page = "home"; true }
         else -> false
@@ -68,7 +96,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val route = when (page) {
         "chat" -> HostRoute(page, sessionId = selectedSession)
         "providers", "agent", "container" -> HostRoute(page, containerId = configurationContainer?.config?.id)
-        "terminal" -> HostRoute(page, containerId = selectedContainer)
+        "terminal", "files" -> HostRoute(page, containerId = selectedContainer)
         "install" -> HostRoute(page, rootfs = installRootfs)
         else -> HostRoute(page)
     }
@@ -89,7 +117,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                     }, modifier = Modifier.weight(1f)) { current ->
                         pageStates.SaveableStateProvider(current.stateKey) {
                         when (current.page) {
-                            "home" -> HomeScreen(app, onSettings = { page = "appearance" }, onNewSession = ::openNew,
+                            "home" -> HomeScreen(app, files, onSettings = { page = "appearance" }, onNewSession = ::openNew,
                                 onEnterSession = { selectedSession = it; page = "chat" },
                                 onContainer = { selectedContainer = it; page = "container" },
                                 onInstall = { installRootfs = it; page = "install" }, onTerminal = ::openTerminal)
@@ -98,7 +126,13 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                 controller.fold(onSuccess = {
                                     val record = sessions.firstOrNull { s -> s.record.id == current.sessionId }?.record
                                     if (record != null) AgentChatScreen(it, app.pool.providers(record.containerId), { page = "home" }, ::openNew,
-                                        { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" }, { selectedContainer = record.containerId; settingsReturn = "chat"; page = "agent" }, files::pickAttachments, appearance)
+                                        { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" }, { selectedContainer = record.containerId; settingsReturn = "chat"; page = "agent" }, files::pickAttachments,
+                                        onPickContainerFiles = {
+                                            pickContainerAttachments(record.containerId, record.workspace).map { selected ->
+                                                AttachmentFile(java.util.UUID.randomUUID().toString(), selected.file.name, selected.path,
+                                                    sizeBytes = selected.file.size, source = AttachmentSource.CONTAINER)
+                                            }
+                                        }, appearance = appearance)
                                     else EmptyHost("会话已删除")
                                 }, onFailure = { error -> Column { AgentTopBar("无法进入会话", { page = "home" }); EmptyHost(error.message ?: error.toString()) } })
                             }
@@ -106,7 +140,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                             "agent" -> if (current.containerId != null) AgentConfigScreen(app.pool.settings(current.containerId), { page = settingsReturn }) else MissingContainer { page = "home" }
                             "appearance" -> AppearanceScreen(app, { page = "home" }, { if (configurationContainer != null) { settingsReturn = "appearance"; page = "providers" } else openNew() }, { if (configurationContainer != null) { settingsReturn = "appearance"; page = "agent" } else openNew() })
                             "install" -> InstallContainerScreen(app, files, current.rootfs, { page = "home" })
-                            "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }, ::openTerminal) } ?: MissingContainer { page = "home" }
+                            "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }, ::openTerminal, { id -> selectedContainer = id; page = "files" }) } ?: MissingContainer { page = "home" }
+                            "files" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerFilesScreen(app, files, it.config, { page = "container" }, { fileNavigation.onBack = it }) } ?: MissingContainer { page = "home" }
                             "terminal" -> containers.firstOrNull { it.config.id == current.containerId }?.let { TerminalScreen(app, it.config, { page = terminalReturn }) } ?: MissingContainer { page = terminalReturn }
                         }
                         }
@@ -115,7 +150,18 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                 }
             }
         }
-        if (newSession) SessionEditor(app, null, { newSession = false }) { id -> selectedSession = id; newSession = false; page = "chat" }
+        if (newSession) SessionEditor(app, files, null, { newSession = false }) { id -> selectedSession = id; newSession = false; page = "chat" }
+        containerAttachmentPick?.let { request ->
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { if (attachmentNavigation.onBack?.invoke() != true) finishAttachmentPick(emptyList()) },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Surface(Modifier.fillMaxSize()) {
+                    ContainerFilesScreen(app, files, request.container, { finishAttachmentPick(emptyList()) }, { attachmentNavigation.onBack = it },
+                        initialPath = request.initialPath, onChooseFiles = ::finishAttachmentPick)
+                }
+            }
+        }
         notice?.let { item ->
             AlertDialog(onDismissRequest = app::dismissNotice, title = { Text(if (item.error) "操作失败" else "提示") }, text = { Text(item.text, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) }, confirmButton = { TextButton(onClick = app::dismissNotice) { Text("知道了") } })
         }

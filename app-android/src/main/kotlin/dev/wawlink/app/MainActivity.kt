@@ -28,6 +28,10 @@ class MainActivity : ComponentActivity(), HostFiles {
     private var attachmentResult: CancellableContinuation<List<Uri>>? = null
     private var importResult: CancellableContinuation<Uri?>? = null
     private var exportResult: CancellableContinuation<Uri?>? = null
+    private var fileImportResult: CancellableContinuation<List<Uri>>? = null
+    private var fileExportResult: CancellableContinuation<Uri?>? = null
+    private val pickContainerFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> fileImportResult?.let { continuation -> fileImportResult = null; if (continuation.isActive) continuation.resume(uris) } }
+    private val saveContainerFile = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri -> fileExportResult?.let { continuation -> fileExportResult = null; if (continuation.isActive) continuation.resume(uri) } }
     private val pickAttachments = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> attachmentResult?.let { continuation -> attachmentResult = null; if (continuation.isActive) continuation.resume(uris) } }
     private val pickArchive = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> importResult?.let { continuation -> importResult = null; if (continuation.isActive) continuation.resume(uri) } }
     private val saveArchive = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zstd")) { uri -> exportResult?.let { continuation -> exportResult = null; if (continuation.isActive) continuation.resume(uri) } }
@@ -58,6 +62,36 @@ class MainActivity : ComponentActivity(), HostFiles {
             androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing)) { WawLinkApp(app, this@MainActivity, navigation) }
         }
         if (Build.VERSION.SDK_INT >= 33 && savedInstanceState == null) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    override suspend fun pickImportFiles(): List<HostImportFile> {
+        val uris = withContext(Dispatchers.Main.immediate) {
+            check(fileImportResult == null) { "导入选择器已打开" }
+            suspendCancellableCoroutine<List<Uri>> { continuation ->
+                fileImportResult = continuation
+                continuation.invokeOnCancellation { fileImportResult = null }
+                pickContainerFiles.launch(arrayOf("*/*"))
+            }
+        }
+        return withContext(Dispatchers.IO) { uris.map { uri ->
+            HostImportFile(displayName(uri, preserveWhitespace = true)) { contentResolver.openInputStream(uri) ?: error("无法读取所选文档") }
+        } }
+    }
+    override suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean {
+        val uri = withContext(Dispatchers.Main.immediate) {
+            check(fileExportResult == null) { "导出选择器已打开" }
+            suspendCancellableCoroutine<Uri?> { continuation ->
+                fileExportResult = continuation
+                continuation.invokeOnCancellation { fileExportResult = null }
+                saveContainerFile.launch(name)
+            }
+        } ?: return false
+        return withContext(Dispatchers.IO) {
+            try {
+                val output = contentResolver.openOutputStream(uri, "wt") ?: error("无法写入所选文档")
+                output.use { write(it) }
+                true
+            } catch (failure: Exception) { runCatching { contentResolver.delete(uri, null, null) }; throw failure }
+        }
     }
     override suspend fun pickAttachments(): List<AttachmentFile> {
         val uris = withContext(Dispatchers.Main.immediate) {
@@ -104,9 +138,9 @@ class MainActivity : ComponentActivity(), HostFiles {
             } finally { temporary.delete() }
         }
     }
-    private fun displayName(uri: Uri): String = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+    private fun displayName(uri: Uri, preserveWhitespace: Boolean = false): String = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
         if (cursor.moveToFirst()) cursor.getString(0) else null
-    }?.takeIf { it.isNotBlank() } ?: "document"
+    }?.takeIf { if (preserveWhitespace) it.isNotEmpty() else it.isNotBlank() } ?: "document"
     private fun copyPrivate(uri: Uri, directory: String, name: String): File {
         val target = File(File((application as WawLinkApplication).coordinator.dataDir, directory).apply { mkdirs() }, "${UUID.randomUUID()}-${name.substringAfterLast('/').replace(Regex("[^\\p{L}\\p{N}._-]"), "_")}")
         try {

@@ -31,6 +31,7 @@ import dev.wawlink.protocol.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** Host-neutral chat surface: all effects are routed through the supplied controller or host callbacks. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -43,6 +44,7 @@ fun AgentChatScreen(
     onOpenProviderSettings: () -> Unit,
     onOpenAgentSettings: () -> Unit,
     onPickFiles: suspend () -> List<AttachmentFile>,
+    onPickContainerFiles: suspend () -> List<AttachmentFile>,
     appearance: AgentAppearance = AgentAppearance(),
 ) {
     val inheritedColors = if (LocalAgentThemeProvided.current && LocalAgentAppearance.current == appearance) LocalAgentColors.current else null
@@ -141,8 +143,24 @@ fun AgentChatScreen(
                 }
             }
         }
+        fun anchorFeedItem(id: String) {
+            followTail = false
+            val index = feedIndex[id] ?: return
+            val owner = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+            val bounds = nodeBounds[id]
+            if (owner != null && bounds != null) {
+                val pinned = (if (globalPin != null) pinHeight else 0f) + (if (parentPin != null) pinHeight else 0f)
+                val top = bounds.top - viewportTop
+                val inOwner = top - owner.offset
+                val target = top.coerceAtLeast(pinned + with(density) { 8.dp.toPx() })
+                // Apply with the new page's measurement, before a shorter page can clamp the old offset.
+                list.requestScrollToItem(index, (inOwner - target).roundToInt())
+            } else {
+                list.requestScrollToItem(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset)
+            }
+        }
         CompositionLocalProvider(LocalFeedClock provides clock, LocalFeedBounds provides nodeBounds,
-            LocalFeedInteraction provides { followTail = false }) {
+            LocalFeedInteraction provides { followTail = false }, LocalFeedItemNavigation provides { id -> anchorFeedItem(id) }) {
         Surface(color = c.surface, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 Column(Modifier.widthIn(max = 460.dp).fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
@@ -222,7 +240,7 @@ fun AgentChatScreen(
                             enter = fadeIn(tween(300, easing = EmphDecelEasing)) + scaleIn(agentSpring()), exit = fadeOut(tween(150, easing = EmphAccelEasing))) {
                             FilledTonalIconButton({ followTail = true }) { Symbol("arrow_downward", contentDescription = "回到最新消息") }
                         }
-                        ComposerArea(controller, state, providers, onOpenProviderSettings, onPickFiles, { followTail = true },
+                        ComposerArea(controller, state, providers, onOpenProviderSettings, onPickFiles, onPickContainerFiles, { followTail = true },
                             Modifier.align(Alignment.BottomCenter).onSizeChanged { size -> composerHeight = with(density) { size.height.toDp() } })
                     }
                 }

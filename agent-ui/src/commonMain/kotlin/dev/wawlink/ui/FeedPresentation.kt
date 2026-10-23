@@ -26,6 +26,8 @@ internal data class FeedDetail(
 internal val LocalFeedClock = staticCompositionLocalOf<State<Long>?> { null }
 internal val LocalFeedBounds = staticCompositionLocalOf<MutableMap<String, Rect>?> { null }
 internal val LocalFeedInteraction = staticCompositionLocalOf<() -> Unit> { {} }
+internal val LocalFeedItemNavigation = staticCompositionLocalOf<(String) -> Unit> { { _ -> } }
+internal val LocalFeedExpansionInProgress = staticCompositionLocalOf { false }
 internal expect fun feedEpochMillis(): Long
 
 @Composable
@@ -47,20 +49,6 @@ internal fun runningElapsed(seconds: Int, startedAtMillis: Long?, running: Boole
     if (!running || startedAtMillis == null) seconds.coerceAtLeast(0)
     else maxOf(seconds, ((now - startedAtMillis).coerceAtLeast(0) / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
 
-/** Only the mutable tail is published at a fixed cadence; opening a row never replays its prefix. */
-@Composable
-internal fun stableThinkingText(id: String, text: String, streaming: Boolean): String {
-    val latest by rememberUpdatedState(text)
-    var published by remember(id) { mutableStateOf(text) }
-    LaunchedEffect(id, streaming) {
-        if (!streaming) published = latest
-        else while (true) {
-            delay(100)
-            published = latest
-        }
-    }
-    return if (streaming) published else text
-}
 
 @Composable
 internal fun ThinkingMarkdown(id: String, text: String) {
@@ -103,7 +91,7 @@ internal fun visibleFeedNodes(feed: List<FeedItem>, expanded: Map<String, Boolea
 @Composable
 internal fun ThinkingDetailScreen(id: String, text: String, streaming: Boolean, onBack: () -> Unit) {
     val clipboard = LocalClipboardManager.current
-    val visible = stableThinkingText(id, text, streaming)
+    val visible = key(id) { streamedText(text, streaming) }
     Dialog(onDismissRequest = onBack, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = LocalAgentColors.current.surface) {
             Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {

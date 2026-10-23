@@ -161,6 +161,9 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         if (keepers.containsKey(id)) stopLocked(id)
         try {
             engines.prepare(config)
+            if (config.engine == ContainerEngineType.PROOT) {
+                RuntimeIdentity.update(engines.validateRoot(config), RuntimeIdentity.hostSupplementaryGroupIds(File("/proc/self/status").readText(Charsets.UTF_8)))
+            }
             val workspace = File(config.rootfsPath, "workspace")
             require(workspace.canonicalFile.toPath().startsWith(File(config.rootfsPath).canonicalFile.toPath())) { "工作区路径越界" }
             workspace.mkdirs()

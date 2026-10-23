@@ -5,4 +5,25 @@ These terminal modules are the Apache-2.0 exceptions identified by Termux.
 See licenses/TERMUX-TERMINAL-LICENSE.txt and the bundled assets/licenses copy.
 WawLink changes: Android SDK/arm64 build settings, runtime-owned Process transport,
 public Android PTY Process adapter, native fd/JNI correctness fixes, Chinese exit text.
-No game, editor or rootfs application sources are included.
+
+The Android host and two-row key layout in TerminalSurface.android.kt are adapted
+from Love2Droid EditorActivity.kt (setupTerminal/setupTerminalKeys/createTerminalKeyRow)
+and activity_editor.xml at the same pinned commit. Black terminal background,
+12sp default text, Maple Mono NF CN Regular, 38dp equally weighted keys, 3dp row
+spacing, #2D2D2D bar, #424242 keys and #5C6BC0 one-shot modifiers follow that host.
+WawLink adds attachment/window-focus InputConnection setup, explicit touch-mode
+focus, non-focusable extra keys and runtime-owned teardown; it retains Termux's
+hardware input, long-press selection/copy/paste, resize and terminal emulation.
+
+RuntimeIdentity.kt adapts ProotRuntime.hostSupplementaryGroupIds and
+ProotInstaller.configureHostGroups from that commit. It appends missing real
+Android supplementary GIDs to the PRoot guest's /etc/group at runtime, preserving
+existing mappings; no stderr filtering or replacement PRoot engine is used.
+
+The unmodified maple_mono_nf_cn_regular.ttf is copied from that commit's
+app/src/main/res/font (Git blob 8461eff46c05f24b245fc9b5e8911bb3fcc26d28).
+Copyright 2022 The Maple Mono Project Authors; SIL Open Font License 1.1.
+See licenses/MAPLE-MONO-OFL.txt. Upstream aggregate notices are preserved in
+licenses/LOVE2DROID-LICENSE.txt; its MIT integration reference is preserved in
+licenses/R2DROID-LICENSE.txt. Copies of these notices ship in assets/licenses.
+No game/editor functionality, rootfs archive or alternate engine is imported.

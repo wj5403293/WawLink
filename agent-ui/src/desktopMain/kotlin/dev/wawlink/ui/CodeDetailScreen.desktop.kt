@@ -114,16 +114,7 @@ internal actual fun PlatformCodeViewer(text: String, language: String?, modifier
             view.area.currentLineHighlightColor = colors.surfaceContainerLow.awt()
             view.area.syntaxScheme = SyntaxScheme(view.area.font).apply {
                 for (index in 0 until TokenTypes.DEFAULT_NUM_TOKEN_TYPES) {
-                    getStyle(index).foreground = when (index) {
-                        in TokenTypes.COMMENT_EOL..TokenTypes.COMMENT_MARKUP, TokenTypes.MARKUP_COMMENT -> colors.onSurfaceVariant
-                        TokenTypes.RESERVED_WORD, TokenTypes.RESERVED_WORD_2, TokenTypes.DATA_TYPE,
-                        TokenTypes.ANNOTATION, TokenTypes.FUNCTION, TokenTypes.MARKUP_TAG_NAME -> colors.primary
-                        TokenTypes.LITERAL_STRING_DOUBLE_QUOTE, TokenTypes.LITERAL_CHAR, TokenTypes.LITERAL_BACKQUOTE,
-                        TokenTypes.MARKUP_TAG_ATTRIBUTE_VALUE -> colors.tertiary
-                        TokenTypes.LITERAL_BOOLEAN, TokenTypes.LITERAL_NUMBER_DECIMAL_INT,
-                        TokenTypes.LITERAL_NUMBER_FLOAT, TokenTypes.LITERAL_NUMBER_HEXADECIMAL -> colors.warn
-                        else -> colors.onSurface
-                    }.awt()
+                    getStyle(index).foreground = desktopTokenColor(index, colors).awt()
                 }
             }
             view.gutter.background = colors.surfaceContainerLow.awt()
@@ -142,6 +133,10 @@ internal fun desktopSyntaxStyle(language: String?): String = when (language) {
     "cpp" -> "text/cpp"
     "csharp" -> "text/cs"
     "go" -> "text/golang"
+    "jsx" -> "text/javascript"
+    "tsx" -> "text/typescript"
+    "jsonc" -> "text/jshintrc"
+    "jsonl" -> "text/json"
     "shell" -> "text/unix"
     "properties" -> "text/properties"
     "c", "dart", "java", "kotlin", "rust", "javascript", "typescript", "perl", "python", "ruby",

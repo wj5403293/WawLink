@@ -1,0 +1,268 @@
+package dev.wawlink.runtime
+
+import java.io.InputStream
+import java.io.OutputStream
+import java.nio.charset.CodingErrorAction
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.*
+
+data class ContainerFile(val name: String, val kind: String, val size: Long, val modified: Long, val mode: String, val owner: String, val group: String, val readable: Boolean) {
+    val directory get() = kind == "directory"
+    val regular get() = kind == "file"
+    val supported get() = directory || regular
+}
+data class ContainerDirectory(val path: String, val entries: List<ContainerFile>)
+
+/** Guest-only filesystem access. No rootfs paths, host shell, Python, Node or SSH are involved. */
+class ContainerFileService(private val runtime: ContainerRuntime, private val config: ContainerConfig) {
+    companion object {
+        fun nameError(name: String): String? = when {
+            name.isEmpty() || name == "." || name == ".." -> "名称不能为空、. 或 .."
+            '/' in name || '\u0000' in name -> "名称不能包含 / 或 NUL"
+            else -> null
+        }
+        fun path(value: String, base: String = "/"): String {
+            require('\u0000' !in value) { "路径不能包含 NUL" }
+            val segments = ArrayList<String>()
+            (if (value.startsWith('/')) value else "$base/$value").split('/').forEach {
+                when (it) { "", "." -> Unit; ".." -> if (segments.isNotEmpty()) segments.removeAt(segments.lastIndex); else -> segments.add(it) }
+            }
+            return "/" + segments.joinToString("/")
+        }
+        fun child(parent: String, name: String): String {
+            require(nameError(name) == null) { nameError(name).orEmpty() }
+            return parent.trimEnd('/') + "/" + name
+        }
+        private fun quote(value: String) = "'" + value.replace("'", "'\"'\"'") + "'"
+        // Recursive parent checks use quoted strings, never line-based parsing or word splitting.
+        private val guards = """
+            set -eu
+            fail() { printf '%s\n' "${'$'}*" >&2; exit 1; }
+            checked_dir() {
+                [ "${'$'}1" = / ] || [ -z "${'$'}1" ] && return
+                checked_dir "${'$'}{1%/*}"
+                [ ! -L "${'$'}1" ] && [ -d "${'$'}1" ] || fail "路径包含链接或非目录：${'$'}1"
+            }
+            checked() {
+                checked_dir "${'$'}{1%/*}"
+                [ ! -L "${'$'}1" ] || fail "不能操作符号链接：${'$'}1"
+                [ -f "${'$'}1" ] || [ -d "${'$'}1" ] || fail "仅支持普通文件与目录：${'$'}1"
+            }
+            absent() { [ ! -e "${'$'}1" ] && [ ! -L "${'$'}1" ] || fail "目标已存在，未覆盖：${'$'}1"; }
+            tree() (
+                checked "${'$'}1"
+                if [ -d "${'$'}1" ]; then
+                    for entry in "${'$'}1"/* "${'$'}1"/.[!.]* "${'$'}1"/..?*; do
+                        [ -e "${'$'}entry" ] || [ -L "${'$'}entry" ] || continue
+                        tree "${'$'}entry"
+                    done
+                fi
+            )
+            describe() {
+                kind=other
+                if [ -L "${'$'}1" ]; then kind=link; elif [ -d "${'$'}1" ]; then kind=directory; elif [ -f "${'$'}1" ]; then kind=file; fi
+                readable=0
+                if [ -r "${'$'}1" ]; then readable=1; fi
+                printf '%s\000%s\000' "${'$'}kind" "${'$'}readable"
+                stat -c '%s %Y %a %u %g' -- "${'$'}1"
+            }
+        """.trimIndent()
+    }
+    private val virtualRoots = listOf("/proc", "/sys", "/dev", "/run")
+    private val boundaries = listOf("/", "/workspace") + virtualRoots + config.mounts.map { path(it.target) }
+
+
+    private fun guardPath(value: String): String = path(value).also { require(it == value) { "路径必须规范化" } }
+    private fun mutablePath(value: String) {
+        guardPath(value)
+        val prefix = "$value/"
+        require(boundaries.none { it == value || it.startsWith(prefix) } && virtualRoots.none { value.startsWith("$it/") }) { "不能修改根目录、工作区根、挂载根及其父目录或系统虚拟目录：$value" }
+    }
+
+    private suspend fun <T> process(script: String, input: (suspend (OutputStream) -> Unit)? = null, read: (InputStream) -> T): T = withContext(Dispatchers.IO) {
+        val process = runtime.openProcess(config.id, listOf("/bin/sh", "-c", guards + "\n" + script), "/")
+        try {
+            coroutineScope {
+                val cancellation = launch(start = CoroutineStart.UNDISPATCHED) {
+                    try { awaitCancellation() } finally { process.destroy() }
+                }
+                val errors = async { runInterruptible { process.errorStream.use { stream ->
+                    val buffer = ByteArray(4096)
+                    val text = java.io.ByteArrayOutputStream()
+                    while (true) { val count = stream.read(buffer); if (count < 0) break; if (text.size() < 16384) text.write(buffer, 0, minOf(count, 16384 - text.size())) }
+                    text.toString("UTF-8")
+                } } }
+                val writer = async {
+                    try { process.outputStream.use { if (input != null) input(it) }; Result.success(Unit) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: Exception) { Result.failure<Unit>(failure) }
+                }
+                try {
+                    val result = runInterruptible { process.inputStream.use(read) }
+                    val written = writer.await()
+                    val status = runInterruptible { process.waitFor() }
+                    val message = errors.await()
+                    check(status == 0) { message.ifBlank { "容器文件操作失败（$status）" } }
+                    written.getOrThrow()
+                    result
+                } finally { cancellation.cancel(); process.destroy() }
+            }
+        } finally { process.destroy(); process.inputStream.close(); process.errorStream.close(); process.outputStream.close() }
+    }
+    private suspend fun command(script: String) = process(script) { it.copyTo(DiscardOutput) }
+
+    private fun field(input: InputStream, delimiter: Int): String? {
+        val bytes = java.io.ByteArrayOutputStream()
+        while (true) {
+            val next = input.read()
+            if (next < 0) { check(bytes.size() == 0) { "文件数据不完整" }; return null }
+            if (next == delimiter) return bytes.toString("UTF-8")
+            bytes.write(next)
+        }
+    }
+    private fun metadata(name: String, input: InputStream): ContainerFile {
+        val kind = checkNotNull(field(input, 0))
+        val readable = checkNotNull(field(input, 0)) == "1"
+        val values = checkNotNull(field(input, 10)).split(' ')
+        check(values.size == 5) { "无法读取文件属性" }
+        return ContainerFile(name, kind, values[0].toLong(), values[1].toLong(), values[2], values[3], values[4], readable)
+    }
+
+    /** lstat-like metadata; final links are reported, ancestors are never deliberately traversed. */
+    suspend fun stat(source: String): ContainerFile {
+        guardPath(source)
+        val parent = source.substringBeforeLast('/').ifEmpty { "/" }
+        return process("checked_dir ${quote(parent)}; describe ${quote(source)}") {
+            metadata(source.substringAfterLast('/').ifEmpty { "/" }, it.buffered())
+        }
+    }
+
+    suspend fun list(directory: String): ContainerDirectory {
+        val normalized = path(directory)
+        val script = """
+            checked_dir ${quote(normalized)}
+            cd ${quote(normalized)}
+            for entry in ./* ./.[!.]* ./..?*; do
+                [ -e "${'$'}entry" ] || [ -L "${'$'}entry" ] || continue
+                printf '%s\000' "${'$'}{entry#./}"
+                describe "${'$'}entry"
+            done
+        """.trimIndent()
+        val entries = process(script) { input ->
+            val buffered = input.buffered()
+            val result = ArrayList<ContainerFile>()
+            while (true) {
+                val name = field(buffered, 0) ?: break
+                result.add(metadata(name, buffered))
+            }
+            result
+        }
+        return ContainerDirectory(normalized, entries)
+    }
+    suspend fun create(directory: String, name: String, folder: Boolean) {
+        val target = child(guardPath(directory), name); mutablePath(target)
+        command("checked_dir ${quote(directory)}; absent ${quote(target)}; " + if (folder) "mkdir -- ${quote(target)}" else "(set -C; : > ${quote(target)})")
+    }
+    suspend fun rename(source: String, name: String) {
+        mutablePath(source)
+        val destination = child(source.substringBeforeLast('/').ifEmpty { "/" }, name); mutablePath(destination)
+        command("checked ${quote(source)}; absent ${quote(destination)}; mv -n -- ${quote(source)} ${quote(destination)}; [ ! -e ${quote(source)} ] || fail '重命名未完成'")
+    }
+    suspend fun delete(entries: List<String>) {
+        require(entries.isNotEmpty())
+        entries.forEach(::mutablePath)
+        val preflight = entries.joinToString("\n") { source -> "checked ${quote(source)}; if [ -d ${quote(source)} ]; then for entry in ${quote(source)}/* ${quote(source)}/.[!.]* ${quote(source)}/..?*; do [ ! -e \"\$entry\" ] && [ ! -L \"\$entry\" ] || fail '只能删除空目录；尚未开始删除'; done; fi" }
+        command(preflight + "\n" + entries.joinToString("\n") { "checked ${quote(it)}; if [ -d ${quote(it)} ]; then rmdir -- ${quote(it)}; else rm -- ${quote(it)}; fi" })
+    }
+    suspend fun copy(entries: List<String>, directory: String) {
+        guardPath(directory); require(entries.isNotEmpty())
+        val preflight = entries.joinToString("\n") { source ->
+            guardPath(source)
+            require(source != "/" && directory != source && !directory.startsWith("$source/")) { "不能复制到自身或子目录" }
+            val target = child(directory, source.substringAfterLast('/')); mutablePath(target)
+            "tree ${quote(source)}; absent ${quote(target)}"
+        }
+        command("""
+            checked_dir ${quote(directory)}
+            $preflight
+            copy_entry() (
+                source=${'$'}1; target=${'$'}2
+                checked "${'$'}source"; checked_dir "${'$'}{target%/*}"; absent "${'$'}target"
+                if [ -d "${'$'}source" ]; then
+                    mkdir -- "${'$'}target"
+                    for entry in "${'$'}source"/* "${'$'}source"/.[!.]* "${'$'}source"/..?*; do
+                        [ -e "${'$'}entry" ] || [ -L "${'$'}entry" ] || continue
+                        copy_entry "${'$'}entry" "${'$'}target/${'$'}{entry##*/}"
+                    done
+                else
+                    (set -C; cat -- "${'$'}source" > "${'$'}target")
+                fi
+            )
+            ${entries.joinToString("\n") { "copy_entry ${quote(it)} ${quote(child(directory, it.substringAfterLast('/')))}" }}
+        """.trimIndent())
+    }
+    suspend fun importFile(directory: String, name: String, input: InputStream) {
+        val target = child(guardPath(directory), name); mutablePath(target)
+        val temporary = child(directory, ".wawlink-import-${java.util.UUID.randomUUID()}.part")
+        try {
+            process("checked_dir ${quote(directory)}; absent ${quote(target)}; (set -C; cat > ${quote(temporary)})",
+                { output -> runInterruptible { input.copyTo(output, 32768) } }) { it.copyTo(DiscardOutput) }
+            // Commit only after the host stream completed successfully. mv -n refuses replacement.
+            command("checked ${quote(temporary)}; absent ${quote(target)}; mv -n -- ${quote(temporary)} ${quote(target)}; [ ! -e ${quote(temporary)} ] || fail '导入目标已存在，未覆盖'")
+        } finally {
+            withContext(NonCancellable) { command("checked_dir ${quote(directory)}; if [ -f ${quote(temporary)} ] && [ ! -L ${quote(temporary)} ]; then rm -- ${quote(temporary)}; fi") }
+        }
+    }
+    suspend fun exportFile(source: String, output: OutputStream) {
+        guardPath(source)
+        process("checked ${quote(source)}; [ -f ${quote(source)} ] || fail '不是普通文件'; cat -- ${quote(source)}") { it.copyTo(output, 32768) }
+    }
+    suspend fun readText(source: String): String = withContext(Dispatchers.IO) {
+        val bytes = java.io.ByteArrayOutputStream()
+        exportFile(source, object : OutputStream() {
+            override fun write(value: Int) { check(bytes.size() < 2 * 1024 * 1024) { "文件超过 2 MiB，请导出后打开" }; bytes.write(value) }
+            override fun write(buffer: ByteArray, offset: Int, count: Int) { check(bytes.size() + count <= 2 * 1024 * 1024) { "文件超过 2 MiB，请导出后打开" }; bytes.write(buffer, offset, count) }
+        })
+        val content = bytes.toByteArray()
+        check(content.none { it == 0.toByte() }) { "二进制文件请导出后打开" }
+        Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(content)).toString()
+    }
+    suspend fun exportZip(entries: List<String>, output: OutputStream) = withContext(Dispatchers.IO) {
+        require(entries.isNotEmpty())
+        val plan = ArrayList<Pair<String, String>>()
+        suspend fun visit(source: String, relative: String, info: ContainerFile) {
+            currentCoroutineContext().ensureActive()
+            require(info.supported) { "不能导出链接或特殊文件：$source" }
+            require('\\' !in info.name) { "ZIP 不支持含反斜杠的名称，请单独导出原文件：$source" }
+            plan.add(source to if (info.directory) "$relative/" else relative)
+            if (info.directory) list(source).entries.forEach { visit(child(source, it.name), "$relative/${it.name}", it) }
+        }
+        val names = HashSet<String>()
+        entries.groupBy { guardPath(it); require(it != "/"); it.substringBeforeLast('/').ifEmpty { "/" } }.forEach { (parent, roots) ->
+            val files = list(parent).entries.associateBy { it.name }
+            roots.forEach { source ->
+                val name = source.substringAfterLast('/')
+                require(names.add(name)) { "导出来源名称冲突：$name" }
+                visit(source, name, files[name] ?: error("来源已不存在：$source"))
+            }
+        }
+        val zip = ZipOutputStream(object : OutputStream() {
+            override fun write(value: Int) = output.write(value)
+            override fun write(buffer: ByteArray, offset: Int, count: Int) = output.write(buffer, offset, count)
+            override fun close() = output.flush()
+        })
+        zip.use {
+            plan.forEach { (source, relative) ->
+                it.putNextEntry(ZipEntry(relative))
+                if (!relative.endsWith('/')) exportFile(source, it)
+                it.closeEntry()
+            }
+        }
+    }
+}
+
+private object DiscardOutput : OutputStream() {
+    override fun write(value: Int) = Unit
+    override fun write(buffer: ByteArray, offset: Int, count: Int) = Unit
+}

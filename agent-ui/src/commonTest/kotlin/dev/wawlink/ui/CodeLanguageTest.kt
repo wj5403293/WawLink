@@ -12,7 +12,7 @@ class CodeLanguageTest {
     }
 
     @Test fun pathsHandleWindowsAliasesAndDotfilesWithoutReadingFiles() {
-        assertEquals("typescript", inferCodeLanguage(path = "C:\\project\\page.TSX"))
+        assertEquals("tsx", inferCodeLanguage(path = "C:\\project\\page.TSX"))
         assertEquals("cpp", inferCodeLanguage(path = "/tmp/example.hpp"))
         assertEquals("shell", inferCodeLanguage(path = "/home/user/.bashrc"))
         assertEquals("dockerfile", inferCodeLanguage(path = "/tmp/Dockerfile.release"))
@@ -48,5 +48,16 @@ class CodeLanguageTest {
         assertEquals("python", inferCodeLanguage(path = "unknown.ext", interpreter = "python3 -c"))
         assertNull(inferCodeLanguage(text = "print('not guessed from contents')"))
         assertNull(inferCodeLanguage(text = "#!/usr/bin/env unknown-runtime\n<script/>"))
+    }
+
+    @Test fun embeddedAndConfigurationVariantsKeepTheirRealGrammar() {
+        assertEquals("html", inferCodeLanguage(path = "index.HTML:raw"))
+        assertEquals("jsx", inferCodeLanguage(explicit = "language-javascriptreact"))
+        assertEquals("tsx", inferCodeLanguage(path = "component.tsx"))
+        assertEquals("jsonc", inferCodeLanguage(path = "settings.jsonc"))
+        assertEquals("jsonl", inferCodeLanguage(path = "records.ndjson"))
+        assertEquals("toml", inferCodeLanguage(path = "Cargo.toml"))
+        assertEquals("ini", inferCodeLanguage(path = "/project/.editorconfig"))
+        assertNull(inferCodeLanguage(explicit = "plain", path = "index.html"))
     }
 }

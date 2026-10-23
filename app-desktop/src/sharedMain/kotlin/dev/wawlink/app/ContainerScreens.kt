@@ -161,7 +161,7 @@ internal fun bytesLabel(bytes: Long): String = when {
 }
 @Composable private fun ShellSelector(value: String, onChange: (String) -> Unit) { HostChips(listOf("/bin/bash", "/bin/zsh", "/bin/sh"), value, { it.substringAfterLast('/').replaceFirstChar(Char::uppercase) }, onChange, "terminal") }
 
-@Composable internal fun ContainerDetailScreen(app: AppCoordinator, files: HostFiles, info: ContainerInfo, onBack: () -> Unit, onTerminal: (String) -> Unit) {
+@Composable internal fun ContainerDetailScreen(app: AppCoordinator, files: HostFiles, info: ContainerInfo, onBack: () -> Unit, onTerminal: (String) -> Unit, onFiles: (String) -> Unit) {
     val c = info.config
     var tools by remember(c.id) { mutableStateOf<List<ToolchainInfo>?>(null) }
     var probeError by remember(c.id) { mutableStateOf<String?>(null) }
@@ -182,6 +182,7 @@ internal fun bytesLabel(bytes: Long): String = when {
     fun update(next: ContainerConfig) { app.launch { app.runtime.update(next) } }
     Column {
         AgentTopBar(c.name, onBack, actions = {
+            AgentIconButton("folder_open", "打开独立文件管理器", { onFiles(c.id) })
             AgentIconButton("terminal", "打开独立终端", { onTerminal(c.id) })
             AgentIconButton("delete", "删除容器", { delete = true })
             Switch(info.running, { run -> app.launch { if (run) app.runtime.start(c.id) else app.runtime.stop(c.id) } })
@@ -192,6 +193,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) { DistroAvatar(c.distro, info.running); Column { Text("${c.distro} ${c.version}", fontSize = 19.sp, fontWeight = FontWeight.SemiBold); Text("${c.arch} · ${bytesLabel(info.sizeBytes)} · ${if (info.running) "运行中" else "已休眠"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     HostAction(if (c.isDefault) "默认容器" else "设为默认", "verified", { app.launch { app.runtime.setDefault(c.id) } }, tonal = true)
+                    HostAction("文件", "folder_open", { onFiles(c.id) }, tonal = true)
                     HostAction("克隆", "content_copy", { clone = true }, tonal = true)
                     HostAction("导出", "ios_share", { app.launch { if (files.exportRootfs(app.runtime, c)) app.report("容器归档已导出") } }, tonal = true)
                 }

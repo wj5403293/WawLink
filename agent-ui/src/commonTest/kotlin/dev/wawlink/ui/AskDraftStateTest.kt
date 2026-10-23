@@ -88,4 +88,31 @@ class AskDraftStateTest {
         assertNull(inspected.answer(question))
         assertFalse(inspected.togglePreview("A", selected = false).previewOpen("A", selected = false))
     }
+
+    @Test fun singleChoiceAdvancesByNativeIdAndLastChoiceOpensReview() {
+        val first = AskQuestion("native-a", "第一题", options = listOf(AskOption("A")))
+        val last = AskQuestion("native-z", "最后一题", options = listOf(AskOption("Z")))
+        val questions = listOf(first, last)
+        val next = AskRequestDraft().selectOption(questions, first.id, "A")
+        assertEquals(last.id, next.questionId)
+        assertFalse(next.reviewing)
+        assertEquals(AskAnswer(first.id, listOf("A")), next.question(first.id).answer(first))
+        val review = restore(next.selectOption(questions, last.id, "Z"))
+        assertTrue(review.reviewing)
+        assertEquals(listOf(AskAnswer(first.id, listOf("A")), AskAnswer(last.id, listOf("Z"))), review.answers(questions))
+    }
+
+    @Test fun multiselectDoesNotAdvanceAndLateOutgoingPageClicksCannotChangeAnswers() {
+        val single = AskQuestion("single", "单选", options = listOf(AskOption("A"), AskOption("B")))
+        val multi = AskQuestion("multi", "多选", options = listOf(AskOption("X"), AskOption("Y")), multi = true)
+        val questions = listOf(single, multi)
+        val next = AskRequestDraft().selectOption(questions, single.id, "A")
+        assertEquals(next, next.selectOption(questions, single.id, "B"))
+        val selected = next.selectOption(questions, multi.id, "X").selectOption(questions, multi.id, "Y")
+        assertEquals(multi.id, selected.questionId)
+        assertFalse(selected.reviewing)
+        assertEquals(AskAnswer(multi.id, listOf("X", "Y")), selected.question(multi.id).answer(multi))
+        val review = selected.copy(reviewing = true)
+        assertEquals(review, review.selectOption(questions, multi.id, "X"))
+    }
 }

@@ -61,12 +61,15 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 
 - 主页管理多会话、搜索、容器/状态筛选、分支、批量置顶/归档/删除，并可直接处理待审批操作。
 - 聊天页支持真实流式输出、Todo 条件归组、工具详情和 Diff、审批/提问、运行中消息排队与编辑、附件、项目文件、斜杠命令和用量详情。
+- 容器独立文件管理移植 WawSSH 的列表、面包屑、路径编辑、筛选/排序、多选、复制/粘贴、重命名、属性、书签与导入导出；删除需确认，仅删除普通文件和空目录，不递归删除或覆盖已有目标。文件操作通过客体进程执行，拒绝符号链接与特殊文件，不直接读写宿主 Rootfs。
+- 新建会话可用工作区输入框右侧的文件夹按钮选择当前容器中的目录；往返浏览器保留名称、容器与原工作区表单。聊天加号菜单保留项目文件，并新增可跨目录选择的“容器文件”；取消保留草稿及已有附件，容器附件使用真实客体绝对路径。
+- 会话发送过消息后，用量条持续显示，运行、空闲、继续下一轮及执行出错时均不再隐藏；项目文件展开子目录后使用独立列表行，不再叠放。
 - 工具、Todo 和思考的运行耗时实时更新，结束后固定；不足 1 秒隐藏，1–59 秒显示 `15s`，达到 1 分钟后显示 `1:05`。展开的长思考/工具概况吸附在计划、子任务下方，三层均可回跳。
-- 流式思考每 100 ms 合并可变尾部，已完成 Markdown 段落保持稳定；上滑、阅读或选择时不强制追尾，使用独立的“回到底部”恢复跟随。思考全文以 Markdown 显示，展开时不从头播放。
-- Markdown 代码块与工具脚本、文件内容使用 Highlights 1.0.0 离线高亮；语言依据显式标记、工具名、文件后缀或 shebang 识别，未知显式语言保留纯文本。读取路径支持行号、范围、raw、归档成员和查询选择器，不将这些选择器误当后缀。
-- 读取、写入、创建及查找代码可打开全屏只读查看器，支持行号、选择和复制原文；Android 使用 Sora Editor 0.23.6，Desktop 使用 RSyntaxTextArea 3.6.0，不以网页组件替代 Sora。来源、精确版本和完整许可位于 `agent-ui/src/commonMain/composeResources/files/code/`。
+- 思考仅在展开动画期间冻结显示快照，结束后追上最新内容；平时按 32 ms 节奏平滑推进尾部，已完成 Markdown 段落保持稳定，不以整段防抖替代流式输出。上滑、阅读或选择时不强制追尾，使用独立的“回到底部”恢复跟随。思考全文以 Markdown 显示，展开时不从头播放。
+- Markdown 代码块、未展开工具的命令摘要、执行脚本与文件内容共用原生离线高亮；Android 使用 Sora TextMate，Desktop 使用 RSyntaxTextArea 3.6.0。语言依据显式标记、工具名、文件后缀或 shebang 识别，未知显式语言保留纯文本。读取路径支持行号、范围、raw、归档成员和查询选择器，不将这些选择器误当后缀。
+- 读取、写入、创建及查找代码可打开全屏只读查看器，支持行号、选择和复制原文；Android 使用 Sora Editor 0.23.6，Desktop 使用 RSyntaxTextArea 3.6.0，不以网页组件替代 Sora。内置 34 项 TextMate 语言映射、完整语法依赖及明暗主题，包含 HTML/JavaScript/CSS、TypeScript/JSX/TSX、Shell、Python、Kotlin、Java、C/C++/C#、Go、Rust、JSON/YAML/TOML、SQL 等；HTML 内嵌脚本与样式保持跨行状态。来源、哈希、差异和完整许可位于 `agent-ui/src/commonMain/composeResources/files/code/`。
 - Slash 菜单从当前会话 OMP 的原生命令目录加载并跟随动态更新；第一次输入 `/` 时才启动目录查询，不发送用户 prompt。当前内置命令匹配中文描述与 Material Symbols 图标；未知、扩展或被自定义覆盖的命令仍显示，使用默认图标且不显示描述。无参数 `/model`、`/cost` 保留应用内快捷入口，带参数的命令交给 OMP 原生解析。
-- 同一次 ask 的多个问题共用一张卡片，左下角灰色无背景前后按钮配合左右非线性切换；问题 ID 固定答案、页码和预览状态。支持推荐项、选项描述、单选/多选、自定义输入、提交前回看与一次提交完整答案，提交后仍可查看；免审批不会自动回答普通问题。
+- 同一次 ask 的多个问题共用一张卡片，左下角灰色无背景前后按钮配合左右非线性切换；问题 ID 固定答案、页码和预览状态。单选选择后自动进入下一题，多选停留当前题；切题和检查答案原位更新，不把会话滚回顶部。支持推荐项、选项描述、自定义输入、提交前回看与一次提交完整答案，提交后仍可查看；免审批不会自动回答普通提问。
 - Agent 正文与 ask 富预览共用 Markdown、SVG/Mermaid 代码块与 Markdown 图像显示。Mermaid 12.2.0 随 UI 离线打包；PNG/JPEG/GIF/WebP 使用原生解码，动画图像显示首帧。图像来源仅 HTTP(S) 与图像 data URL，不读取宿主文件；SVG 不允许脚本、外部资源、实体、事件或 foreignObject，错误内容显示中文原因。
 - 用户消息与运行中追加消息即时本地显示，发送失败只撤回对应的未接收消息并显示原因；收到原生用户消息后，后续模型执行失败仍保留该消息。消息按发送时的 Todo 与前置节点定位，后续工具、思考、任务切换及历史重放不改变其位置。加载状态使用 Material 3 标准进度组件。
 - 应用设置中的“新会话默认免审批”默认开启并持久化，只影响以后创建的会话；会话内仍能单独切换。开启免审批会立即回复已等待和后续工具审批，不自动回答普通提问，不改写全局工具权限配置；关闭时在下一轮启动恢复原生审批模式。
@@ -82,7 +85,8 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - Proroot 上游仅提供 Android arm64 版本；桌面使用真实 PRoot/QEMU 或具备 Root 权限的 chroot，不伪装支持 Proroot。
 - 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，并在停止容器时回收所属进程、卸载挂载点。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
-- 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 移植 Love2Droid 的 Termux TerminalView/TerminalSession，Desktop 使用 JediTerm 3.63 + pty4j 0.13.4；支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新。离开页面关闭其终端进程，退出后保留输出并提示重新打开；不关闭其他会话的进程。
+- 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 保留 Love2Droid 的黑色控制台、Maple Mono 字体及两行等宽快捷键栏，移植 Termux TerminalView/TerminalSession；挂载和窗口获焦后重建输入连接，点击终端唤出软键盘，快捷键不抢焦点。Desktop 使用 JediTerm 3.63 + pty4j 0.13.4。支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新；离开页面关闭其终端进程，退出后保留输出并提示重新打开，不关闭其他会话的进程。
+- PRoot/Proroot 启动前为宿主补充 GID 追加缺失的容器组名，保留已有 `/etc/group` 条目并原子更新，解决 `groups: cannot find name for ...`，不屏蔽报错。DNS 继续使用已有的默认网络监听与客体配置更新，无需替换 PRoot 二进制或重新导入 Rootfs。
 - 工具链安装/卸载先确认，取消不执行，执行期间禁止重复触发；同一行卡片按较高内容等高，长版本自动换行。Git 版本去掉 `git version` 前缀。
 - rootfs 支持 `.tar.gz`、`.tar.xz`、`.tar.zst` 导入，导出为 `.tar.zst`。归档路径和符号链接受边界检查；克隆/导出保留可执行及访问权限。文件系统允许时保留真实硬链接；Android 等环境拒绝创建硬链接时，导入器改为复制普通文件并保留权限和修改时间，不生成替代符号链接。此时文件不再共享 inode，可能增加磁盘占用。体积统计不遍历运行时挂载和 PRoot/QEMU 的临时宿主视图。
 - 导入时以解压目录的真实路径统一校验符号链接，支持 Android 应用数据父目录的路径别名及合法的 `node_modules/.bin` 相对链接；仍拒绝作为解压目录的符号链接、路径穿越和真正逃逸的链接链。
@@ -104,14 +108,17 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 
 | 入口 | 宿主提供的契约 |
 | --- | --- |
-| `AgentChatScreen` | `AgentSessionController`、`ProviderConfigRepository`、返回/新建/设置导航回调、挂起文件选择回调、可选 `AgentAppearance` |
+| `AgentChatScreen` | `AgentSessionController`、`ProviderConfigRepository`、返回/新建/设置导航、挂起的主机与容器附件选择回调、可选 `AgentAppearance` |
 | `ProviderSettingsScreen` | `ProviderConfigRepository`、返回回调 |
 | `AgentConfigScreen` | `AgentSettingsRepository`、返回回调 |
 | `AgentTheme` | 宿主外观状态；设置页可置于同一主题内 |
+| `CodeDetailScreen` | 标题、原文、可选语言、返回回调；外层提供 `AgentTheme` |
 
 导航、文件选择、认证和 Agent 实现由宿主负责。协议使用 `StateFlow` / `Flow`；UI 只消费状态与控制契约，没有对具体驱动或容器的引用。
 
 `AgentSessionController.loadSlashCommands()` 负责按需加载目录，`ChatSessionUiState.slashCommands`/`slashCommandsError` 提供命令元数据与加载错误；目录不会作为历史重放。`respondAsk(nodeId, answers: List<AskAnswer>)` 一次接收同一原生请求的完整答案，以 `questionId` 对齐，不再按每道题分别调用。
+
+`AgentChatScreen` 的 `onPickFiles` 与 `onPickContainerFiles` 均由宿主提供；容器选择返回 `source = AttachmentSource.CONTAINER` 的 `AttachmentFile`，`path` 必须是当前容器的真实绝对路径。驱动在容器内校验普通文件并读取图像字节，消息与历史保留附件来源；不把工作区之外的容器附件伪装成项目文件。
 
 ## 预置环境与产物
 
@@ -123,7 +130,7 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 | --- | ---: | ---: |
 | Rootfs 文件内容合计 | 1,543,298,008 | 1471.80 |
 | `build/outputs/ubuntu-main-debug.tar.zst` | 404,312,713 | 385.58 |
-| Android Debug APK（不含 Rootfs） | 40,147,759 | 38.29 |
+| Android Debug APK（不含 Rootfs） | 51,734,572 | 49.34 |
 
 按已确认的完整功能优先策略，不执行原计划的 150–220 MB 硬上限。每次构建会重新生成 `.sha256` 与 `.sizes.json`，以后者的实际输出为准。构建缓存、Rootfs、APK、原生二进制和本地会话均不纳入源码提交，准备脚本可重建缺失输入。
 
@@ -134,7 +141,8 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 可重复、无计费请求的回归测试：
 
 ```bash
-./gradlew :container-runtime:desktopTest :agent-driver-omp:desktopTest :agent-ui:desktopTest
+./gradlew :container-runtime:desktopTest :agent-driver-omp:desktopTest \
+  :agent-ui:desktopTest :agent-ui:testDebugUnitTest :app-desktop:desktopTest
 node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
 ```
 
@@ -171,5 +179,13 @@ Slash、Ask 与富媒体本轮回归通过 109 项 Kotlin 测试（驱动 74、U
 桌面实际操作验证实时耗时、三层吸顶及回跳、流式思考展开/选择、思考 Markdown、正文与读取工具代码高亮、全屏只读和原文复制。流式输出时，阅读选择区域间隔 2.2 秒的截图逐像素一致；全屏复制的 7,011 个字符与原文一致，键入不能修改内容。原生格式事件烟测确认下一轮 Todo 未变仍只有一份计划、状态变化后才追加，并保留先前计划。
 
 真实 arm64 Alpine PRoot/QEMU 容器验证独立终端的 ANSI 颜色、`tty`、Ctrl-C、历史方向键和复制，窗口调整后 `stty size` 从 `45 48` 更新为 `50 85`。同一隔离容器实际完成 Git 安装/卸载；打开或取消确认时包数据库校验值不变，确认后才改变，版本只显示 `2.47.3`。另用隔离的长版本文本样本检查同一行卡片等高，样本已移除。本轮不使用模型认证或计费推理；Android 的 Sora、TerminalView/JNI 仅完成编译打包，不标为真机交互验收。
+
+后续十项优化通过 225 项 Kotlin 回归（Desktop UI 54、Android JVM UI 53、驱动 86、容器 27、文件服务 5，无失败或跳过），Android Debug APK 构建成功。实际 APK 仅含 arm64-v8a，61 份固定 TextMate 资源的字节数与 SHA256 全部匹配来源清单，包含终端字体与 OFL 许可，不含 Rootfs。
+
+桌面实际操作验证单选自动切题、多选停留、检查答案不跳顶、展开动画与恢复后的平滑思考、未展开命令高亮、发送后空闲用量保持，以及项目文件连续展开多级目录不重叠。真实容器界面验证文件浏览、HTML 原生全屏高亮与返回状态、工作区目录回填且不丢表单、取消附件选择保留草稿，以及跨工作区选择两个文件返回输入区。
+
+真实 arm64 Alpine PRoot/QEMU 烟测通过 10 MiB 原始字节导入导出、含空格/引号/换行的文件名、文本原文、复制重命名、非空目录删除预检、覆写拒绝、导入失败清理、链接拒绝与 ZIP 内容检查；实际终端运行 `id`、`groups`、`stty size`，缺失补充组名已修复且无 `cannot find name`。容器外部路径图像附件经真实客体读取，验证 RPC 请求字节、即时消息对齐、无效附件回撤与历史重放；RPC 回执使用受控传输，不标为真实模型验收。本轮没有模型推理请求或认证使用。
+
+Sora 实际 TextMate 词法器另在 JVM 上验证全部语言映射、HTML 内嵌 JS/CSS、多行状态、明暗主题及 CRLF/UTF-16 原文保留；Android 原生 Sora 视图和软键盘只完成编译打包，不标为真机交互验收。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。

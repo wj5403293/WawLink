@@ -21,13 +21,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
-/** Keeps a streaming suffix paced without replaying an already visible prefix. */
+/** Pace only the pending suffix; expansion pauses preserve the already visible prefix. */
 @Composable
-internal fun streamedText(text: String, streaming: Boolean): String {
+internal fun streamedText(text: String, streaming: Boolean, paused: Boolean = false): String {
     val smooth = LocalAgentAppearance.current.smoothStreaming
     val latest by rememberUpdatedState(text)
     var visible by remember { mutableStateOf(text) }
-    LaunchedEffect(streaming, smooth) {
+    SideEffect { if (!paused && (!streaming || !smooth)) visible = text }
+    LaunchedEffect(streaming, smooth, paused) {
+        if (paused) return@LaunchedEffect
         while (streaming && smooth) {
             val target = latest
             if (!target.startsWith(visible)) visible = target
@@ -41,7 +43,7 @@ internal fun streamedText(text: String, streaming: Boolean): String {
         }
         visible = latest
     }
-    return if (streaming && smooth) visible else text
+    return if (paused || streaming && smooth) visible else text
 }
 
 @Composable

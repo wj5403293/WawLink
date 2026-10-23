@@ -20,6 +20,7 @@ internal fun inferCodeLanguage(
             name == "dockerfile" || name.startsWith("dockerfile.") -> "dockerfile"
             name == "makefile" || name == "gnumakefile" -> "makefile"
             name == ".bashrc" || name == ".zshrc" || name == ".profile" -> "shell"
+            name == ".gitconfig" || name == ".editorconfig" -> "ini"
             else -> canonicalCodeLanguage(name.substringAfterLast('.', ""))
         }
         if (fromPath != null) return fromPath
@@ -39,8 +40,10 @@ internal fun canonicalCodeLanguage(value: String): String? {
         "c#", "cs", "csharp" -> "csharp"
         "kt", "kts", "kotlin" -> "kotlin"
         "java" -> "java"
-        "js", "jsx", "mjs", "cjs", "javascript", "node", "nodejs" -> "javascript"
-        "ts", "tsx", "mts", "cts", "typescript", "deno", "bun" -> "typescript"
+        "js", "mjs", "cjs", "javascript", "node", "nodejs" -> "javascript"
+        "jsx", "javascriptreact" -> "jsx"
+        "ts", "mts", "cts", "typescript", "deno", "bun" -> "typescript"
+        "tsx", "typescriptreact" -> "tsx"
         "py", "pyw", "python", "python2", "python3" -> "python"
         "rb", "ruby" -> "ruby"
         "rs", "rust" -> "rust"
@@ -51,8 +54,11 @@ internal fun canonicalCodeLanguage(value: String): String? {
         "dart" -> "dart"
         "swift" -> "swift"
         "coffee", "coffeescript" -> "coffeescript"
-        "json", "jsonl", "ndjson", "jsonc" -> "json"
+        "json" -> "json"
+        "jsonc" -> "jsonc"
+        "jsonl", "ndjson" -> "jsonl"
         "yaml", "yml" -> "yaml"
+        "toml" -> "toml"
         "xml", "xsd", "xsl", "svg" -> "xml"
         "html", "htm" -> "html"
         "css" -> "css"

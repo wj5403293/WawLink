@@ -19,7 +19,6 @@ kotlin {
             implementation(compose.animation)
             implementation(compose.ui)
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
-            implementation("dev.snipme:highlights:1.0.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
         }
         commonTest.dependencies { implementation(kotlin("test")) }
@@ -29,7 +28,9 @@ kotlin {
         androidMain.get().dependsOn(jvmSharedMain)
         androidMain.dependencies {
             implementation("io.github.Rosemoe.sora-editor:editor:0.23.6")
+            implementation("io.github.Rosemoe.sora-editor:language-textmate:0.23.6")
         }
+        androidUnitTest.dependencies { implementation(kotlin("test-junit")) }
         val desktopMain by getting {
             dependsOn(jvmSharedMain)
             dependencies {
@@ -59,6 +60,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    // Pure tokenizer regressions run on the JVM; only Sora's Android logger needs default stubs.
+    testOptions.unitTests.isReturnDefaultValues = true
+    sourceSets.getByName("test").resources.srcDir("src/commonMain/composeResources/files")
 }
 compose.resources {
     publicResClass = true

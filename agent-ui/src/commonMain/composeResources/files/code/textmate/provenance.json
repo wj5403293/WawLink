@@ -1,0 +1,519 @@
+{
+  "description": "Unmodified offline TextMate grammars and VS Code themes. No runtime network or downloaded language packs. VS Code ThirdPartyNotices contains original grammar copyrights and full upstream license texts.",
+  "sources": [
+    {
+      "repository": "https://github.com/microsoft/vscode",
+      "revision": "f1a4fb101478ce6ec82fe9627c43efbf9e98c813",
+      "tag": "1.95.3",
+      "licenses": [
+        "licenses/VSCode-LICENSE.txt",
+        "licenses/VSCode-ThirdPartyNotices.txt"
+      ]
+    },
+    {
+      "repository": "https://github.com/fwcd/vscode-kotlin",
+      "revision": "8f5db97543ddd11b77fb962cfe7ebeafe4d125ad",
+      "tag": "0.2.35",
+      "licenses": [
+        "licenses/Kotlin-LICENSE.txt"
+      ]
+    },
+    {
+      "repository": "https://github.com/tamasfe/taplo",
+      "revision": "ab68333d17afab9319d0516b311a71bde828f900",
+      "tag": "0.9.3",
+      "licenses": [
+        "licenses/Taplo-LICENSE.txt",
+        "licenses/Taplo-Extension-LICENSE.txt"
+      ]
+    }
+  ],
+  "engine": {
+    "dependency": "io.github.Rosemoe.sora-editor:language-textmate:0.23.6",
+    "revision": "b1777d0d465b42515739ffe529b4ec1634ac2175",
+    "completeSource": "https://github.com/Rosemoe/sora-editor/archive/b1777d0d465b42515739ffe529b4ec1634ac2175.tar.gz",
+    "licenses": [
+      "../Sora-0.23.6-LGPL-2.1.txt",
+      "licenses/TM4E-EPL-2.0.txt"
+    ],
+    "notice": "Unmodified Sora TextMate module includes TM4E under EPL-2.0, initially adapted from Microsoft vscode-textmate (MIT). Full MIT text and Microsoft copyright are retained in VSCode-LICENSE.txt; TM4E source headers retained in the published artifact/source. Joni/jcodings transitive dependencies are MIT, SnakeYAML Engine Apache-2.0, Gson Apache-2.0; Gradle resolves the original published artifacts.",
+    "transitiveDependencies": [
+      {
+        "dependency": "com.google.code.gson:gson:2.13.1",
+        "publishedArtifact": "https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.13.1/gson-2.13.1.jar",
+        "sha256": "94855942d4992f112946d3de1c334e709237b8126d8130bf07807c018a4a2120",
+        "licenses": [
+          "licenses/Transitive-APACHE-2.0.txt"
+        ]
+      },
+      {
+        "dependency": "org.jruby.jcodings:jcodings:1.0.63",
+        "publishedArtifact": "https://repo.maven.apache.org/maven2/org/jruby/jcodings/jcodings/1.0.63/jcodings-1.0.63.jar",
+        "sha256": "ef11e1741a65160c5619cd2c3c79c40ee0affda847062f012616034b9d10e719",
+        "licenses": [
+          "licenses/jcodings-LICENSE.txt"
+        ]
+      },
+      {
+        "dependency": "org.jruby.joni:joni:2.2.6",
+        "publishedArtifact": "https://repo.maven.apache.org/maven2/org/jruby/joni/joni/2.2.6/joni-2.2.6.jar",
+        "sha256": "fb33f60ab43e38653317bbf41a1fec89cbee270c48e53b0b56d1165c00de0e07",
+        "licenses": [
+          "licenses/joni-LICENSE.txt"
+        ]
+      },
+      {
+        "dependency": "org.snakeyaml:snakeyaml-engine:2.9",
+        "publishedArtifact": "https://repo.maven.apache.org/maven2/org/snakeyaml/snakeyaml-engine/2.9/snakeyaml-engine-2.9.jar",
+        "sha256": "2f7a957461b6d70c0005e2c35b78a1c97bef6c446704c0ee9393ce98e4958ba8",
+        "licenses": [
+          "licenses/Transitive-APACHE-2.0.txt"
+        ]
+      },
+      {
+        "dependency": "org.eclipse.jdt:org.eclipse.jdt.annotation:2.3.100",
+        "publishedArtifact": "https://repo.maven.apache.org/maven2/org/eclipse/jdt/org.eclipse.jdt.annotation/2.3.100/org.eclipse.jdt.annotation-2.3.100.jar",
+        "sha256": "899dc22cbc1da99bfac4ce2cfc58e37918a3399012f724509fa47f6776bc638a",
+        "licenses": [
+          "licenses/JDT-annotation-about.html",
+          "licenses/TM4E-EPL-2.0.txt"
+        ]
+      }
+    ]
+  },
+  "files": [
+    {
+      "path": "grammars/coffeescript/coffeescript.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/coffeescript/syntaxes/coffeescript.tmLanguage.json",
+      "sha256": "097c4da7143a2e710a92128ac275df9855c53b529c7902d9ebae69eba9abfeef",
+      "bytes": 35524,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/cpp/c.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/cpp/syntaxes/c.tmLanguage.json",
+      "sha256": "9d0a305bc6595526ffc0680eccbf23a12512ded99a632d9f1deab3ce81b62957",
+      "bytes": 100069,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/cpp/cpp.embedded.macro.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/cpp/syntaxes/cpp.embedded.macro.tmLanguage.json",
+      "sha256": "5eea760dd0fe8f10df3cc39afbd01c5b5feeab5bb80fd15a95601e386828c903",
+      "bytes": 307070,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/cpp/cpp.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/cpp/syntaxes/cpp.tmLanguage.json",
+      "sha256": "82b39c8f2aec095b45a287ab155fcf868c197b216ba8d6fe0c95674b82863182",
+      "bytes": 551879,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/cpp/cuda-cpp.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/cpp/syntaxes/cuda-cpp.tmLanguage.json",
+      "sha256": "4dae61eeef3cebd9d1cc44fdc6123e786156be1cbfbd5b19230c9054e85902f0",
+      "bytes": 651360,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/cpp/platform.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/cpp/syntaxes/platform.tmLanguage.json",
+      "sha256": "9e73e3ecf009c6243615c83dbfbd041da1d5a8c049739d1c9ae11f95f2c56c3b",
+      "bytes": 568256,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/csharp/csharp.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/csharp/syntaxes/csharp.tmLanguage.json",
+      "upstreamSha256": "962afb6b2a552b167df50e00cf41605a351efebb509914ad4bf0f7d1a99c1a12",
+      "sha256": "0956ad5162ab6c3960e64012f3bfa6855907dfe8368f6b5c33cb4b5445aa7e0c",
+      "bytes": 130645,
+      "modifications": "Rewrote await's variable-length negative lookbehind using a fixed negative guard, whitespace, and Oniguruma \\K; keeps await/member distinction on Joni."
+    },
+    {
+      "path": "grammars/css/css.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/css/syntaxes/css.tmLanguage.json",
+      "sha256": "ce2dd0dc1a241d64321e60d6fe3a37558796fb03e7d3d10e112441f1dc154c63",
+      "bytes": 69862,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/dart/dart.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/dart/syntaxes/dart.tmLanguage.json",
+      "sha256": "ae7275cc6c36d20e94164e7af62fd2fe349e422c17bfc8d87851099c187dfc7d",
+      "bytes": 10726,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/docker/docker.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/docker/syntaxes/docker.tmLanguage.json",
+      "sha256": "99ae6173ae9152034e35e17de092f4e11273acefb82320592bbfa627a29bb03c",
+      "bytes": 2464,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/go/go.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/go/syntaxes/go.tmLanguage.json",
+      "sha256": "a23fa7f305fe6e3f7f307413b3333ed83d399b2c20c59c2f91ca03a7d6a02f39",
+      "bytes": 68985,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/html/html-derivative.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/html/syntaxes/html-derivative.tmLanguage.json",
+      "sha256": "57c6b53a014fe87301f8716caf4e79f69796e556068d33641b0ed9ff77db70c5",
+      "bytes": 1398,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/html/html.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/html/syntaxes/html.tmLanguage.json",
+      "sha256": "80dedf4fb27e88889ac8fb72763954a6d2660502c686f4415208d8c8d00352cd",
+      "bytes": 84416,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/ini/ini.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/ini/syntaxes/ini.tmLanguage.json",
+      "sha256": "a46613bd993739695cb62be04d23c5d779754bce9fda8a6ead61ecd4616f95fd",
+      "bytes": 2376,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/java/java.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/java/syntaxes/java.tmLanguage.json",
+      "sha256": "7152b50446fc97b2abf78755958ed8d27729b53365465ed89b6edebc1a6e9ba3",
+      "bytes": 40196,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/javascript/JavaScript.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/javascript/syntaxes/JavaScript.tmLanguage.json",
+      "sha256": "fe8df038a659a4cc499b721b9519677f45559d0432c4f65f2b654342b7d38893",
+      "bytes": 226780,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/javascript/JavaScriptReact.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/javascript/syntaxes/JavaScriptReact.tmLanguage.json",
+      "sha256": "ea4a18b3bdc9d6c85e39183104de3fa5a532480eca8013532d567017c396f751",
+      "bytes": 229776,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/javascript/Regular Expressions (JavaScript).tmLanguage",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/javascript/syntaxes/Regular Expressions (JavaScript).tmLanguage",
+      "sha256": "00108c41e49aa8312f0e94e1da961580d79c92b64eab0d608f9071d1081718ef",
+      "bytes": 5864,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/json/JSON.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/json/syntaxes/JSON.tmLanguage.json",
+      "sha256": "d7238f1cc9033993b9816b0945cab4bb8ea108de0399663c551f28f913e94c70",
+      "bytes": 5084,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/json/JSONC.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/json/syntaxes/JSONC.tmLanguage.json",
+      "sha256": "9f927bb3aa53e66efc3cace9d2fa1185822b2adfa3f4a9299e7c078f136e1ee2",
+      "bytes": 5350,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/json/JSONL.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/json/syntaxes/JSONL.tmLanguage.json",
+      "sha256": "43993c393f6141af3cbc8c1e8b2fdcf2f7f88fc7e63415ac5f36ab6bb05ba103",
+      "bytes": 5252,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/json/snippets.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/json/syntaxes/snippets.tmLanguage.json",
+      "sha256": "0fc1af278857af70f8f97ac959a8245b0834c2b0ad898d2c0324103f7f519685",
+      "bytes": 320733,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/lua/lua.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/lua/syntaxes/lua.tmLanguage.json",
+      "sha256": "f491946b630994daecafbbacf669377e78a7fc5e6d318a79bbf58882cfc70fb7",
+      "bytes": 21780,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/make/make.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/make/syntaxes/make.tmLanguage.json",
+      "sha256": "09c59caddf7731489e43c03f3aaa117785618753dd37f53c023590c531f12379",
+      "bytes": 13193,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/markdown-basics/markdown.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/markdown-basics/syntaxes/markdown.tmLanguage.json",
+      "sha256": "d52c965129dd32b5330d641b01c3ee26bc2ca65ef17107ff85991e5d5016cac5",
+      "bytes": 75570,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/perl/perl.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/perl/syntaxes/perl.tmLanguage.json",
+      "sha256": "a58440e3d71c3af267ca0fae803d4c9c09e32398848e445486e1fe89f2c65d5c",
+      "bytes": 63536,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/perl/perl6.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/perl/syntaxes/perl6.tmLanguage.json",
+      "sha256": "29e4e23b69f780cfd2213424c56d5e09bea9f16f7b1fa348a68b6f9286684d38",
+      "bytes": 12139,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/php/html.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/php/syntaxes/html.tmLanguage.json",
+      "sha256": "4eec00e50017cd82b3e2473ed9f774a9be6b1bb2de11371a0bf2785c3ae8b4f1",
+      "bytes": 2291,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/php/php.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/php/syntaxes/php.tmLanguage.json",
+      "sha256": "ff5f802120363e2c40ab4e678bc71f98fc88caa367c79017e9afc9401bb53522",
+      "bytes": 137779,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/python/MagicPython.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/python/syntaxes/MagicPython.tmLanguage.json",
+      "sha256": "ca981430eb3df004f4955bb7cba51ad06c4d8408d168c81eec7059d7d9aec5c8",
+      "bytes": 101610,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/python/MagicRegExp.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/python/syntaxes/MagicRegExp.tmLanguage.json",
+      "sha256": "d44f8811521bd35ea6bb9f7049b9e8a2cb6a04c514dcb9ec369633ab2cb139d1",
+      "bytes": 11035,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/ruby/ruby.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/ruby/syntaxes/ruby.tmLanguage.json",
+      "sha256": "241a8d95350746cff04219962567bc8875e23db9b4e08f0ab0b4d37f640713e1",
+      "bytes": 61789,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/rust/rust.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/rust/syntaxes/rust.tmLanguage.json",
+      "sha256": "59c8d0a158172e7139cb13aebdba7c49a8418652b62417c94b3ffcd21740ca7b",
+      "bytes": 25109,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/shellscript/shell-unix-bash.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json",
+      "sha256": "838a597b9bbc29bcfc89ca0190118550ae57517ec3e4b4baa1f8500edcf601d1",
+      "bytes": 56349,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/sql/sql.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/sql/syntaxes/sql.tmLanguage.json",
+      "sha256": "ca6adc8e7d9bff45da1681aa3432077033296ceef365351222aca4cc5b47cee0",
+      "bytes": 27571,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/swift/swift.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/swift/syntaxes/swift.tmLanguage.json",
+      "sha256": "29777cda1c7528d23f0351e1f6269f60da00c3a7495bc0bb319c97334c1f5469",
+      "bytes": 128948,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/typescript-basics/TypeScript.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/typescript-basics/syntaxes/TypeScript.tmLanguage.json",
+      "sha256": "20a9b8b10ac3be7fbf8b3f4f3a255c3a055cbd0e2c2f0cadf0c334ec89c3316a",
+      "bytes": 231088,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/typescript-basics/TypeScriptReact.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/typescript-basics/syntaxes/TypeScriptReact.tmLanguage.json",
+      "sha256": "db2b349dd54b3c9e769b989a6c0d3ac919a2255398f7c8fcf36b9e456ec1bf7d",
+      "bytes": 227513,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/typescript-basics/jsdoc.js.injection.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/typescript-basics/syntaxes/jsdoc.js.injection.tmLanguage.json",
+      "sha256": "c11fde5c9bb2d9b6bd6faaad51f398b127438a93b3047641a270552a760e76b6",
+      "bytes": 375,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/typescript-basics/jsdoc.ts.injection.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/typescript-basics/syntaxes/jsdoc.ts.injection.tmLanguage.json",
+      "sha256": "526076af53f330358ae3f5293a7779ac0dbd19d5ef27b71effd94faeef4f1249",
+      "bytes": 371,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/xml/xml.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/xml/syntaxes/xml.tmLanguage.json",
+      "upstreamSha256": "bb51c7b202f20254772c88f86889e0dbcdc734e045b950fe25c0a23b591203d7",
+      "sha256": "df7e0127119d3e6768624a447fad2e8b9c321dec655e8e95ee7b3737e558746d",
+      "bytes": 7697,
+      "modifications": "Moved the misplaced ASP.NET comment end/name properties from captures to their parent rule; preserves comment termination and avoids invalid TM4E capture entries."
+    },
+    {
+      "path": "grammars/xml/xsl.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/xml/syntaxes/xsl.tmLanguage.json",
+      "sha256": "3b766c5273bd8ef7acb85c2cfd227692c0f75b35d262584d7559c9a543219b12",
+      "bytes": 2102,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/yaml/yaml-1.0.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/yaml/syntaxes/yaml-1.0.tmLanguage.json",
+      "sha256": "044086f689b17fb0711478cfe674c88d860a2219492737781349c8ba6643fe7b",
+      "bytes": 28940,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/yaml/yaml-1.1.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/yaml/syntaxes/yaml-1.1.tmLanguage.json",
+      "upstreamSha256": "577102ecafb5a6fe88b766ceed020c2cc32aa16f82556ae36385f23f7b834963",
+      "sha256": "b3e64dc2f7e73533179765b0ec1da45c469845b4215b9e370937fd80942e3d54",
+      "bytes": 41583,
+      "modifications": "Removed capture-table comment metadata unsupported by TM4E; token rules unchanged."
+    },
+    {
+      "path": "grammars/yaml/yaml-1.2.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/yaml/syntaxes/yaml-1.2.tmLanguage.json",
+      "upstreamSha256": "888c19bb2280c501394c8f1ea4eeb896cdb0fd1061bcf0ded304996b305255be",
+      "sha256": "01dc750d6925c526ca5ed675484f6cb2171171977a78297661abd64953329008",
+      "bytes": 41104,
+      "modifications": "Removed capture-table comment metadata unsupported by TM4E; token rules unchanged."
+    },
+    {
+      "path": "grammars/yaml/yaml-1.3.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/yaml/syntaxes/yaml-1.3.tmLanguage.json",
+      "sha256": "4d2eb8e4139b82a610e4f02a0f663ebbb183d4d5e97b3f098a5a844f4efcf6b0",
+      "bytes": 1711,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/yaml/yaml.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/yaml/syntaxes/yaml.tmLanguage.json",
+      "sha256": "0e9e3669a65b5d1f957398844f50ee6e51e713f5a18f782ec458cdfbaebf1bb6",
+      "bytes": 21678,
+      "modifications": "none"
+    },
+    {
+      "path": "themes/dark_vs.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/theme-defaults/themes/dark_vs.json",
+      "upstreamSha256": "97517bb4bdcdd6d4642453bf0114000ed74ff28aa1a8ef5d0a83f0440b8108b1",
+      "sha256": "a3f6f0a42d41d9ef4b244431d3d3790f65e90b846d5d8e936b0a3822bde0d0c8",
+      "bytes": 11456,
+      "modifications": "Normalized JSONC comments and trailing commas to strict JSON for TM4E; theme rules and colors unchanged."
+    },
+    {
+      "path": "themes/light_vs.json",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/extensions/theme-defaults/themes/light_vs.json",
+      "upstreamSha256": "ac299fee01baf722a60b29d177c642b5ab94f87a20bf09015362d7dba890a310",
+      "sha256": "096ab5593cf2c5e22b792445d91a0b7ded644cfb02c9ed6294fc6ec3749a03e2",
+      "bytes": 12745,
+      "modifications": "Normalized JSONC comments and trailing commas to strict JSON for TM4E; theme rules and colors unchanged."
+    },
+    {
+      "path": "licenses/VSCode-LICENSE.txt",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/LICENSE.txt",
+      "sha256": "9480271317925265e806a9a196aaa33410a962fa9d4d1e248a4a5187bc8c9df9",
+      "bytes": 1088,
+      "modifications": "none"
+    },
+    {
+      "path": "licenses/VSCode-ThirdPartyNotices.txt",
+      "source": "https://raw.githubusercontent.com/microsoft/vscode/f1a4fb101478ce6ec82fe9627c43efbf9e98c813/ThirdPartyNotices.txt",
+      "sha256": "e588e62508de6a3afc58838d5e8e4f60c24ea470821e04776adf2ff29346b3e9",
+      "bytes": 146128,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/kotlin/kotlin.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/fwcd/vscode-kotlin/8f5db97543ddd11b77fb962cfe7ebeafe4d125ad/syntaxes/kotlin.tmLanguage.json",
+      "sha256": "459f3a3ea00b80c9af08f80def97933bd876ec6b3670748b15268b3b429256f5",
+      "bytes": 18576,
+      "modifications": "none"
+    },
+    {
+      "path": "licenses/Kotlin-LICENSE.txt",
+      "source": "https://raw.githubusercontent.com/fwcd/vscode-kotlin/8f5db97543ddd11b77fb962cfe7ebeafe4d125ad/LICENSE",
+      "sha256": "1690b72b5a2beb330c98c0715929bf789cb8d91670c29ff2e4abcdae84329136",
+      "bytes": 1104,
+      "modifications": "none"
+    },
+    {
+      "path": "grammars/toml/toml.tmLanguage.json",
+      "source": "https://raw.githubusercontent.com/tamasfe/taplo/ab68333d17afab9319d0516b311a71bde828f900/editors/vscode/toml.tmLanguage.json",
+      "sha256": "535d51829eee1b852589f501344d88348aa0b8a630285406f004cc51de656a33",
+      "bytes": 9212,
+      "modifications": "none"
+    },
+    {
+      "path": "licenses/Taplo-LICENSE.txt",
+      "source": "https://raw.githubusercontent.com/tamasfe/taplo/ab68333d17afab9319d0516b311a71bde828f900/LICENSE.md",
+      "sha256": "552604656340642782345c47dda89218136f141a25aaecdfd1501180841ff98b",
+      "bytes": 1069,
+      "modifications": "none"
+    },
+    {
+      "path": "licenses/Taplo-Extension-LICENSE.txt",
+      "source": "https://raw.githubusercontent.com/tamasfe/taplo/ab68333d17afab9319d0516b311a71bde828f900/editors/vscode/LICENSE.md",
+      "sha256": "552604656340642782345c47dda89218136f141a25aaecdfd1501180841ff98b",
+      "bytes": 1069,
+      "modifications": "none"
+    },
+    {
+      "path": "licenses/TM4E-EPL-2.0.txt",
+      "source": "https://www.eclipse.org/org/documents/epl-2.0/EPL-2.0.txt",
+      "sha256": "0becf16567beb77fa252b7664631dd177c8f9a1889e48995b45379c7130e5303",
+      "bytes": 14198,
+      "modifications": "none"
+    },
+      {
+        "path": "licenses/joni-LICENSE.txt",
+        "source": "https://raw.githubusercontent.com/jruby/joni/c607318fef3b7d709c75201f309f6c938c24a16a/LICENSE",
+        "sha256": "cd6c90a4a6f514d1e797f090839d0fc553b61ff032037ec1cd94ab437ba68159",
+        "bytes": 1067,
+        "modifications": "none"
+      },
+      {
+        "path": "licenses/jcodings-LICENSE.txt",
+        "source": "https://raw.githubusercontent.com/jruby/jcodings/536fd52a82c98e83973900d0d7d5d30c31880323/LICENSE.txt",
+        "sha256": "5d3d477f7450dc6abb60ede67707f3365836cb4caf914f63d0c2baa3a5e7764e",
+        "bytes": 1055,
+        "modifications": "none"
+      },
+      {
+        "path": "licenses/Transitive-APACHE-2.0.txt",
+        "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358,
+        "modifications": "none"
+      },
+      {
+        "path": "licenses/JDT-annotation-about.html",
+        "source": "https://repo.maven.apache.org/maven2/org/eclipse/jdt/org.eclipse.jdt.annotation/2.3.100/org.eclipse.jdt.annotation-2.3.100.jar!/about.html",
+        "sha256": "ee66d2fb3b4c0d2ed2e7f698bc9ed4e3d6cf77fa5caf40ad03296125db1ac5f0",
+        "bytes": 1460,
+        "modifications": "none"
+      }
+  ]
+}

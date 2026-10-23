@@ -52,6 +52,16 @@ internal data class AskRequestDraft(
 ) {
     fun question(id: String) = questions[id] ?: AskQuestionDraft()
     fun edit(id: String, draft: AskQuestionDraft) = copy(questions = questions + (id to draft))
+    fun selectOption(questions: List<AskQuestion>, id: String, label: String): AskRequestDraft {
+        if (reviewing) return this
+        val index = page(questions)
+        val active = questions.getOrNull(index)?.takeIf { it.id == id } ?: return this
+        if (active.options.none { it.label == label }) return this
+        val edited = edit(id, question(id).select(active, label))
+        if (active.multi) return edited
+        return questions.getOrNull(index + 1)?.let { edited.show(it.id) }
+            ?: edited.copy(questionId = id, reviewing = true)
+    }
     fun page(questions: List<AskQuestion>): Int = questions.indexOfFirst { it.id == questionId }.coerceAtLeast(0)
     fun show(id: String) = copy(questionId = id, reviewing = false)
     fun firstUnanswered(questions: List<AskQuestion>): String? = questions.firstOrNull { question(it.id).answer(it) == null }?.id
