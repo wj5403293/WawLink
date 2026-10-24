@@ -15,7 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 @Composable
-internal actual fun PlatformCodeEditor(text: String, language: String?, onChange: (String) -> Unit, modifier: Modifier) {
+internal actual fun PlatformCodeEditor(text: String, language: String?, onChange: (String) -> Unit, modifier: Modifier, editable: Boolean) {
     val context = rememberAgentViewContext()
     val colors = LocalAgentColors.current
     val dark = colors.surface.luminance() < 0.5f
@@ -50,6 +50,7 @@ internal actual fun PlatformCodeEditor(text: String, language: String?, onChange
         onDispose { receipt.unsubscribe(); editor.release() }
     }
     key(editor) { AndroidView(factory = { editor }, modifier = modifier, update = { view ->
+        view.isEditable = editable
         if (appliedText != text) {
             val cursor = view.cursor
             val leftLine = cursor.leftLine

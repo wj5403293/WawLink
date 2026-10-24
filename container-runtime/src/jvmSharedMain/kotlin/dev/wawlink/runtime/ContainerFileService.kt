@@ -17,6 +17,14 @@ data class ContainerDirectory(val path: String, val entries: List<ContainerFile>
 /** Guest-only filesystem access. No rootfs paths, host shell, Python, Node or SSH are involved. */
 class ContainerFileService(private val runtime: ContainerRuntime, private val config: ContainerConfig) {
     companion object {
+        private const val MAX_TEXT_BYTES = 2 * 1024 * 1024
+        private fun textBytes(text: String): ByteArray {
+            require(text.length <= MAX_TEXT_BYTES && '\u0000' !in text) { "仅支持不含 NUL、最大 2 MiB 的 UTF-8 文本" }
+            val encoded = Charsets.UTF_8.newEncoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT).encode(java.nio.CharBuffer.wrap(text))
+            require(encoded.remaining() <= MAX_TEXT_BYTES) { "文件超过 2 MiB，请导出后编辑" }
+            return ByteArray(encoded.remaining()).also { encoded.get(it) }
+        }
         fun nameError(name: String): String? = when {
             name.isEmpty() || name == "." || name == ".." -> "名称不能为空、. 或 .."
             '/' in name || '\u0000' in name -> "名称不能包含 / 或 NUL"
@@ -268,12 +276,52 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
     suspend fun readText(source: String): String = withContext(Dispatchers.IO) {
         val bytes = java.io.ByteArrayOutputStream()
         exportFile(source, object : OutputStream() {
-            override fun write(value: Int) { check(bytes.size() < 2 * 1024 * 1024) { "文件超过 2 MiB，请导出后打开" }; bytes.write(value) }
-            override fun write(buffer: ByteArray, offset: Int, count: Int) { check(bytes.size() + count <= 2 * 1024 * 1024) { "文件超过 2 MiB，请导出后打开" }; bytes.write(buffer, offset, count) }
+            override fun write(value: Int) { check(bytes.size() < MAX_TEXT_BYTES) { "文件超过 2 MiB，请导出后打开" }; bytes.write(value) }
+            override fun write(buffer: ByteArray, offset: Int, count: Int) { check(bytes.size() + count <= MAX_TEXT_BYTES) { "文件超过 2 MiB，请导出后打开" }; bytes.write(buffer, offset, count) }
         })
         val content = bytes.toByteArray()
         check(content.none { it == 0.toByte() }) { "二进制文件请导出后打开" }
         Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(content)).toString()
+    }
+
+    /** Atomic guest-side replacement; a stale editor never silently overwrites newer contents. */
+    suspend fun writeText(source: String, text: String, expectedText: String): Unit = withContext(Dispatchers.IO) {
+        mutablePath(source)
+        val bytes = textBytes(text)
+        val expected = java.security.MessageDigest.getInstance("SHA-256").digest(textBytes(expectedText))
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        val directory = source.substringBeforeLast('/').ifEmpty { "/" }
+        val temporary = child(directory, ".wawlink-edit-${java.util.UUID.randomUUID()}.part")
+        val script = """
+            checked ${quote(source)}
+            [ -f ${quote(source)} ] && [ -r ${quote(source)} ] && [ -w ${quote(source)} ] || fail '只能保存可读写的普通文件'
+            [ -w ${quote(directory)} ] && [ -x ${quote(directory)} ] || fail '父目录不可写，无法安全保存'
+            [ -r /proc/self/mountinfo ] || fail '无法检查系统挂载，尚未开始保存'
+            while IFS=' ' read -r mount_id parent_id device mount_root mount_path rest; do
+                decoded=${'$'}(printf '%b_' "${'$'}mount_path"); decoded=${'$'}{decoded%_}
+                [ "${'$'}decoded" != ${quote(source)} ] || fail '不能替换挂载根文件'
+            done < /proc/self/mountinfo
+            identity=${'$'}(stat -c '%d:%i:%s:%Y:%Z:%a:%u:%g' -- ${quote(source)})
+            umask 077
+            (set -C; cat > ${quote(temporary)})
+            checked ${quote(source)}; checked ${quote(temporary)}
+            [ "${'$'}(stat -c %s -- ${quote(temporary)})" = '${bytes.size}' ] || fail '文本写入不完整，原文件未修改'
+            [ -f ${quote(source)} ] || fail '文件类型已改变，尚未保存'
+            [ "${'$'}(stat -c '%d:%i:%s:%Y:%Z:%a:%u:%g' -- ${quote(source)})" = "${'$'}identity" ] || fail '文件已改变，请保留草稿并重新打开后合并'
+            actual=${'$'}(sha256sum < ${quote(source)})
+            [ "${'$'}{actual%% *}" = '$expected' ] || fail '文件内容已改变，请保留草稿并重新打开后合并'
+            chown --reference=${quote(source)} -- ${quote(temporary)}
+            chmod --reference=${quote(source)} -- ${quote(temporary)}
+            checked ${quote(source)}; checked_dir ${quote(directory)}
+            mv -fT -- ${quote(temporary)} ${quote(source)}
+        """.trimIndent()
+        try {
+            process(script, { output -> runInterruptible { output.write(bytes) } }) { it.copyTo(DiscardOutput) }
+        } finally {
+            withContext(NonCancellable) {
+                command("checked_dir ${quote(directory)}; if [ -f ${quote(temporary)} ] && [ ! -L ${quote(temporary)} ]; then rm -- ${quote(temporary)}; fi")
+            }
+        }
     }
     suspend fun exportZip(entries: List<String>, output: OutputStream) = withContext(Dispatchers.IO) {
         require(entries.isNotEmpty())

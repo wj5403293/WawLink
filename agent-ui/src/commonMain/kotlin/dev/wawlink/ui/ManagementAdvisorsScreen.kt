@@ -60,7 +60,7 @@ fun ManagementAdvisorsScreen(repository: AgentManagementRepository, configuratio
                 if (state.advisors.isEmpty()) ManagementHint("尚无顾问", "support_agent")
             }
             ManagementGroup("关联配置") {
-                state.roles.filter { it.id == "advisor" }.forEach { ManagementRow("顾问角色", it.model ?: "未配置", "neurology") }
+                state.roles.filter { it.id == "advisor" }.forEach { ManagementRow("顾问角色", it.model ?: "未配置", "deployed_code") }
             }
         }
     }
@@ -134,7 +134,7 @@ private fun AdvisorDefinitionEditor(repository: AgentManagementRepository, state
         }
         ManagementGroup("模型") {
             ManagementCandidates(configurationStrings(configuration["model"]), state, { candidates -> set("model", candidates.singleOrNull()) }, kind = "chat", maxCandidates = 1)
-            ManagementRow("选择模型", configuration["model"]?.toString() ?: "沿用原生默认", "neurology", { modelPicker = true })
+            ManagementRow("选择模型", configuration["model"]?.toString() ?: "沿用原生默认", "deployed_code", { modelPicker = true })
             if (configuration.containsKey("model")) TextButton(onClick = { set("model", null) }) { Text("恢复默认模型") }
         }
         ManagementGroup("工具策略") {

@@ -133,6 +133,7 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
                             }
                             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp)) {
                                 SettingsSearch(search, { search = it }, "搜索服务")
+                                Spacer(Modifier.height(16.dp))
                                 val nativeModels = managementState?.models.orEmpty()
                                 val modelCounts = remember(nativeModels) { nativeModels.groupingBy { it.provider }.eachCount() }
                                 val nativeProviders = if (onAdvanced != null) managementState?.providers.orEmpty() else emptyList()
@@ -162,7 +163,7 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
                                             })
                                         }
                                     }
-                                    if (visible.isEmpty() && managementState?.modelsLoading != true) SettingsEmpty(if (entries.isEmpty()) "还没有模型服务" else "没有匹配的服务", "cloud_off")
+                                    if (visible.isEmpty() && managementState?.modelsLoading != true) SettingsEmpty(if (entries.isEmpty()) "还没有模型服务" else "没有匹配的服务", "deployed_code")
                                 }
                             }
                         }

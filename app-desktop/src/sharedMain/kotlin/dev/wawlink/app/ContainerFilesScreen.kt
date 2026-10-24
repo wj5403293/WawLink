@@ -19,8 +19,6 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerFile
 import dev.wawlink.runtime.ContainerFileService
@@ -289,14 +287,14 @@ internal fun ContainerFilesScreen(app: AppCoordinator, host: HostFiles, config: 
         }
         code?.let { (title, text) -> Surface(Modifier.fillMaxSize()) { CodeDetailScreen(title, text, title.substringAfterLast('.', "").ifEmpty { null }, { code = null }) } }
     }
-    if (pathSheet) AgentSheet("当前目录", { pathSheet = false }) {
-        HostRow("当前目录", path, "folder_open")
-        HostRow("复制当前路径", icon = "content_copy", onClick = { clipboard.setText(AnnotatedString(path)); pathSheet = false })
-        HostRow("编辑路径", icon = "edit", onClick = { pathDraft = path; pathEdit = true; pathSheet = false })
-        if (path != "/") HostRow("上一级目录", icon = "arrow_upward", onClick = { pathSheet = false; navigate(path.substringBeforeLast('/').ifEmpty { "/" }) })
+    if (pathSheet) AgentActionSheet({ pathSheet = false }) {
+        AgentActionRow("当前目录", path, "folder_open")
+        AgentActionRow("复制当前路径", icon = "content_copy", onClick = { clipboard.setText(AnnotatedString(path)); pathSheet = false })
+        AgentActionRow("编辑路径", icon = "edit", onClick = { pathDraft = path; pathEdit = true; pathSheet = false })
+        if (path != "/") AgentActionRow("上一级目录", icon = "arrow_upward", onClick = { pathSheet = false; navigate(path.substringBeforeLast('/').ifEmpty { "/" }) })
     }
-    if (create) AgentSheet("新建 / 导入", { create = false }) {
-        HostRow("导入文件", "流式复制；不会覆盖已有条目", "upload", {
+    if (create) AgentActionSheet({ create = false }, title = "新建 / 导入") {
+        AgentActionRow("导入文件", "流式复制；不会覆盖已有条目", "upload", {
             create = false
             val destination = path
             run("正在从主机导入；失败可能保留已导入文件") {
@@ -304,32 +302,32 @@ internal fun ContainerFilesScreen(app: AppCoordinator, host: HostFiles, config: 
                 sources.forEach { source -> withContext(Dispatchers.IO) { source.openInput().use { service.importFile(destination, source.name, it) } } }
             }
         })
-        HostRow("新建目录", icon = "create_new_folder", onClick = { create = false; name = ""; nameAction = "folder" })
-        HostRow("新建文件", icon = "note_add", onClick = { create = false; name = ""; nameAction = "file" })
+        AgentActionRow("新建目录", icon = "create_new_folder", onClick = { create = false; name = ""; nameAction = "folder" })
+        AgentActionRow("新建文件", icon = "note_add", onClick = { create = false; name = ""; nameAction = "file" })
     }
-    downloadOptions?.let { sources -> AgentSheet("下载", { downloadOptions = null }) {
-        HostRow("导出", "打包为 ZIP 文件", "folder_zip", { download(sources, true) })
-        HostRow("下载", "普通文件保持原样；目录以 ZIP 保留结构", "download", { download(sources) })
+    downloadOptions?.let { sources -> AgentActionSheet({ downloadOptions = null }) {
+        AgentActionRow("导出", "打包为 ZIP 文件", "folder_zip", { download(sources, true) })
+        AgentActionRow("下载", "普通文件保持原样；目录以 ZIP 保留结构", "download", { download(sources) })
     } }
-    if (bulkMore) AgentSheet("更多", { bulkMore = false }) {
-        HostRow("复制所选路径", icon = "content_copy", onClick = { clipboard.setText(AnnotatedString(selectedPaths().joinToString("\n"))); bulkMore = false })
-        HostRow("查看所选条目", icon = "info", onClick = { showProperties(selectedEntries); bulkMore = false })
-        if (selectedEntries.size == 1) HostRow("文件操作", icon = "more_vert", onClick = { action = selectedEntries.single().file; bulkMore = false })
+    if (bulkMore) AgentActionSheet({ bulkMore = false }) {
+        AgentActionRow("复制所选路径", icon = "content_copy", onClick = { clipboard.setText(AnnotatedString(selectedPaths().joinToString("\n"))); bulkMore = false })
+        AgentActionRow("查看所选条目", icon = "info", onClick = { showProperties(selectedEntries); bulkMore = false })
+        if (selectedEntries.size == 1) AgentActionRow("文件操作", icon = "more_vert", onClick = { action = selectedEntries.single().file; bulkMore = false })
     }
     action?.let { file ->
-        AgentSheet(file.name, { action = null }) {
+        AgentActionSheet({ action = null }) {
             val source = ContainerFileService.child(path, file.name)
-            HostRow(file.name, containerFileSubtitle(file), containerFileIcon(file))
+            AgentActionRow(file.name, containerFileSubtitle(file), containerFileIcon(file))
             if (file.supported) {
-                HostRow("复制", icon = "content_copy", onClick = { copy(listOf(source)) })
-                if (file.directory) HostRow("进入目录", icon = "folder_open", onClick = { action = null; navigate(source) })
+                AgentActionRow("复制", icon = "content_copy", onClick = { copy(listOf(source)) })
+                if (file.directory) AgentActionRow("进入目录", icon = "folder_open", onClick = { action = null; navigate(source) })
                 else ContainerFileOpenRows(file, { openExternal(file) }, { openText(file) })
-                HostRow("下载", if (file.directory) "保留目录结构，保存为 ZIP" else "保存原文件", "download", { action = null; downloadOptions = listOf(source) })
-                HostRow("重命名", icon = "drive_file_rename_outline", onClick = { action = null; renameSource = source; name = file.name; nameAction = "rename" })
-                HostRow(if (file.directory) "删除目录" else "删除文件", icon = "delete", onClick = { action = null; delete = listOf(source) })
+                AgentActionRow("下载", if (file.directory) "保留目录结构，保存为 ZIP" else "保存原文件", "download", { action = null; downloadOptions = listOf(source) })
+                AgentActionRow("重命名", icon = "drive_file_rename_outline", onClick = { action = null; renameSource = source; name = file.name; nameAction = "rename" })
+                AgentActionRow(if (file.directory) "删除目录" else "删除文件", icon = "delete", dangerous = true, onClick = { action = null; delete = listOf(source) })
             }
-            HostRow("复制路径", icon = "content_copy", onClick = { clipboard.setText(AnnotatedString(source)); action = null })
-            HostRow("属性", icon = "info", onClick = { showProperties(listOf(ContainerFileSelection(source, file))) })
+            AgentActionRow("复制路径", icon = "content_copy", onClick = { clipboard.setText(AnnotatedString(source)); action = null })
+            AgentActionRow("属性", icon = "info", onClick = { showProperties(listOf(ContainerFileSelection(source, file))) })
         }
     }
     nameAction?.let { type ->
@@ -354,18 +352,16 @@ internal fun ContainerFilesScreen(app: AppCoordinator, host: HostFiles, config: 
     properties?.let { files -> AlertDialog(onDismissRequest = { properties = null }, title = { Text("属性 · ${files.size} 项") }, text = {
         Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) { files.forEach { entry -> ContainerFileProperties(entry.path, entry.file) } }
     }, confirmButton = { TextButton({ properties = null }) { Text("关闭") } }) }
-    if (bookmarksOpen) AgentSheet("书签", { bookmarksOpen = false; bookmarkMenu = null }) {
-        HostRow("添加当前目录书签", path, "bookmark_add", { bookmarkPath = path; bookmarkName = bookmarks[path] ?: path })
-        if (bookmarks.isEmpty()) HostRow("暂无书签", "添加当前目录即可保存", "bookmark_border")
-        else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
-            items(bookmarks.entries.sortedBy { it.value.lowercase(Locale.ROOT) }, key = { it.key }) { (target, title) ->
-                HostRow(title, target, "folder_open", { bookmarksOpen = false; bookmarkMenu = null; navigate(target) }) {
-                    Box {
-                        FileIconButton("more_vert", "书签操作", { bookmarkMenu = target })
-                        DropdownMenu(bookmarkMenu == target, { bookmarkMenu = null }) {
-                            DropdownMenuItem({ Text("重命名") }, { bookmarkMenu = null; bookmarkPath = target; bookmarkName = title }, leadingIcon = { Symbol("edit") })
-                            DropdownMenuItem({ Text("删除") }, { bookmarkMenu = null; run("正在删除书签", false) { saveBookmarks(bookmarks - target) } }, enabled = !busy, leadingIcon = { Symbol("delete") })
-                        }
+    if (bookmarksOpen) AgentActionSheet({ bookmarksOpen = false; bookmarkMenu = null }, title = "书签") {
+        AgentActionRow("添加当前目录书签", path, "bookmark_add", { bookmarkPath = path; bookmarkName = bookmarks[path] ?: path })
+        if (bookmarks.isEmpty()) AgentActionRow("暂无书签", "添加当前目录即可保存", "bookmark_border")
+        else bookmarks.entries.sortedBy { it.value.lowercase(Locale.ROOT) }.forEach { (target, title) ->
+            AgentActionRow(title, target, "folder_open", { bookmarksOpen = false; bookmarkMenu = null; navigate(target) }) {
+                Box {
+                    FileIconButton("more_vert", "书签操作", { bookmarkMenu = target })
+                    DropdownMenu(bookmarkMenu == target, { bookmarkMenu = null }) {
+                        DropdownMenuItem({ Text("重命名") }, { bookmarkMenu = null; bookmarkPath = target; bookmarkName = title }, leadingIcon = { Symbol("edit") })
+                        DropdownMenuItem({ Text("删除") }, { bookmarkMenu = null; run("正在删除书签", false) { saveBookmarks(bookmarks - target) } }, enabled = !busy, leadingIcon = { Symbol("delete") })
                     }
                 }
             }
@@ -381,16 +377,17 @@ internal fun ContainerFilesScreen(app: AppCoordinator, host: HostFiles, config: 
 
 /** Message links use exactly the same guest stat, viewer/installer and download operations as the browser. */
 @Composable
-internal fun ContainerFileLinkSheet(app: AppCoordinator, host: HostFiles, config: ContainerConfig, source: String, onDismiss: () -> Unit) {
+internal fun ContainerFileLinkSheet(app: AppCoordinator, host: HostFiles, config: ContainerConfig, source: String,
+    onOpenDirectory: (String) -> Unit, onDismiss: () -> Unit) {
     val service = remember(config) { ContainerFileService(app.runtime, config) }
     val actions = remember(service, host) { ContainerFileActions(service, host) }
-    val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var file by remember(source) { mutableStateOf<ContainerFile?>(null) }
     var failure by remember(source) { mutableStateOf<String?>(null) }
     var operation by remember(source) { mutableStateOf<String?>(null) }
     var refresh by remember(source) { mutableIntStateOf(0) }
     var text by remember(source) { mutableStateOf<String?>(null) }
+    var retry by remember(source) { mutableStateOf<(() -> Unit)?>(null) }
     LaunchedEffect(service, source, refresh) {
         operation = "正在读取文件属性"; failure = null; file = null
         try {
@@ -403,44 +400,55 @@ internal fun ContainerFileLinkSheet(app: AppCoordinator, host: HostFiles, config
     fun run(label: String, work: suspend () -> Unit) {
         if (operation != null) return
         operation = label; failure = null
+        retry = { run(label, work) }
         scope.launch {
-            try { work() }
+            try { work(); retry = null }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { failure = error.message ?: error.toString() }
             finally { operation = null }
         }
     }
-    AgentSheet(file?.name ?: "容器文件", onDismiss) {
-        Text(source, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodyMedium)
+    if (text == null) AgentActionSheet({ if (operation == null) onDismiss() }) {
+        val info = file
+        AgentActionRow(info?.name ?: "容器文件", source, info?.let(::containerFileIcon) ?: "description")
         operation?.let { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(it, Modifier.padding(16.dp)) }
         failure?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
-        file?.let { info ->
-            if (operation == null) {
-                HostRow(info.name, containerFileSubtitle(info), containerFileIcon(info))
-                if (info.regular && info.readable) ContainerFileOpenRows(info,
-                    { run(if (containerFileMimeType(info.name) == "application/vnd.android.package-archive") "正在准备系统安装器" else "正在打开文件") { actions.open(source) } },
-                    { run("正在读取文本") { text = service.readText(source) } })
-                if (info.supported && info.readable) HostRow("下载", if (info.directory) "保留目录结构，保存为 ZIP" else "保存原文件", "download", { run("正在下载到主机") { actions.download(listOf(source)) } })
-                if (info.supported && !info.readable) Text("文件不可读取，请检查当前容器用户权限", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
-                Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) { ContainerFileProperties(source, info) }
-            }
+        if (info?.directory == true) {
+            AgentActionRow("打开", icon = "folder_open", enabled = operation == null, onClick = { onOpenDirectory(source) })
+            AgentActionRow("打包下载", icon = "folder_zip", enabled = operation == null && info.readable, onClick = {
+                run("正在打包下载") { actions.download(listOf(source), forceZip = true) }
+            })
+        } else if (info?.regular == true) {
+            AgentActionRow("打开", icon = "open_in_new", enabled = operation == null && info.readable, onClick = {
+                run(if (containerFileMimeType(info.name) == "application/vnd.android.package-archive") "正在准备系统安装器" else "正在打开文件") { actions.open(source) }
+            })
+            AgentActionRow("打开所在文件夹", icon = "folder_open", enabled = operation == null, onClick = {
+                onOpenDirectory(source.substringBeforeLast('/').ifEmpty { "/" })
+            })
+            AgentActionRow("编辑", icon = "edit", enabled = operation == null && info.readable, onClick = {
+                run("正在读取文本") { text = service.readText(source) }
+            })
+            AgentActionRow("下载", icon = "download", enabled = operation == null && info.readable, onClick = {
+                run("正在下载原文件") { actions.download(listOf(source)) }
+            })
         }
-        if (operation == null) {
-            HostRow(if (failure == null) "刷新属性" else "重试", icon = "refresh", onClick = { refresh++ })
-            HostRow("复制路径", icon = "content_copy", onClick = { clipboard.setText(AnnotatedString(source)) })
-        }
-        TextButton(onDismiss, Modifier.align(Alignment.End).padding(horizontal = 16.dp)) { Text("取消") }
+        if (info != null && !info.supported) Text("不支持打开符号链接或特殊文件", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
+        else if (info != null && !info.readable) Text("文件不可读取，请检查当前容器用户权限", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
+        if (failure != null && operation == null) AgentActionRow("重试", icon = "refresh", onClick = { val failed = retry; if (failed != null) failed() else refresh++ })
     }
-    text?.let { content -> Dialog(onDismissRequest = { text = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize()) { CodeDetailScreen(file?.name ?: source, content, file?.name?.substringAfterLast('.', "")?.ifEmpty { null }, { text = null }) }
-    } }
+    text?.let { content ->
+        EditableCodeScreen(file?.name ?: source, content, source.substringAfterLast('.', "").ifEmpty { null },
+            onDismiss = { text = null; failure = null; retry = null }, error = failure, saving = operation != null) { draft ->
+            run("正在保存文本") { service.writeText(source, draft, content); text = null; refresh++ }
+        }
+    }
 }
 
 @Composable
 private fun ContainerFileOpenRows(file: ContainerFile, onOpen: () -> Unit, onText: () -> Unit) {
     val apk = containerFileMimeType(file.name) == "application/vnd.android.package-archive"
-    HostRow(if (apk) "安装 APK" else "打开", if (apk) "Android 系统安装器将要求确认；桌面不支持安装" else containerFileMimeType(file.name), if (apk) "android" else "open_in_new", onOpen)
-    if (!apk) HostRow("查看文本", "UTF-8，最大 2 MiB；二进制文件请使用打开", "code", onText)
+    AgentActionRow(if (apk) "安装 APK" else "打开", if (apk) "Android 系统安装器将要求确认；桌面不支持安装" else containerFileMimeType(file.name), if (apk) "android" else "open_in_new", onOpen)
+    if (!apk) AgentActionRow("查看文本", "UTF-8，最大 2 MiB；二进制文件请使用打开", "code", onText)
 }
 
 @Composable

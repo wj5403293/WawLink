@@ -330,7 +330,7 @@ internal fun ManagementModelPicker(state: AgentManagementState, current: String?
                             ManagementChip(provider ?: "全部服务", provider != null, { showProviders = true })
                             ManagementMenu(showProviders, { showProviders = false }) {
                                 DropdownMenuItem(text = { Text("全部服务") }, onClick = { provider = null; showProviders = false })
-                                availableModels.map { it.provider }.distinct().forEach { id -> DropdownMenuItem(text = { Text(id) }, leadingIcon = { Symbol("hub") }, onClick = { provider = id; showProviders = false }) }
+                                availableModels.map { it.provider }.distinct().forEach { id -> DropdownMenuItem(text = { Text(id) }, leadingIcon = { Symbol("deployed_code") }, onClick = { provider = id; showProviders = false }) }
                             }
                         }
                         if (kind != null) ManagementChip("仅适用类型", strict, { strict = !strict })

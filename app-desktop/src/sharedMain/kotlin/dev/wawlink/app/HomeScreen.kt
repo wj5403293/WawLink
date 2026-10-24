@@ -126,8 +126,8 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
         }
     }
     editing?.let { record -> SessionEditor(app, files, record, { editing = null }) { editing = null } }
-    switching?.let { record -> AgentSheet("切换绑定容器", { switching = null }) {
-        containers.forEach { c -> HostRow(c.config.name, "${c.config.distro} ${c.config.version}", "deployed_code", {
+    switching?.let { record -> AgentActionSheet({ switching = null }, title = "切换绑定容器") {
+        containers.forEach { c -> AgentActionRow(c.config.name, "${c.config.distro} ${c.config.version}", "deployed_code", {
             app.launch { app.editSession(record.id, record.title, record.workspace, c.config.id, manualTitle = false); switching = null }
         }) { if (record.containerId == c.config.id) Symbol("check_circle") } }
     } }

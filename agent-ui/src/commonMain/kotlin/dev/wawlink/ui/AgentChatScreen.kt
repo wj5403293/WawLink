@@ -172,7 +172,14 @@ fun AgentChatScreen(
                         AgentIconButton("forum", "会话列表", onNavigateToSessionList)
                         Text(state.title, Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         AgentIconButton("edit_square", "新建会话", onNewSession)
-                        AgentIconButton("settings", "设置", { settingsMenu = true })
+                        Box {
+                            AgentIconButton("settings", "设置", { settingsMenu = true })
+                            ManagementMenu(settingsMenu, { settingsMenu = false }) {
+                                ManagementMenuItem(text = { Text("模型服务") }, leadingIcon = { Symbol("deployed_code") }, onClick = { settingsMenu = false; onOpenProviderSettings() })
+                                ManagementMenuItem(text = { Text("Agent 设置") }, leadingIcon = { Symbol("smart_toy") }, onClick = { settingsMenu = false; onOpenAgentSettings() })
+                                ManagementMenuItem(text = { Text("框架设置") }, leadingIcon = { Symbol("tune") }, onClick = { settingsMenu = false; onOpenFrameworkSettings() })
+                            }
+                        }
                     }
                     Box(Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { viewportTop = it.positionInRoot().y }) {
                         LazyColumn(state = list, modifier = Modifier.fillMaxSize(),
@@ -249,11 +256,6 @@ fun AgentChatScreen(
             }
         }
         }
-        if (settingsMenu) AgentSheet("设置", { settingsMenu = false }) {
-            SettingsDestination("hub", "模型服务") { settingsMenu = false; onOpenProviderSettings() }
-            SettingsDestination("smart_toy", "Agent 设置") { settingsMenu = false; onOpenAgentSettings() }
-            SettingsDestination("tune", "框架设置") { settingsMenu = false; onOpenFrameworkSettings() }
-        }
         detail?.let { request ->
             if (request.markdown) {
                 val thinking = itemsById[request.id] as? ThinkingNodeItem
@@ -299,11 +301,3 @@ private fun PinRow(icon: String, title: String, tone: Boolean, progress: Float? 
     }
 }
 
-@Composable
-private fun SettingsDestination(icon: String, title: String, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(20.dp)).clickable(onClick = onClick).padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Symbol(icon, tint = LocalAgentColors.current.onSurfaceVariant); Text(title, Modifier.weight(1f), fontSize = 18.sp)
-        Symbol("chevron_right", tint = LocalAgentColors.current.onSurfaceVariant)
-    }
-}

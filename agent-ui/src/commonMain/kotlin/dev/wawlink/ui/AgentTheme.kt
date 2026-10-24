@@ -5,8 +5,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -202,5 +205,38 @@ fun AgentSheet(title: String, onDismiss: () -> Unit, actions: @Composable RowSco
             AgentIconButton("close", "关闭", onDismiss)
         }
         Column(Modifier.fillMaxWidth().heightIn(max = 680.dp).padding(contentPadding), content = content)
+    }
+}
+
+/** Plain action lists follow WawSSH; form sheets retain their separate header and padding. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AgentActionSheet(onDismiss: () -> Unit, title: String? = null, content: @Composable ColumnScope.() -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = LocalAgentColors.current.surface, shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        modifier = Modifier.widthIn(max = AgentPageMaxWidth)) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            if (title != null) Text(title, Modifier.padding(horizontal = 20.dp, vertical = 16.dp), style = MaterialTheme.typography.headlineSmall)
+            content()
+        }
+    }
+}
+
+@Composable
+fun AgentActionRow(title: String, subtitle: String = "", icon: String = "tune", onClick: (() -> Unit)? = null,
+    enabled: Boolean = true, dangerous: Boolean = false, trailing: @Composable () -> Unit = {}) {
+    val colors = LocalAgentColors.current
+    val titleColor = when { !enabled -> colors.onSurface.copy(alpha = .38f); dangerous -> colors.error; else -> colors.onSurface }
+    val iconColor = when { !enabled -> colors.onSurfaceVariant.copy(alpha = .38f); dangerous -> colors.error; else -> colors.onSurfaceVariant }
+    Row(Modifier.fillMaxWidth().heightIn(min = 72.dp)
+        .then(if (onClick == null) Modifier else Modifier.clickable(enabled = enabled, onClick = onClick))
+        .padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Symbol(icon, size = 28.dp, tint = iconColor)
+        Column(Modifier.weight(1f).padding(start = 16.dp)) {
+            Text(title, fontSize = 18.sp, color = titleColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (subtitle.isNotBlank()) Text(subtitle, fontSize = 15.sp,
+                color = colors.onSurfaceVariant.copy(alpha = if (enabled) 1f else .38f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        trailing()
     }
 }

@@ -28,6 +28,7 @@ kotlin {
             implementation("org.jetbrains.pty4j:pty4j:0.13.4")
         } }
         commonTest.dependencies { implementation(kotlin("test")) }
+        androidUnitTest.dependencies { implementation(kotlin("test-junit")) }
         val jvmSharedTest by creating { dependsOn(commonTest.get()) }
         val desktopTest by getting { dependsOn(jvmSharedTest) }
     }

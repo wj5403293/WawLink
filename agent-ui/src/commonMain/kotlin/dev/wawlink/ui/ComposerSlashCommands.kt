@@ -14,7 +14,7 @@ private data class SlashPreset(val icon: String, val description: String)
 // Presentation only: availability and aliases always come from the native catalog.
 private val builtinSlashPresets = mapOf(
     "security" to SlashPreset("security", "规划、运行与比较安全扫描"),
-    "model" to SlashPreset("neurology", "查看当前模型选择"),
+    "model" to SlashPreset("deployed_code", "查看当前模型选择"),
     "switch" to SlashPreset("swap_horiz", "仅切换本会话的模型"),
     "fast" to SlashPreset("bolt", "切换快速模式"),
     "slow" to SlashPreset("slow_motion_video", "切换慢速模式"),
@@ -81,7 +81,7 @@ internal fun composerSlashCommands(native: List<AgentSlashCommand>): List<Compos
             if (customShadow) "terminal" else icon, if (customShadow) null else description)
         if (index >= 0) commands[index] = command else commands.add(command)
     }
-    local("model", "neurology", "切换模型")
+    local("model", "deployed_code", "切换模型")
     local("cost", "monitoring", "查看用量")
     return commands
 }

@@ -69,6 +69,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     var installRootfs by rememberSaveable { mutableStateOf(false) }
     var creatingInContext by remember { mutableStateOf(false) }
     var fileOpenRequest by remember { mutableStateOf<ContainerFileOpenRequest?>(null) }
+    var linkedDirectory by remember { mutableStateOf<ContainerFileOpenRequest?>(null) }
+    val linkedDirectoryNavigation = remember { HostNavigation() }
     var settingsReturn by rememberSaveable { mutableStateOf("home") }
     var terminalReturn by rememberSaveable { mutableStateOf("home") }
     val fileNavigation = remember { HostNavigation() }
@@ -93,6 +95,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     fun openTerminal(id: String) { selectedContainer = id; terminalReturn = page; page = "terminal" }
     var savedSessionIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     fun goBack(): Boolean = when {
+        linkedDirectory != null -> { if (linkedDirectoryNavigation.onBack?.invoke() != true) linkedDirectory = null; true }
         fileOpenRequest != null -> { fileOpenRequest = null; true }
         containerAttachmentPick != null -> { if (attachmentNavigation.onBack?.invoke() != true) finishAttachmentPick(emptyList()); true }
         newSession -> { newSession = false; true }
@@ -214,7 +217,22 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
             }
         }
         fileOpenRequest?.let { request ->
-            ContainerFileLinkSheet(app, files, request.config, request.source) { fileOpenRequest = null }
+            ContainerFileLinkSheet(app, files, request.config, request.source, onDismiss = { fileOpenRequest = null },
+                onOpenDirectory = { directory ->
+                    linkedDirectory = ContainerFileOpenRequest(request.config, directory)
+                    fileOpenRequest = null
+                })
+        }
+        linkedDirectory?.let { request ->
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { if (linkedDirectoryNavigation.onBack?.invoke() != true) linkedDirectory = null },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Surface(Modifier.fillMaxSize()) {
+                    ContainerFilesScreen(app, files, request.config, { linkedDirectory = null }, { linkedDirectoryNavigation.onBack = it },
+                        initialPath = request.source)
+                }
+            }
         }
         notice?.let { item ->
             AlertDialog(onDismissRequest = app::dismissNotice, title = { Text(if (item.error) "操作失败" else "提示") }, text = { Text(item.text, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) }, confirmButton = { TextButton(onClick = app::dismissNotice) { Text("知道了") } })
@@ -291,7 +309,7 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
             SectionLabel("会话", "forum")
             HostRow("新会话默认免审批", icon = "bolt") { Switch(defaultAutoApprove, app::updateDefaultAutoApprove) }
             SectionLabel("当前容器 Agent", "smart_toy")
-            HostRow("模型服务", icon = "cloud", onClick = providers) { Symbol("chevron_right") }
+            HostRow("模型服务", icon = "deployed_code", onClick = providers) { Symbol("chevron_right") }
             HostRow("Agent 设置", icon = "smart_toy", onClick = agent) { Symbol("chevron_right") }
             HostRow("框架设置", icon = "tune", onClick = framework) { Symbol("chevron_right") }
         }

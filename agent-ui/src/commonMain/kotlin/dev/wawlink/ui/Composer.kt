@@ -289,7 +289,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                                 val provider = providers.firstOrNull { it.id == providerId }
                                 Text(provider?.name ?: modelState.providers.firstOrNull { it.id == providerId }?.name ?: providerId, Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant, fontWeight = FontWeight.Medium)
                                 models.forEach { model ->
-                                    PopupRow(model.name, "neurology", state.providerId == providerId && state.modelId == model.id,
+                                    PopupRow(model.name, "deployed_code", state.providerId == providerId && state.modelId == model.id,
                                         customIcon = { ModelIcon(model.id, model.name, Modifier.size(32.dp)) }) {
                                         controller.selectModel(providerId, model.id)
                                         provider?.models?.firstOrNull { it.id == model.id }?.let { controller.selectThinkingLevel(it.thinkingLevel) }
@@ -482,7 +482,7 @@ private fun UsageSheet(state: ChatSessionUiState, onDismiss: () -> Unit) {
         val rows = listOf(Triple("input", "输入", usage.inputTokens.toString()), Triple("output", "输出", usage.outputTokens.toString()),
             Triple("cached", "缓存命中", usage.cacheReadTokens.toString()), Triple("save", "缓存写入", usage.cacheWriteTokens.toString()),
             Triple("data_usage", "上下文", "${tokens(usage.contextTokens)} / ${tokens(usage.contextWindow)}"),
-            Triple("payments", "费用", "$${decimal(usage.cost, 4)}"), Triple("neurology", "模型", state.modelId.ifEmpty { "未选择" }))
+            Triple("payments", "费用", "$${decimal(usage.cost, 4)}"), Triple("deployed_code", "模型", state.modelId.ifEmpty { "未选择" }))
         rows.forEachIndexed { index, (icon, label, value) ->
             Row(Modifier.heightIn(min = 60.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Symbol(icon, tint = LocalAgentColors.current.onSurfaceVariant)

@@ -9,8 +9,9 @@ import androidx.compose.ui.unit.dp
 
 /** Full-window native editor. The caller receives a draft only after explicit Save. */
 @Composable
-fun EditableCodeScreen(title: String, text: String, language: String?, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    ManagementEditableCodeScreen(title, text, language, onDismiss, {}, onSave = onSave)
+fun EditableCodeScreen(title: String, text: String, language: String?, onDismiss: () -> Unit,
+    registerDismiss: ((() -> Unit)?) -> Unit = {}, error: String? = null, saving: Boolean = false, onSave: (String) -> Unit) {
+    ManagementEditableCodeScreen(title, text, language, onDismiss, registerDismiss, error, saving, onSave)
 }
 
 @Composable
@@ -19,7 +20,7 @@ internal fun ManagementEditableCodeScreen(title: String, text: String, language:
     val colors = LocalAgentColors.current
     var draft by remember { mutableStateOf(text) }
     var confirmDiscard by remember { mutableStateOf(false) }
-    val dismiss = { if (draft != text) confirmDiscard = true else onDismiss() }
+    val dismiss = { if (!saving) { if (draft != text) confirmDiscard = true else onDismiss() } }
     val currentDismiss by rememberUpdatedState(dismiss)
     val currentRegistration by rememberUpdatedState(registerDismiss)
     DisposableEffect(Unit) {
@@ -36,15 +37,15 @@ internal fun ManagementEditableCodeScreen(title: String, text: String, language:
                 }
                 HorizontalDivider(color = colors.outlineVariant)
                 error?.let { Text(it, Modifier.fillMaxWidth().padding(12.dp), color = colors.error) }
-                PlatformCodeEditor(draft, language, { draft = it }, Modifier.fillMaxWidth().weight(1f))
+                PlatformCodeEditor(draft, language, { draft = it }, Modifier.fillMaxWidth().weight(1f), editable = !saving)
             }
         }
         if (confirmDiscard) AlertDialog(onDismissRequest = { confirmDiscard = false },
             title = { Text("舍弃未保存的修改？") }, text = { Text("返回后将保留进入编辑器前的内容。") },
-            confirmButton = { TextButton(onClick = onDismiss) { Text("舍弃") } },
+            confirmButton = { TextButton(onClick = onDismiss, enabled = !saving) { Text("舍弃") } },
             dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("继续编辑") } })
     }
 }
 
 @Composable
-internal expect fun PlatformCodeEditor(text: String, language: String?, onChange: (String) -> Unit, modifier: Modifier)
+internal expect fun PlatformCodeEditor(text: String, language: String?, onChange: (String) -> Unit, modifier: Modifier, editable: Boolean)

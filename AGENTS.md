@@ -10,14 +10,14 @@
 - 文字只保留大号 UI 内容或标题；不添加小号卡片说明、装饰性文本或非必要装饰元素。
 - 不得擅自修改既有显示样式；主页、聊天与框架设置的视觉及非线性动画以 `ref-plan/ref-home.html`、`ref-plan/ref-coding-agent-ui.html`、`ref-plan/ref-agent-setting.html` 为准，新增 Agent 设置以 `ref-plan/agent-settings.html` 为准，功能遵循 `ref-plan/plan.md`。
 - 列表项使用“图标 + 标题 + 副标题（描述）”结构；右侧可放垂直三点按钮打开 popup menu。
-- popup menu 使用“图标 + 标题”结构。
+- popup menu 使用“图标 + 标题”结构。聊天右上角设置使用锚定 popup menu，不使用 bottom sheet，保留模型服务、Agent 设置及框架设置三个入口。
 - Agent 设置的作用域、选择项及新建入口使用原型中的锚定 popup menu，不改成对话框；提示与空态以原型为准，不额外堆叠说明卡片。确认删除、覆盖及舍弃修改仍使用对应确认对话框。
 - 应用默认密度统一校准到原型，主页、聊天和所有设置页共用同一缩放，不在嵌套主题中重复缩放；应用设置提供持久化的“整体缩放”和恢复默认，保留系统字体缩放。当前基线以旧版 115% 为新版 100%；已有 115% 设置迁移为 100%，不得在升级或重启后重复放大。
 - 启动及容器列表更新只读取会话元数据，打开某个会话时才恢复其正文与控制器；主页继续观察已打开的会话，不批量恢复未打开的历史。
 - 未命名会话使用首条用户问题作为标题，过长时截断展示，不覆盖手动命名；主页会话列表长按进入多选。会话内右上角新建直接沿用当前容器与工作区，不弹配置表单且不预设名称。
 - Agent 配置首屏不等待模型/认证 SDK；模型目录按有界分页传输，仅在编辑时读取完整模型字段。模型配置无效或原生进程退出时结束加载并保留可重试、可修复的界面，不抛到主线程导致闪退。
 - 内置 Provider 的启用状态、OAuth 和操作能力以当前 OMP 原生发现、认证及禁用状态为准，不默认全开，也不对自定义 Provider 显示不支持的 OAuth 或协议功能。内置 Provider 使用稳定颜色与名称首字标识；用户项在前，内置项置底并用分隔线分组，禁用项灰显且在各组内下沉。
-- Provider 配置每次打开从顶部展示；模型获取按钮显示蓝色“获取模型”并执行实际获取，不用静态目录刷新冒充。删除“读取当前配置档的……”等无实际意义说明及图标；保留必要错误、空态与风险确认。保存失败展示可定位且已脱敏的实际原因，保留全部草稿供修复和重试。
+- Provider 配置每次打开从顶部展示；模型服务搜索框与首个列表项保留 16 dp 间距。模型获取按钮显示蓝色“获取模型”并执行实际获取，不用静态目录刷新冒充。删除“读取当前配置档的……”等无实际意义说明及图标；保留必要错误、空态与风险确认。保存失败展示可定位且已脱敏的实际原因，保留全部草稿供修复和重试。
 - 模型选项使用默认值时，在同一行及菜单的“使用默认值”后以灰字显示原生实际默认值；默认值只展示、不写入覆盖。依赖接口或会话而无确定值时明确显示未指定或跟随会话，不猜测。重复选择未设置的默认项不生成空对象；思考控制方式恢复默认时移除整段可选 `thinking`，放弃修改恢复全部字段并清除本次保存错误。
 - 模型选择列表及服务筛选仅展示 OMP 原生判定可用的模型，不把缺少认证或已停用的模型作为可选项，也不提供关闭可用性过滤的开关。管理目录仍可查看和配置不可用模型，已有绑定及高级选择器不因候选隐藏而被删除或改写。
 - 新会话在发送前同步 OMP 原生解析的默认模型身份及可确定的思考档位；读取期间使用标准进度组件，不显示空 ID 的问号图标。异步默认值不得覆盖手动选择、历史或已启动 RPC 的状态；显示预览不写配置，也不作为显式模型参数固定后续原生启动。
@@ -28,6 +28,7 @@
 - 用户消息按发送时的 Todo 与前置节点固定位置；后续工具、思考、任务切换、排队消费、完整快照和历史重放不得重新归属或改变顺序。
 - 返回页面、进入设置或切换会话时保留滚动与展开状态；草稿按会话隔离。弹出菜单缩放/淡入淡出时保留外部阴影，选中背景覆盖完整列表项。
 - 模型选择按钮始终显示当前模型图标，列表项显示各自模型图标，保留品牌原色；未匹配品牌时，以模型 ID 首字符的大写单字标识加圆形底色显示，底色按字母稳定生成，同字母同色，不得套用服务商图标或通用脑图标。品牌资源参照 Kelivo，来源可核实的 MIT 图标与差异记录位于 `agent-ui/src/commonMain/composeResources/files/model-icons/`，不得复制许可来源未核实的资源。
+- 模型与模型服务入口、筛选及用量等通用图标统一使用 Material Symbols 的 `deployed_code` 立方体，不新增 SVG；已有模型品牌和服务首字标识保持不变，真正的思考控件及非模型功能不替换为立方体。
 - 模型资料仅按唯一 ID/规范化别名自动匹配，不模糊猜测；同步只追加新模型，已有编辑须显式应用匹配且保留手动字段。支持四项价格及独立的 `xhigh`、`max` 档位贯通 UI、配置和 RPC。
 - 新增“Agent 设置”独立管理 Agent、顾问、模型角色、服务、认证及运行配置；原有 Agent 设置改名为“框架设置”。Agent 与顾问的指定工具列表来自当前容器 OMP 的真实可配置工具目录，不使用原型示例冒充；保留模型在线拉取和已有控件，顾问及原始配置的全屏编辑使用 Android Sora / Desktop 原生编辑器。
 - Slash 补全以当前会话 OMP 的原生命令目录及动态更新为准，不用固定菜单冒充可用命令；当前版本的内置命令可预设中文描述与 Material Symbols 图标，未预设或扩展命令仍显示，但使用默认图标且不显示描述。保留无参数 `/model` 的应用模型选择和 `/cost` 的用量快捷入口，带参数的命令交给 OMP。
@@ -42,9 +43,10 @@
 - 工具链卡片点击只弹出安装或卸载确认，取消不执行；确认后避免重复触发。同一行卡片按较高内容等高，版本允许换行，Git 仅显示版本号，不重复 `git version`。
 - 用户发送消息、继续下一轮或收到完整状态时，Todo 内容和状态未变化就不追加计划卡片；真正变化才追加，保留先前计划快照及用户消息位置。
 - 会话发送过消息后，用量条持续显示，不因进入空闲、开始下一轮或后续执行失败而消失。
-- 容器独立文件管理沿用 WawSSH 的路径、面包屑、筛选、排序、选择、书签与文件操作布局；新建会话的工作区输入框右侧提供文件夹按钮，通过容器浏览器选择目录，取消或返回不得丢失原表单。
+- 容器独立文件管理沿用 WawSSH 的路径、面包屑、筛选、排序、选择、书签与文件操作布局；路径、更多、下载、新建、书签及同类操作面板使用其全宽简洁图标列表，不叠加卡片背景、重复标题或关闭/取消行，表单及风险确认保留各自结构。新建会话的工作区输入框右侧提供文件夹按钮，通过容器浏览器选择目录，取消或返回不得丢失原表单。
 - 文件浏览器的操作栏保留 WawSSH 图标及布局，支持系统打开图片、Android APK 安装、原文件或 ZIP 下载，以及非空目录递归删除。删除前校验全部选择及子树，不跟随符号链接，不删除宿主绑定目录或其祖先；失效历史不能反复入栈导致无法返回或退出。
 - 模型 Markdown 中的文件路径可点击，绝对路径与带目录的相对路径均按当前会话容器解析，相对路径以工作区为基准；打开、安装与下载共用文件浏览器操作，不把模型的 file:// 路径直接交给宿主 URI 处理器。
+- 聊天路径操作按类型收敛：目录只显示“打开”和“打包下载”；普通文件只显示“打开”“打开所在文件夹”“编辑”“下载”。打开目录进入当前容器文件浏览器，返回保留聊天滚动与草稿；文件打开复用 FileProvider 系统查看/安装入口。编辑使用原生代码编辑器与客体进程保存，失败保留草稿，返回确认舍弃；拒绝二进制、无效 UTF-8、超过 2 MiB、链接及受保护路径，外部内容变化时不静默覆盖。
 - 聊天加号菜单保留项目文件并增加容器文件，支持跨目录选择普通文件；附件按来源区分主机与容器路径，不伪造工作区路径，不将容器文件复制到主机再发送。浏览器取消不清空草稿或已有附件；项目文件展开子目录后各行不得重叠。
 - PRoot/Proroot 启动前按宿主补充 GID 为容器追加缺失的组名，不覆盖已有组记录，不隐藏 `groups` 错误；既有动态 DNS 修复继续适用，更新 APK 不要求重新导入 Rootfs。
 - Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。
@@ -55,6 +57,7 @@
   - `src/commonMain/kotlin/dev/wawlink/protocol/AgentManagement.kt` 定义作用域、来源、Agent、顾问、角色、认证、原始配置与原生管理仓库契约。
 - `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonMain/kotlin/dev/wawlink/ui/ModelIcon.kt` 统一离线品牌图标与 ID 字母标识，`src/commonMain/composeResources/files/model-icons/` 保存来源/许可，`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ModelIconTest.kt`、`FeedExpansionStateTest.kt` 和 `MarkdownTest.kt` 覆盖字母标识/颜色区分、展开状态和 Markdown 边界。
   - 同目录的 `AgentPalette.kt`、`AgentPaletteSettings.kt` 提供默认蓝色、Material HCT 种子配色与设置控件；`src/androidMain/kotlin/dev/wawlink/ui/AgentPalette.android.kt` 读取系统动态配色，`src/desktopMain/kotlin/dev/wawlink/ui/AgentPalette.desktop.kt` 明确回退，`AgentPaletteTest.kt` 覆盖明暗配色对比度及 HEX 输入边界。完整 Material Color Utilities 许可随 `src/commonMain/composeResources/files/licenses/material-color-utilities.txt` 打包。
+  - 同目录的 `AgentTheme.kt` 提供统一主题、标准表单 sheet，以及参考 WawSSH 的 `AgentActionSheet` / `AgentActionRow` 全宽操作面板与列表行。
   - `src/commonMain/kotlin/dev/wawlink/ui/ComposerSlashCommands.kt` 提供原生命令的图标/中文展示匹配，`AskDraftState.kt` 保存按问题 ID 隔离的答案、页码与预览状态。
   - 同目录的 `MarkdownParts.kt`、`RichGraphic.kt` 共用正文/Ask 富媒体入口；`src/jvmSharedMain/kotlin/dev/wawlink/ui/RichGraphicDocument.kt` 负责离线图表文档、SVG 安全与图像加载，`src/androidMain/kotlin/dev/wawlink/ui/RichGraphic.android.kt` 和 `src/desktopMain/kotlin/dev/wawlink/ui/RichGraphic.desktop.kt` 分别提供沙箱 WebView 与无窗口 Canvas/原生图像显示。
   - 同目录的 `MarkdownInline.kt` 提供可选择、可点击的内联代码胶囊与长代码分段，`MarkdownTable.kt` 提供表格解析、统一列宽、对齐网格及窄屏横滚，`MarkdownTest.kt` 覆盖原文与链接偏移、转义竖线、缺格和无效表头边界。
@@ -71,7 +74,8 @@
   - `src/jvmSharedMain/resources/omp-management/diagnostics.mjs` 统一原生配置诊断与敏感值清理，保留字段路径和可得语法位置，不转发源文本片段、凭据或 HTTP 响应正文。
   - `src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpAgentManagementRepositoryTest.kt` 覆盖首屏与模型分阶段加载、无效模型配置修复、原生进程退出后恢复、目录分页完整性及 JSONL 大小/格式边界。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端；`src/jvmSharedMain/kotlin/dev/wawlink/runtime/RuntimeDns.kt` 负责边界安全的原子 DNS 更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeDnsTest.kt` 覆盖链接边界与配置切换。
-  - 同目录的 `RuntimeIdentity.kt` 负责 PRoot/Proroot 补充组名的边界检查与原子更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeIdentityTest.kt` 覆盖保留已有记录、幂等与链接越界；`ContainerFileService.kt` 通过客体进程提供文件枚举、流式导入导出、复制、重命名和删除，不访问宿主 Rootfs 路径。
+  - 同目录的 `RuntimeIdentity.kt` 负责 PRoot/Proroot 补充组名的边界检查与原子更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeIdentityTest.kt` 覆盖保留已有记录、幂等与链接越界；`ContainerFileService.kt` 通过客体进程提供文件枚举、流式导入导出、复制、重命名、删除及 UTF-8 文本原子保存，不访问宿主 Rootfs 路径。
+  - `src/androidUnitTest/kotlin/dev/wawlink/runtime/ContainerFileTextTest.kt` 覆盖文本保存的精确字节与权限、2 MiB 边界、外部修改冲突、链接及挂载根保护与暂存文件清理；运行于 Android JVM，不冒充设备端编辑器或引擎验收。
   - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID 与账户环境。
   - 同目录的 `PtyTransport.kt` 及 `src/androidMain/kotlin/dev/wawlink/runtime/PtyTransport.android.kt`、`src/desktopMain/kotlin/dev/wawlink/runtime/PtyTransport.desktop.kt` 提供两端真实 PTY，`ContainerContract.kt` 定义原始字节读写、调整尺寸与会话回收契约。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。

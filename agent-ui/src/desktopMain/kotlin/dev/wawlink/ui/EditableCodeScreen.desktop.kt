@@ -50,7 +50,7 @@ private class EditableDesktopCode(text: String, language: String?, val onChange:
 }
 
 @Composable
-internal actual fun PlatformCodeEditor(text: String, language: String?, onChange: (String) -> Unit, modifier: Modifier) {
+internal actual fun PlatformCodeEditor(text: String, language: String?, onChange: (String) -> Unit, modifier: Modifier, editable: Boolean) {
     val colors = LocalAgentColors.current
     val change by rememberUpdatedState(onChange)
     val view = remember { EditableDesktopCode(text, language) { change(it) } }
@@ -62,6 +62,7 @@ internal actual fun PlatformCodeEditor(text: String, language: String?, onChange
         }
     }
     SwingPanel(factory = { view.pane }, modifier = modifier, background = colors.surface, update = {
+        view.area.isEditable = editable
         if (view.appliedText != text && !view.pending) {
             val start = view.area.selectionStart.coerceAtMost(text.length)
             val end = view.area.selectionEnd.coerceAtMost(text.length)

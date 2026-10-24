@@ -118,11 +118,11 @@ fun ManagementPoliciesScreen(
                     fun add(key: String) { if (!chains().containsKey(key)) putChain(key, emptyList()); chainKey = key; addChain = false }
                     when (targetKind) {
                         "role" -> state.roles.forEach { role -> ManagementMenuItem(text = { Text(role.name) }, leadingIcon = { Symbol("label") }, onClick = { add(role.id) }) }
-                        "provider" -> (state.models.map { it.provider } + state.authProviders.map { it.id }).distinct().sorted().forEach { provider -> ManagementMenuItem(text = { Text(provider) }, leadingIcon = { Symbol("hub") }, onClick = { add("$provider/*") }) }
+                        "provider" -> (state.models.map { it.provider } + state.authProviders.map { it.id }).distinct().sorted().forEach { provider -> ManagementMenuItem(text = { Text(provider) }, leadingIcon = { Symbol("deployed_code") }, onClick = { add("$provider/*") }) }
                         else -> {
                             ManagementMenuItem(text = { Text("为角色") }, leadingIcon = { Symbol("label") }, onClick = { targetKind = "role" })
-                            ManagementMenuItem(text = { Text("为具体模型") }, leadingIcon = { Symbol("neurology") }, onClick = { addChain = false; chooseModel = true })
-                            ManagementMenuItem(text = { Text("为整个服务") }, leadingIcon = { Symbol("hub") }, onClick = { targetKind = "provider" })
+                            ManagementMenuItem(text = { Text("为具体模型") }, leadingIcon = { Symbol("deployed_code") }, onClick = { addChain = false; chooseModel = true })
+                            ManagementMenuItem(text = { Text("为整个服务") }, leadingIcon = { Symbol("deployed_code") }, onClick = { targetKind = "provider" })
                         }
                     }
                 }
@@ -194,7 +194,7 @@ fun ManagementPoliciesScreen(
                                     if (chains().isEmpty()) ManagementHint("尚无自定义故障转移链")
                                     chains().entries.forEachIndexed { index, (key, candidates) ->
                                         val list = configurationStrings(candidates)
-                                        ManagementRow(managementRoleName(state, key), "${list.size} 个备选${list.firstOrNull()?.let { " · 首选 $it" } ?: " · 显式禁用此目标"}", if (key.contains('/')) "hub" else "label", onClick = { chainKey = key }, index = index, count = chains().size)
+                                        ManagementRow(managementRoleName(state, key), "${list.size} 个备选${list.firstOrNull()?.let { " · 首选 $it" } ?: " · 显式禁用此目标"}", if (key.contains('/')) "deployed_code" else "label", onClick = { chainKey = key }, index = index, count = chains().size)
                                     }
                                 }
                             }

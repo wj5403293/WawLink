@@ -129,7 +129,7 @@ private fun ManagementHome(repository: AgentManagementRepository, state: AgentMa
                 val roles = state.roles.filter { it.id.contains(query, true) || it.name.contains(query, true) || it.model?.contains(query, true) == true }
                 if (roles.isNotEmpty()) ManagementGroup("角色") { roles.forEachIndexed { index, role -> ManagementRow(role.name, role.model ?: "未配置", "label", { navigate("roles") }, index, roles.size) } }
                 val matches = providers.filter { it.id.contains(query, true) || it.name.contains(query, true) || it.baseUrl.contains(query, true) }
-                if (matches.isNotEmpty()) ManagementGroup("模型服务") { matches.forEachIndexed { index, provider -> ManagementRow(provider.name, provider.baseUrl, "hub", { navigate("providers") }, index, matches.size) } }
+                if (matches.isNotEmpty()) ManagementGroup("模型服务") { matches.forEachIndexed { index, provider -> ManagementRow(provider.name, provider.baseUrl, "deployed_code", { navigate("providers") }, index, matches.size) } }
             }
             if (matchedSettings.isEmpty() && (query.isBlank() || state.agents.none { it.name.contains(query, true) || it.description.contains(query, true) } && state.roles.none { it.id.contains(query, true) || it.name.contains(query, true) } && providers.none { it.name.contains(query, true) })) SettingsEmpty("没有找到相关设置", "search_off")
         } else {
@@ -146,7 +146,7 @@ private fun ManagementHome(repository: AgentManagementRepository, state: AgentMa
             ManagementGroup("模型") {
                 val destinations = listOf(
                     Triple("默认模型与角色", "${state.roles.size} 个角色，保存到${if (configurationValue(state.effectiveValues, "modelRoleStorage") == "project") "项目" else "全局"}", "star"),
-                    Triple("模型服务", if (state.modelsLoading) "正在读取模型目录" else "${state.providers.count { it.enabled }} 个启用，${state.models.size} 个模型", "hub"),
+                    Triple("模型服务", if (state.modelsLoading) "正在读取模型目录" else "${state.providers.count { it.enabled }} 个启用，${state.models.size} 个模型", "deployed_code"),
                     Triple("账号与认证", if (state.modelsLoading) "正在读取认证记录" else "${state.accounts.size} 个认证记录", "key"),
                     Triple("模型预设", "${configurationMap(configurationValue(state.effectiveValues, "modelPresets")).size} 个预设", "bookmarks"),
                     Triple("允许范围与快速切换", if (configurationStrings(configurationValue(state.effectiveValues, "enabledModels")).isEmpty()) "不额外限制" else "已设置允许规则", "filter_alt"),
@@ -296,7 +296,7 @@ private fun ManagementConfigurationFiles(repository: AgentManagementRepository, 
     ManagementPage("配置文件与来源", onBack) {
         state.error?.let { ManagementBanner(it, "error", error = true) }
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            state.files.forEachIndexed { index, file -> ManagementRow(file.title, file.path, when (file.id) { "project" -> "folder"; "models" -> "hub"; "watchdog" -> "support_agent"; else -> "description" }, { actions.launch { document = repository.readDocument(file.id); editing = true } }, index, state.files.size) }
+            state.files.forEachIndexed { index, file -> ManagementRow(file.title, file.path, when (file.id) { "project" -> "folder"; "models" -> "deployed_code"; "watchdog" -> "support_agent"; else -> "description" }, { actions.launch { document = repository.readDocument(file.id); editing = true } }, index, state.files.size) }
         }
         ManagementGroup("导出") { ManagementRow("导出配置预览", "不包含 API Key、OAuth 数据和请求头值", "ios_share", { actions.launch { export = repository.exportRedacted() } }) }
         ManagementGroup("生效时机") { ManagementLayers(listOf(ManagementLayer("审批、循环保护", "立即生效", "bolt"), ManagementLayer("模型与提示", "下一轮生效", "forum"), ManagementLayer("子任务设置", "后续子任务生效", "account_tree"), ManagementLayer("启动与更新", "重新加载后生效", "refresh"))) }
