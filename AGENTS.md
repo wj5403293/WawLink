@@ -97,6 +97,7 @@
 - `scripts/`：免 Docker Rootfs、Android 原生二进制与验证脚本。
 - `ref-plan/`：用户提供的需求和视觉原型；不修改原型。
   - `ref-plan/agent-settings-capabilities.md`：以 OMP 18.12.6 为基准的 Agent 与 Models 设置原型能力清单，涵盖作用域、定义、角色、模型服务及高级配置；仅作设计能力说明，不代表已实现。
+  - `ref-plan/plugin-skill-management-capabilities.md`：以本机 OMP 18.12.6 及同版本源码为依据的插件与 Skill 双页面功能边界调研，覆盖市场、npm/Git/本地来源、作用域、加载与更新、发布维护、安全和 RPC 接入限制；区分实测、源码能力与设计建议，不代表界面已实现。
   - `ref-plan/agent-settings.html`：新增 Agent 设置的完整视觉与交互原型，保留原文件，不修改演示数据。
 - `README.md`：构建运行、独立 UI 接入、能力边界、产物与已验证范围。
 - `scripts/USAGE.txt`：固定输入、免 Docker 构建、原生程序加载与上游许可说明。
