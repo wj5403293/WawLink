@@ -163,11 +163,13 @@ fun AgentChatScreen(
         }
         CompositionLocalProvider(LocalFeedClock provides clock, LocalFeedBounds provides nodeBounds,
             LocalFeedInteraction provides { followTail = false }, LocalFeedItemNavigation provides { id -> anchorFeedItem(id) }) {
+        val scrolled by remember(list) { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 4 } }
+        val barColor by animateColorAsState(if (scrolled) c.surfaceContainer else c.surface, tween(350, easing = EmphEasing))
+        val topInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top)
         Surface(color = c.surface, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                Column(Modifier.widthIn(max = AgentPageMaxWidth).fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
-                    val scrolled by remember(list) { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 4 } }
-                    val barColor by animateColorAsState(if (scrolled) c.surfaceContainer else c.surface, tween(350, easing = EmphEasing))
+                Spacer(Modifier.fillMaxWidth().windowInsetsTopHeight(topInsets).background(barColor))
+                Column(Modifier.widthIn(max = AgentPageMaxWidth).fillMaxSize().windowInsetsPadding(topInsets).navigationBarsPadding().imePadding()) {
                     Row(Modifier.fillMaxWidth().height(64.dp).background(barColor).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         AgentIconButton("forum", "会话列表", onNavigateToSessionList)
                         Text(state.title, Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)

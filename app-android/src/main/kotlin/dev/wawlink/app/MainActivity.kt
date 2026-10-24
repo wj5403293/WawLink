@@ -15,6 +15,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.runtime.collectAsState
@@ -67,7 +70,12 @@ class MainActivity : ComponentActivity(), HostFiles {
                     isAppearanceLightNavigationBars = !appearance.darkTheme
                 }
             }
-            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing)) { WawLinkApp(app, this@MainActivity, navigation) }
+            // Pages own the top inset so the chat app bar can paint behind the status bar.
+            androidx.compose.foundation.layout.Box(
+                androidx.compose.ui.Modifier.fillMaxSize().windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                )
+            ) { WawLinkApp(app, this@MainActivity, navigation) }
         }
         if (Build.VERSION.SDK_INT >= 33 && savedInstanceState == null) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }

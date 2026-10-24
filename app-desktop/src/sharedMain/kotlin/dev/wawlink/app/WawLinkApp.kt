@@ -18,6 +18,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.*
@@ -148,14 +149,20 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         savedSessionIds = if (currentId != null && currentId !in retained) retained + currentId else retained
     }
     AgentTheme(appearance) {
+        val topInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top)
         Surface(Modifier.fillMaxSize().onPreviewKeyEvent { page != "terminal" && it.type == KeyEventType.KeyDown && it.key == Key.Escape && goBack() }) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                Column(Modifier.widthIn(max = if (page == "terminal") 1200.dp / appearance.densityScale else AgentPageMaxWidth).fillMaxSize()) {
+                Column(Modifier.widthIn(max = when (page) {
+                    "terminal" -> 1200.dp / appearance.densityScale
+                    "chat" -> Dp.Infinity
+                    else -> AgentPageMaxWidth
+                }).fillMaxSize()) {
                     AnimatedContent(route, transitionSpec = {
                         val back = targetState.page == "home" || targetState.page == initialState.returnPage
                         (fadeIn(tween(380, easing = EmphDecelEasing)) + slideInHorizontally(tween(520, easing = EmphDecelEasing)) { if (back) -it / 4 else it / 4 }) togetherWith
                             (fadeOut(tween(180, easing = EmphAccelEasing)) + slideOutHorizontally(tween(380, easing = EmphEasing)) { if (back) it / 4 else -it / 4 })
                     }, modifier = Modifier.weight(1f), contentKey = { it.stateKey }) { current ->
+                        Box(Modifier.fillMaxSize().then(if (current.page == "chat") Modifier else Modifier.windowInsetsPadding(topInsets))) {
                         pageStates.SaveableStateProvider(current.stateKey) {
                         when (current.page) {
                             "home" -> HomeScreen(app, files, onSettings = { page = "appearance" }, onNewSession = ::openNew,
@@ -181,8 +188,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                             }
                                         }, appearance = appearance)
                                     }
-                                    else EmptyHost("会话已删除")
-                                }, onFailure = { error -> Column { AgentTopBar("无法进入会话", { page = "home" }); EmptyHost(error.message ?: error.toString()) } })
+                                    else Box(Modifier.windowInsetsPadding(topInsets)) { EmptyHost("会话已删除") }
+                                }, onFailure = { error -> Column(Modifier.windowInsetsPadding(topInsets)) { AgentTopBar("无法进入会话", { page = "home" }); EmptyHost(error.message ?: error.toString()) } })
                             }
                             "providers", "management" -> if (current.containerId != null) {
                                 val session = current.sessionId?.let(app::openedSession)
@@ -201,6 +208,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                             "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }, ::openTerminal, { id -> selectedContainer = id; page = "files" }) } ?: MissingContainer { page = "home" }
                             "files" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerFilesScreen(app, files, it.config, { page = "container" }, { fileNavigation.onBack = it }) } ?: MissingContainer { page = "home" }
                             "terminal" -> containers.firstOrNull { it.config.id == current.containerId }?.let { TerminalScreen(app, it.config, { page = terminalReturn }) } ?: MissingContainer { page = terminalReturn }
+                        }
                         }
                         }
                     }
