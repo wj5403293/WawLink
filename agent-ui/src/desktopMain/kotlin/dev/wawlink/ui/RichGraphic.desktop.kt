@@ -181,7 +181,7 @@ internal actual fun rememberSvgRasterizer(): suspend (String) -> ImageBitmap = r
     }
 }
 
-internal actual fun rasterImage(bytes: ByteArray, type: String): ImageBitmap {
+actual fun rasterImage(bytes: ByteArray, type: String): ImageBitmap {
     // Skia's encoded image is lazy: its dimensions are available before rasterization.
     val image = try { org.jetbrains.skia.Image.makeFromEncoded(bytes) }
         catch (_: Exception) { error("图片格式无法解码") }

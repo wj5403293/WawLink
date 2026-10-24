@@ -236,7 +236,7 @@ private fun detectImageType(bytes: ByteArray, declared: String?): String? {
 }
 
 /** Native decoders inspect bounds before allocating the raster. */
-internal expect fun rasterImage(bytes: ByteArray, type: String): ImageBitmap
+expect fun rasterImage(bytes: ByteArray, type: String): ImageBitmap
 
 internal fun graphicImageFileName(source: String, mimeType: String): String {
     val extension = when (mimeType) {

@@ -45,7 +45,7 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
     var editorBack by remember { mutableStateOf<(() -> Boolean)?>(null) }
     var preview by remember { mutableStateOf<SkillObject?>(null) }
     var previewRaw by remember { mutableStateOf(false) }
-    fun back(): Boolean = when { preview != null -> { preview = null; true }; editorBack != null -> editorBack!!.invoke(); else -> state.back() }
+    fun back(): Boolean = when { state.clawFilePath != null -> { state.clawFilePath = null; state.clawFile = null; true }; preview != null -> { preview = null; true }; editorBack != null -> editorBack!!.invoke(); else -> state.back() }
     SideEffect { registerBack(::back) }
     DisposableEffect(Unit) { onDispose { registerBack(null) } }
     LaunchedEffect(repository) {
@@ -58,7 +58,7 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
         Scaffold(containerColor = Color.White, topBar = {
             Row(Modifier.fillMaxWidth().height(64.dp).background(barColor).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 SkillIconButton("arrow_back", "返回") { if (!back()) onBack() }
-                Text(when (state.page) { "home" -> "技能管理"; "detail" -> state.detail.skillText("alias"); "editor" -> if (state.detail.isEmpty()) "新建技能" else "编辑技能"; "settings" -> "加载设置"; "market" -> "技能市场"; "package" -> "@${state.packageData.skillObject("packument").skillText("scope")}/${state.packageData.skillObject("packument").skillText("name")}"; "author" -> "作者与发布"; "publish" -> "发布预检与发布"; else -> "技能管理" }, Modifier.weight(1f).padding(start = 4.dp), fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(when (state.page) { "home" -> "技能管理"; "detail" -> state.detail.skillText("alias"); "editor" -> if (state.detail.isEmpty()) "新建技能" else "编辑技能"; "settings" -> "加载设置"; "market" -> "技能市场"; "clawhubDetail" -> state.clawIdentity.skillText("slug"); "package" -> "@${state.packageData.skillObject("packument").skillText("scope")}/${state.packageData.skillObject("packument").skillText("name")}"; "author" -> "作者与发布"; "publish" -> "发布预检与发布"; else -> "技能管理" }, Modifier.weight(1f).padding(start = 4.dp), fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(20.dp), modifier = Modifier.padding(end = 8.dp)) {
                     Row(Modifier.height(40.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { Symbol(if (state.project) "folder" else "person", size = 20.dp); Text(state.scopeLabel, fontSize = 16.sp) }
                 }
@@ -77,7 +77,7 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
                 state.busy?.let { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(it, Modifier.padding(horizontal = 20.dp), fontSize = 16.sp) }
-                state.error?.let { SkillBanner(it, "error", error = true) { TextButton({ state.error = null }) { Text("关闭") } } }
+                state.error?.let { SkillBanner(it, "error", error = true) { Row { if (state.canRetry) TextButton({ state.retry() }) { Text("重试") }; TextButton({ state.error = null }) { Text("关闭") } } } }
                 state.notice?.let { SkillBanner(it, "check_circle") { TextButton({ state.notice = null }) { Text("知道了") } } }
                 AnimatedContent(state.page to state.history.size, transitionSpec = {
                     val forward = targetState.second > initialState.second
@@ -100,6 +100,7 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
                             }
                             "settings" -> SkillSettingsPage(state)
                             "market" -> SkillMarketPage(state)
+                            "clawhubDetail" -> SkillClawHubDetailPage(state)
                             "package" -> SkillPackagePage(state)
                             "author" -> SkillAuthorPage(state)
                             "publish" -> SkillPublishPage(state)
@@ -116,6 +117,7 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
             SkillBanner("目录来自当前容器与原生配置解析；不是宿主机目录。当前入口固定为${state.scopeLabel}范围。")
         } }
         if (importing) SkillImportSheet(state, files, { importing = false })
+        if (state.clawFilePath != null) SkillClawHubFileSheet(state)
         preview?.let { resource -> Surface(Modifier.fillMaxSize()) { Column(Modifier.fillMaxSize()) {
             Row(verticalAlignment = Alignment.CenterVertically) { SkillIconButton("arrow_back", "关闭预览") { preview = null }; Text(resource.skillText("name"), Modifier.weight(1f), fontSize = 22.sp); SkillIconButton("content_copy", "复制原文") { clipboard.setText(AnnotatedString(resource.skillText("content"))) } }
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
@@ -157,8 +159,8 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
         else -> "全部开启"
     }
     Row(Modifier.padding(top = 8.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf(Triple("storefront", "技能市场", "Skillshare"), Triple("tune", "加载设置", loading)).forEachIndexed { i, (icon, label, value) ->
-            Surface(Modifier.weight(1f).heightIn(min = 112.dp).clickable { if (i == 0) state.request("home") { state.market = it; state.navigate("market") } else state.navigate("settings") }, color = Color(0xFFF8FAFD), shape = RoundedCornerShape(24.dp)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Symbol(icon, tint = MaterialTheme.colorScheme.primary); Text(label, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(value, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) } }
+        listOf(Triple("storefront", "技能市场", if (state.marketSource == "clawhub") "ClawHub" else "官方 Skillshare"), Triple("tune", "加载设置", loading)).forEachIndexed { i, (icon, label, value) ->
+            Surface(Modifier.weight(1f).heightIn(min = 112.dp).clickable { if (i == 0) state.openMarket() else state.navigate("settings") }, color = Color(0xFFF8FAFD), shape = RoundedCornerShape(24.dp)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Symbol(icon, tint = MaterialTheme.colorScheme.primary); Text(label, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(value, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) } }
         }
     }
     SkillSegments(listOf("found" to "已发现", "packages" to "已安装的技能包"), view) { view = it }
@@ -179,8 +181,9 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
             val icon = when (source) { "native" -> if (state.project) "folder" else "person"; "skillshare" -> "package_2"; "managed", "managed-skills" -> "auto_awesome"; else -> if (source.contains("plugins")) "extension" else "folder_special" }
             SkillRow(s.skillText("alias"), s.skillText("description"), icon, first = i == 0, last = i == entries.lastIndex, muted = flags.any { it in listOf("ignored", "disabled", "inactive", "excluded") }, onClick = { state.openSkill(s.skillText("id")) }, metadata = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(if (source == "native") state.scopeLabel else if (source == "skillshare") "技能包" else skillSource(source), Modifier.background(Color(0xFFE9EEF6), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 3.dp), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                    val status = flags.firstOrNull()?.let(::skillFlag) ?: s.skillText("packageId").let { if (it.isEmpty()) "" else "$it ${s.skillText("packageVersion")}" }
+                    val origin = s.skillObject("origin")
+                    Text(if (origin.skillText("provider") == "clawhub") "ClawHub · ${state.scopeLabel}" else if (source == "native") state.scopeLabel else if (source == "skillshare") "技能包" else skillSource(source), Modifier.background(Color(0xFFE9EEF6), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 3.dp), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                    val status = flags.firstOrNull()?.let(::skillFlag) ?: if (origin.skillText("provider") == "clawhub") "原版 ${origin.skillText("version")}" else s.skillText("packageId").let { if (it.isEmpty()) "" else "$it ${s.skillText("packageVersion")}" }
                     if (status.isNotEmpty()) Text(status, Modifier.weight(1f), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             })
@@ -200,6 +203,7 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
         DropdownMenuItem({ Text(if ("disabled" in s.skillStrings("flags")) "取消禁用" else "禁用这个技能") }, { more = false; state.request("disable", mapOf("id" to s.skillText("id"), "disabled" to ("disabled" !in s.skillStrings("flags"))), "正在保存禁用列表") { state.request("detail", mapOf("id" to s.skillText("id"))) { state.detail = it } } }, leadingIcon = { Symbol("block") })
     } } }
     Text(s.skillText("description"), fontSize = 17.sp)
+    SkillClawHubOrigin(state, s.skillObject("origin"))
     s.skillStrings("flags").forEach { SkillBanner(skillFlag(it), if (it == "conflict") "call_split" else "visibility_off", warning = it == "conflict") }
     if (!s.skillBool("writable")) SkillBanner(if (s.skillText("source").contains("plugin")) "技能属于插件，升级和卸载请到插件管理；直接改缓存不是正确做法。" else if (s.skillText("source").contains("managed")) "自动学习技能保留专用写入边界，不在此直接编辑。" else "该来源只读；要修改请复制为独立技能，所有相对资源会一起复制。") { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { if (s.skillText("source").contains("plugin")) TextButton({ onPlugins(s.skillObject("sourceMeta").skillText("pluginName").ifEmpty { null }) }) { Text("转到所属插件") }; TextButton({ copy = true }) { Text("复制为独立技能") } } }
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilledTonalButton({ onPreview("SKILL.md") }) { Symbol("visibility"); Text("查看内容") }; if (onUse != null) OutlinedButton({ use = true }) { Symbol("play_arrow"); Text("在会话中使用") } }

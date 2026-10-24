@@ -66,7 +66,7 @@ internal class OmpAgentManagementRepository(
                         "plugins.marketAdd", "plugins.marketUpdate", "plugins.marketRemove" -> true
                         "skills.setSetting", "skills.disable", "skills.create", "skills.save", "skills.delete", "skills.copy",
                         "skills.importDirectory", "skills.repairPackageFile", "skills.install", "skills.restore",
-                        "skills.update", "skills.uninstall", "skills.bumpVersion" -> true
+                        "skills.update", "skills.uninstall", "skills.bumpVersion", "skills.clawhub.install" -> true
                         "plugins.doctor" -> arguments["fix"] == true
                         else -> false
                     }
@@ -95,7 +95,7 @@ internal class OmpAgentManagementRepository(
         val root = directory()
         val destination = File(root, "wawlink/management")
         require(destination.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Management bridge path escapes container" }
-        for (name in listOf("bootstrap.mjs", "main.mjs", "agents.ts", "auth-models.ts", "diagnostics.mjs", "plugins.ts", "plugin-native.mjs", "plugin-worker.ts", "skills.ts", "skill-files.ts", "skill-registry.ts")) {
+        for (name in listOf("bootstrap.mjs", "main.mjs", "agents.ts", "auth-models.ts", "diagnostics.mjs", "plugins.ts", "plugin-native.mjs", "plugin-worker.ts", "skills.ts", "skill-files.ts", "skill-registry.ts", "clawhub.ts", "clawhub-http.ts", "clawhub-source.ts")) {
             val source = requireNotNull(javaClass.getResourceAsStream("/omp-management/$name")) { "Missing bundled native management bridge" }.bufferedReader().use { it.readText() }
             val file = File(destination, name)
             if (!file.exists() || file.readText() != source) repoAtomicWrite(file, source)

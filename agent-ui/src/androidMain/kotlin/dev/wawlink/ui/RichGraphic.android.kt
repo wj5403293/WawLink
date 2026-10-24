@@ -87,7 +87,7 @@ internal actual fun PlatformRichGraphic(html: String, modifier: Modifier, onResu
     key(html, context) { AndroidView(factory = { webView }, modifier = modifier) }
 }
 
-internal actual fun rasterImage(bytes: ByteArray, type: String): ImageBitmap {
+actual fun rasterImage(bytes: ByteArray, type: String): ImageBitmap {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     require(bounds.outWidth in 1..16384 && bounds.outHeight in 1..16384 && bounds.outWidth.toLong() * bounds.outHeight <= 32_000_000) {

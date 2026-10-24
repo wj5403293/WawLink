@@ -10,6 +10,7 @@
 - 文字只保留大号 UI 内容或标题；不添加小号卡片说明、装饰性文本或非必要装饰元素。
 - 不得擅自修改既有显示样式；主页、聊天与框架设置的视觉及非线性动画以 `ref-plan/ref-home.html`、`ref-plan/ref-coding-agent-ui.html`、`ref-plan/ref-agent-setting.html` 为准，新增 Agent 设置以 `ref-plan/agent-settings.html` 为准，功能遵循 `ref-plan/plan.md`。
 - 插件与技能管理分别严格遵循 `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 的布局、控件和非线性交互，不做视觉简化；原型紫色替换为当前主题色，演示数据、模拟加载与假重载不进入实现。
+- 技能市场默认浏览独立的 ClawHub 公开目录，保留官方 Skillshare 来源及包、账号和发布管理；官方空库不得伪装为全市场无技能。第三方内容固定发布者、技能和精确版本，安装完整资源并校验大小与哈希，不覆盖已有目录、不改写原始 frontmatter、不执行脚本，不将扫描 clean 或 OpenClaw 声明当作 OMP 兼容或安全保证。
 - 页面进入保留既有的右侧滑入与非线性曲线；返回时当前页向右滑出、上一级从左侧恢复，不能沿用进入方向。主页底栏固定按“会话、功能、容器”排列，功能位于中间、容器左边；按位置定向切换，向右侧页面切换时向左、向左侧页面切换时向右。
 - Android 聊天页状态栏与 AppBar 使用同一背景色并同步滚动变色动画；保留明暗主题的图标对比度和顶部安全区，不重复添加顶部留白。
 - 列表项使用“图标 + 标题 + 副标题（描述）”结构；右侧可放垂直三点按钮打开 popup menu。
@@ -84,6 +85,7 @@
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
   - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。
+  - 同资源目录的 `clawhub.ts`、`clawhub-http.ts`、`clawhub-source.ts` 提供独立 ClawHub 公开目录、精确版本与完整资源校验、受限联网及作用域安装；`.wawlink-clawhub.json` 只记录安装来源，不认证后续本地编辑内容。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpInstallation.kt` 提供容器内安装自检与终端命令，`src/jvmSharedMain/resources/omp-install.sh` 固定 OMP/Bun 来源和完整依赖，分阶段校验真实原生模块与 RPC 后切换安装；缺少 CA 的 APT 基础镜像先通过保留签名校验的临时 HTTP 源安装证书，不修改原软件源或关闭 TLS 校验。`OmpProcessPool.kt` 聚合会话及管理进程故障并暂停/恢复修复关联进程，`src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpInstallationTest.kt` 覆盖引擎故障与缺失安装的区分及自检协议边界。
   - `src/jvmSharedMain/resources/omp-management/diagnostics.mjs` 统一原生配置诊断与敏感值清理，保留字段路径和可得语法位置，不转发源文本片段、凭据或 HTTP 响应正文。
   - `src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpAgentManagementRepositoryTest.kt` 覆盖首屏与模型分阶段加载、无效模型配置修复、原生进程退出后恢复、目录分页完整性及 JSONL 大小/格式边界。
@@ -99,7 +101,7 @@
   - `src/sharedMain/kotlin/dev/wawlink/app/HostMounts.kt` 负责主机挂载源访问校验及本机储存卷文档 ID 的边界安全解析；`src/desktopTest/kotlin/dev/wawlink/app/HostMountsTest.kt` 覆盖主储存与可移除卷、路径原名、未知卷、目录越界及已有文件挂载。
   - 同目录的 `ContainerFileActions.kt` 为文件浏览器与模型路径链接共用 MIME、宿主文件名和流式打开/下载操作；`WawLinkApp.kt` 提供当前会话的文件路径处理。
   - 同目录的 `ContainerFeaturesScreen.kt` 提供双列内置/扩展卡片，`ContainerRulesScreen.kt` 提供真实规则文件管理和原生编辑，`ContainerExtensionScreen.kt` 提供服务启停与生命周期导航；`src/desktopMain/kotlin/dev/wawlink/app/ContainerWebSurface.desktop.kt` 使用 JavaFX WebView，Android 对应实现在 `app-android/src/main/kotlin/dev/wawlink/app/ContainerWebSurface.android.kt`，仅允许当前功能的确切 loopback 来源。
-  - 同目录的 `PluginManagementScreen.kt`、`PluginComponents.kt`、`PluginEditors.kt` 实现插件原型与真实管理；`SkillManagementScreen.kt`、`SkillComponents.kt`、`SkillUiState.kt`、`SkillDraft.kt`、`SkillEditorPage.kt`、`SkillPackagePages.kt`、`SkillAuthorPages.kt` 实现技能原型、原文编辑、市场及发布维护。两页按入口固定用户/项目上下文，配置变更明确提示新会话生效，不伪造已加载状态。
+  - 同目录的 `PluginManagementScreen.kt`、`PluginComponents.kt`、`PluginEditors.kt` 实现插件原型与真实管理；`SkillManagementScreen.kt`、`SkillComponents.kt`、`SkillUiState.kt`、`SkillDraft.kt`、`SkillEditorPage.kt`、`SkillPackagePages.kt`、`SkillAuthorPages.kt` 实现技能原型、原文编辑、市场及发布维护，`SkillClawHubPages.kt` 提供 ClawHub/官方来源切换、完整资源安全预览、精确版本风险确认与来源展示。两页按入口固定用户/项目上下文，配置变更明确提示新会话生效，不伪造已加载状态。
   - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、当前单容器持久化、直接新建与空会话清理、持久化整体缩放与配色，以及 OMP 安装修复提示去重和一次性授权，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。

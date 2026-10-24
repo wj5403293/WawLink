@@ -20,6 +20,16 @@ import kotlinx.coroutines.delay
 /** Resolve model-authored file links in the host's current session, never as host file:// URIs. */
 val LocalAgentFileLinkHandler = staticCompositionLocalOf<((String) -> Unit)?> { null }
 
+internal val LocalMarkdownExternalContent = staticCompositionLocalOf { true }
+
+/** Untrusted Skill documents reuse native Markdown without remote image loads or actionable links. */
+@Composable
+fun SkillContentPreview(text: String, modifier: Modifier = Modifier) {
+    CompositionLocalProvider(LocalMarkdownExternalContent provides false, LocalAgentFileLinkHandler provides null) {
+        Markdown(text, modifier)
+    }
+}
+
 /** Pace only the pending suffix; expansion pauses preserve the already visible prefix. */
 @Composable
 internal fun streamedText(text: String, streaming: Boolean, paused: Boolean = false): String {
@@ -53,7 +63,9 @@ internal fun Markdown(text: String, modifier: Modifier = Modifier) {
             when (part) {
                 is MarkdownPart.Text -> if (part.text.isNotBlank()) PlainMarkdown(part.text)
                 is MarkdownPart.Code -> MarkdownCode(part)
-                is MarkdownPart.Graphic -> RichGraphic(part)
+                is MarkdownPart.Graphic -> if (!LocalMarkdownExternalContent.current && part.kind == GraphicKind.Image && !part.source.startsWith("data:", true)) {
+                    PlainMarkdown(part.description.ifBlank { "图片" })
+                } else RichGraphic(part)
             }
         }
     }

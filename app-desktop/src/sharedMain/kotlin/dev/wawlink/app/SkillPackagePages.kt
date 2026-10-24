@@ -17,11 +17,11 @@ import dev.wawlink.ui.Symbol
     SkillHeading("${state.scopeLabel}技能包", if (state.project) "folder" else "person")
     val installed = state.snapshot.skillObjects("installed")
     installed.forEachIndexed { i, item -> SkillRow(item.skillText("id"), "声明 ${item.skillText("range", "未声明")} · 锁定 ${item.skillText("version", "未锁定")}\n${if (item.skillBool("stored")) "已下载 · marker 与锁匹配" else if (item["version"] != null) "已锁定，内容缺失" else "已声明，未锁定"}", "package_2", i == 0, i == installed.lastIndex, onClick = { selected = item }) }
-    if (installed.isEmpty() && state.snapshot.skillObjects("packageErrors").isEmpty()) SkillEmpty("还没有安装技能包", "package_2")
+    if (installed.isEmpty() && state.snapshot.isNotEmpty() && state.snapshot.skillObjects("packageErrors").isEmpty()) SkillEmpty("还没有安装官方 Skillshare 技能包", "package_2")
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FilledTonalButton({ state.request("restore", label = "正在恢复锁定版本") { state.notice = "恢复完成：${it["changes"]}\n${it.skillStrings("warnings").joinToString("\n")}" } }, enabled = state.busy == null) { Symbol("restore"); Text("按锁文件恢复") }
         OutlinedButton({ state.request("update", label = "正在按声明范围更新") { state.notice = "范围内更新结果：${it["changes"]}\n${it.skillStrings("warnings").joinToString("\n")}" } }, enabled = state.busy == null) { Symbol("update"); Text("范围内更新") }
-        Button({ state.request("home") { state.market = it; state.navigate("market") } }) { Symbol("add"); Text("安装技能包") }
+        Button({ state.openMarket("skillshare") }, enabled = state.busy == null) { Symbol("add"); Text("安装技能包") }
     }
     SkillBanner("恢复只补齐锁定版本，不会升级；范围内更新会重新解析声明。内容 store 可跨项目共享，marker 不等于每次全量重哈希。失败后按实际清单重读，两个文件不是跨文件事务。")
     selected?.let { item -> ModalBottomSheet({ selected = null }) { Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState())) {
@@ -35,7 +35,7 @@ import dev.wawlink.ui.Symbol
     repair?.let { failure -> dev.wawlink.ui.EditableCodeScreen(failure.skillText("path"), repairContent, "json", { repair = null }, error = state.error, saving = state.busy != null, onSave = { text -> repairContent = text; state.request("repairPackageFile", mapOf("path" to failure.skillText("path"), "version" to failure.skillText("version"), "content" to text), "正在校验并保存清单") { repair = null } }) }
 }
 
-@Composable internal fun SkillMarketPage(state: SkillUiState) {
+@Composable internal fun SkillOfficialMarketPage(state: SkillUiState) {
     var query by rememberSaveable { mutableStateOf("") }; var owner by rememberSaveable { mutableStateOf("") }; var keyword by rememberSaveable { mutableStateOf("") }; var sort by rememberSaveable { mutableStateOf("relevance") }; var page by rememberSaveable { mutableIntStateOf(1) }; var filters by remember { mutableStateOf(false) }; var results by rememberSaveable { mutableStateOf(false) }; var address by remember { mutableStateOf(false) }
     fun search(next: Int = 1) { state.request("search", mapOf("query" to query, "owner" to owner, "keyword" to keyword, "sort" to sort, "page" to next), "正在搜索注册表") { state.market = it; page = next; results = true } }
     SkillField("搜索技能包", query, { query = it })
@@ -45,11 +45,11 @@ import dev.wawlink.ui.Symbol
         listOf("热门" to "popular", "最近更新" to "recent", "趋势" to "trending").forEach { (title, key) -> val rows = state.market.skillObjects(key); if (rows.isNotEmpty()) { SkillHeading(title); rows.forEach { SkillPackageRow(state, it) } } }
         val keywords = state.market["keywords"] as? List<*> ?: emptyList<Any?>()
         if (keywords.isNotEmpty()) { SkillHeading("关键词", "sell"); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { keywords.forEach { item -> val label = if (item is List<*>) item.firstOrNull()?.toString().orEmpty() else if (item is Map<*, *>) item["keyword"]?.toString() ?: item["name"]?.toString().orEmpty() else item.toString(); FilterChip(keyword == label, { keyword = label; search() }, { Text(label) }) } } }
-        if (listOf("popular", "recent", "trending").all { state.market.skillObjects(it).isEmpty() }) SkillEmpty("市场暂无可显示的技能包。可以搜索包名、作者或关键词。", "storefront")
+        if (state.market.isNotEmpty() && listOf("popular", "recent", "trending").all { state.market.skillObjects(it).isEmpty() }) SkillEmpty("当前官方 Skillshare 内容为空。可搜索包名、作者或关键词，或切换 ClawHub 浏览公开技能；这不代表其他市场没有技能。", "storefront")
     } else {
         SkillHeading("${state.market.skillText("total", "0")} 个结果")
         state.market.skillObjects("hits").forEach { SkillPackageRow(state, it) }
-        if (state.market.skillObjects("hits").isEmpty()) SkillEmpty("没有找到技能包", "search_off")
+        if (state.market.isNotEmpty() && state.busy == null && state.market.skillObjects("hits").isEmpty()) SkillEmpty("当前官方 Skillshare 没有符合查询的技能包", "search_off")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { TextButton({ search(page - 1) }, enabled = page > 1 && state.busy == null) { Text("上一页") }; Text("第 $page 页", Modifier.padding(12.dp)); TextButton({ search(page + 1) }, enabled = state.busy == null && page * state.market.skillText("perPage", "20").toIntOrNull().let { it ?: 20 } < state.market.skillText("total", "0").toIntOrNull().let { it ?: 0 }) { Text("下一页") } }
     }
     if (filters) AlertDialog(onDismissRequest = { filters = false }, title = { Text("作者与关键词") }, text = { Column { SkillField("作者 scope（不含 @）", owner, { owner = it }); SkillField("关键词", keyword, { keyword = it }); Text("发送真实 owner: 与 keyword: 查询，由注册表服务端解释。") } }, confirmButton = { Button({ filters = false; search() }) { Text("应用") } }, dismissButton = { TextButton({ owner = ""; keyword = ""; filters = false; search() }) { Text("清除筛选") } })

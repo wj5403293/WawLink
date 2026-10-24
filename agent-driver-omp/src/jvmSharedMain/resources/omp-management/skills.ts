@@ -5,6 +5,7 @@ import type { Skill as NativeSkill } from "/opt/omp/src/capability/skill.ts";
 import { nativeSkill, skillCopy, skillHash, skillInside, skillName, skillParse, skillRecord, skillResources, skillSafeFile, skillScope, skillTarget, skillValidate, skillWritable, type SkillContext } from "./skill-files.ts";
 import { skillRegistryDispatch } from "./skill-registry.ts";
 import { ManagementDiagnostic } from "./diagnostics.mjs";
+import { dispatchClawHub, readClawHubOrigin } from "./clawhub.ts";
 
 const settingLabels: Record<string, string> = {
   "skills.enabled": "发现并加载技能", "skillful": "在系统提示里列出技能目录", "skills.enableSkillCommands": "注册技能斜杠命令",
@@ -64,8 +65,9 @@ async function discover(ctx: SkillContext) {
       const definitions = agents.agents;
       const priorities: Record<string, number> = { native: 100, custom: 100, skillshare: 95, "omp-plugins": 90, claude: 80, "agent-plugins": 75, codex: 70, agents: 70, "claude-plugins": 70, opencode: 55, github: 30, managed: 5 };
       const packageMatch = source === "skillshare" ? /(?:^|[\\/])(@[^\\/]+)[\\/]([^\\/]+)[\\/]([^\\/]+)$/.exec(dir) : null;
+      const origin = await readClawHubOrigin(dir);
       return { id: s.path, path: dir, filePath: s.path, name: rawName, alias, description: String(parsed.fields.description ?? ""), source, sourceMeta: s._source, priority: priorities[source] ?? null,
-        fields: parsed.fields, body: parsed.body, content, version: skillHash(content), flags, writable,
+        fields: parsed.fields, body: parsed.body, content, version: skillHash(content), flags, writable, origin,
         packageId: packageMatch ? `${packageMatch[1]}/${packageMatch[2]}` : null, packageVersion: packageMatch?.[3] ?? null,
         shadows: [...files.values()].filter(other => other.name === s.name && other.path !== s.path).map(other => ({ path: other.path, source: other._source.provider })),
         agentRefs: definitions.filter(a => a.autoloadSkills?.includes(rawName) || a.autoloadSkills?.includes(alias)).map(a => a.name) };
@@ -82,6 +84,7 @@ async function selected(ctx: SkillContext, id: unknown) {
 }
 async function dispatchSkill(operation: string, args: Record<string, unknown>, ctx: SkillContext): Promise<object> {
   const op = operation.replace(/^skills\./, "");
+  if (op.startsWith("clawhub.")) return dispatchClawHub(op.slice("clawhub.".length), args, ctx);
   if (op === "snapshot") {
     const manifest: unknown = JSON.parse(await fs.readFile("/opt/omp/package.json", "utf8"));
     return { ...await discover(ctx), ...await settingsState(ctx), ...(await skillRegistryDispatch("installed", {}, ctx)), ompVersion: skillRecord(manifest) && typeof manifest.version === "string" ? manifest.version : null };
@@ -140,6 +143,7 @@ async function dispatchSkill(operation: string, args: Record<string, unknown>, c
 export async function dispatch(operation: string, args: Record<string, unknown>, ctx: SkillContext): Promise<object> {
   try { return await dispatchSkill(operation, args, ctx); }
   catch (error: unknown) {
+    if (error instanceof ManagementDiagnostic) throw error;
     const message = error instanceof Error ? error.message : "";
     if (message.startsWith("SCRIPT_APPROVAL:")) {
       const approval: unknown = JSON.parse(message.slice("SCRIPT_APPROVAL:".length));

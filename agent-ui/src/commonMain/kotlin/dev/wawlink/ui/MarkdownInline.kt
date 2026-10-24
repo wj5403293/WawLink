@@ -73,6 +73,7 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
     val background = (if (dark) Color.White else colors.onSurface).copy(alpha = if (dark) .10f else .06f)
     val fileHandler = LocalAgentFileLinkHandler.current
     val uri = LocalUriHandler.current
+    val externalContent = LocalMarkdownExternalContent.current
     BoxWithConstraints(modifier) {
         val horizontal = with(density) { 5.dp.roundToPx() }
         val vertical = with(density) { 3.dp.roundToPx() }
@@ -116,8 +117,9 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
         var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
         BasicText(
             text = displayed,
-            modifier = Modifier.fillMaxWidth().pointerInput(displayed, fileHandler, uri) {
+            modifier = Modifier.fillMaxWidth().pointerInput(displayed, fileHandler, uri, externalContent) {
                 detectTapGestures { position ->
+                    if (!externalContent) return@detectTapGestures
                     val result = layout ?: return@detectTapGestures
                     val placeholder = result.placeholderRects.indexOfFirst { it?.contains(position) == true }
                     val offset = if (placeholder >= 0) fragments[placeholder].first else result.getOffsetForPosition(position)
