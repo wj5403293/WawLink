@@ -10,8 +10,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,7 +36,6 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -244,13 +241,12 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         if (event.type != KeyEventType.KeyDown) false else when {
                             suggestions.isNotEmpty() && event.key == Key.DirectionDown -> { slashIndex = (selectedIndex + 1) % suggestions.size; true }
                             suggestions.isNotEmpty() && event.key == Key.DirectionUp -> { slashIndex = (selectedIndex - 1 + suggestions.size) % suggestions.size; true }
-                            suggestions.isNotEmpty() && (event.key == Key.Enter || event.key == Key.Tab) -> { pickSlash(suggestions[selectedIndex]); true }
+                            suggestions.isNotEmpty() && event.key == Key.Tab -> { pickSlash(suggestions[selectedIndex]); true }
                             suggestions.isNotEmpty() && event.key == Key.Escape -> { text = ""; true }
-                            event.key == Key.Enter && !event.isShiftPressed -> { submit(); true }
                             else -> false
                         }
                     }, textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.onSurface, fontSize = 18.sp, lineHeight = 27.sp),
-                    cursorBrush = SolidColor(c.primary), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { submit() }),
+                    cursorBrush = SolidColor(c.primary),
                     decorationBox = { inner -> Box { if (text.isEmpty()) Text("描述你的任务", color = c.onSurfaceVariant, fontSize = 18.sp); inner() } })
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Box {
@@ -446,9 +442,8 @@ private fun QueueRow(prompt: QueuedPrompt, controller: AgentSessionController) {
     Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(radius)).background(background).heightIn(min = 56.dp).padding(start = 16.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Symbol("schedule", size = 22.dp, tint = c.onSurfaceVariant)
-        if (editing) BasicTextField(draft, { draft = it }, Modifier.weight(1f).focusRequester(focus).padding(vertical = 8.dp).onPreviewKeyEvent {
-            if (it.type == KeyEventType.KeyDown && it.key == Key.Enter && !it.isShiftPressed) { save(); true } else false
-        }, textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.onSurface), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { save() }))
+        if (editing) BasicTextField(draft, { draft = it }, Modifier.weight(1f).heightIn(max = 160.dp).focusRequester(focus).padding(vertical = 8.dp),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.onSurface))
         else Text(prompt.text.ifBlank { "${prompt.attachments.size} 个附件" }, Modifier.weight(1f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         AgentIconButton(if (editing) "check" else "edit", if (editing) "保存" else "编辑", { if (editing) save() else editing = true }, Modifier.size(44.dp))
         AgentIconButton("close", "移除排队消息", { controller.removeQueuedPrompt(prompt.id) }, Modifier.size(44.dp))

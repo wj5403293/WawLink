@@ -59,7 +59,7 @@ fun AgentManagementScreen(
         CompositionLocalProvider(LocalManagementRepository provides repository) {
         Box(Modifier.fillMaxSize().background(LocalAgentColors.current.surface)) {
             AnimatedContent(page, transitionSpec = {
-                val forward = targetState != initialSection
+                val forward = targetState != initialSection && !(initialState == "native-provider" && targetState == "providers")
                 (slideInHorizontally(tween(550, easing = EmphDecelEasing)) { if (forward) it else -it / 5 } + fadeIn(tween(400))) togetherWith
                     (slideOutHorizontally(tween(360, easing = EmphAccelEasing)) { if (forward) -it / 5 else it } + fadeOut(tween(300)))
             }) { current ->

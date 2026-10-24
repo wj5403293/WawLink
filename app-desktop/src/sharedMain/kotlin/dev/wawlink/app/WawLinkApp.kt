@@ -41,6 +41,7 @@ private data class HostRoute(
     val sessionId: String? = null,
     val containerId: String? = null,
     val rootfs: Boolean = false,
+    val returnPage: String = "home",
 ) {
     val stateKey: String = when (page) {
         "chat" -> "chat:$sessionId"
@@ -131,9 +132,11 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val configurationContainer = containers.firstOrNull { it.config.id == selectedContainer } ?: containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull()
     val route = when (page) {
         "chat" -> HostRoute(page, sessionId = selectedSession)
-        "providers", "management" -> HostRoute(page, containerId = configurationContainer?.config?.id, sessionId = selectedSession.takeIf { settingsReturn == "chat" })
-        "framework", "container" -> HostRoute(page, containerId = configurationContainer?.config?.id)
-        "terminal", "files" -> HostRoute(page, containerId = selectedContainer)
+        "providers", "management" -> HostRoute(page, containerId = configurationContainer?.config?.id, sessionId = selectedSession.takeIf { settingsReturn == "chat" }, returnPage = settingsReturn)
+        "framework" -> HostRoute(page, containerId = configurationContainer?.config?.id, returnPage = settingsReturn)
+        "container" -> HostRoute(page, containerId = configurationContainer?.config?.id)
+        "terminal" -> HostRoute(page, containerId = selectedContainer, returnPage = terminalReturn)
+        "files" -> HostRoute(page, containerId = selectedContainer, returnPage = "container")
         "install" -> HostRoute(page, rootfs = installRootfs)
         else -> HostRoute(page)
     }
@@ -149,9 +152,10 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 Column(Modifier.widthIn(max = if (page == "terminal") 1200.dp / appearance.densityScale else AgentPageMaxWidth).fillMaxSize()) {
                     AnimatedContent(route, transitionSpec = {
-                        (fadeIn(tween(380, easing = EmphDecelEasing)) + slideInHorizontally(tween(520, easing = EmphDecelEasing)) { it / 4 }) togetherWith
-                            (fadeOut(tween(180, easing = EmphAccelEasing)) + slideOutHorizontally(tween(380, easing = EmphEasing)) { -it / 4 })
-                    }, modifier = Modifier.weight(1f)) { current ->
+                        val back = targetState.page == "home" || targetState.page == initialState.returnPage
+                        (fadeIn(tween(380, easing = EmphDecelEasing)) + slideInHorizontally(tween(520, easing = EmphDecelEasing)) { if (back) -it / 4 else it / 4 }) togetherWith
+                            (fadeOut(tween(180, easing = EmphAccelEasing)) + slideOutHorizontally(tween(380, easing = EmphEasing)) { if (back) it / 4 else -it / 4 })
+                    }, modifier = Modifier.weight(1f), contentKey = { it.stateKey }) { current ->
                         pageStates.SaveableStateProvider(current.stateKey) {
                         when (current.page) {
                             "home" -> HomeScreen(app, files, onSettings = { page = "appearance" }, onNewSession = ::openNew,

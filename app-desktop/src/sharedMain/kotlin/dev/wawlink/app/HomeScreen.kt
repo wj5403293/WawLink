@@ -83,7 +83,11 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
             ExtendedFloatingActionButton(onClick = { if (tab == 0) onNewSession() else onInstall(false) }, icon = { Symbol("add") }, text = { Text(if (tab == 0) "新建会话" else "安装发行版", fontSize = 18.sp) }, shape = RoundedCornerShape(18.dp))
         }
     }) { padding ->
-        AnimatedContent(tab, modifier = Modifier.padding(padding), transitionSpec = { fadeIn(tween(420, easing = EmphDecelEasing)) togetherWith fadeOut(tween(180)) }) { current ->
+        AnimatedContent(tab, modifier = Modifier.padding(padding), transitionSpec = {
+            val forward = targetState > initialState
+            (fadeIn(tween(420, easing = EmphDecelEasing)) + slideInHorizontally(tween(420, easing = EmphDecelEasing)) { if (forward) it / 5 else -it / 5 }) togetherWith
+                (fadeOut(tween(180, easing = EmphAccelEasing)) + slideOutHorizontally(tween(280, easing = EmphAccelEasing)) { if (forward) -it / 5 else it / 5 })
+        }) { current ->
             tabStates.SaveableStateProvider(current) {
             if (current == 0) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 96.dp)) {
                 Row(Modifier.padding(top = 8.dp, bottom = 6.dp).fillMaxWidth().height(56.dp).background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(28.dp)).padding(start = 18.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
