@@ -163,7 +163,8 @@ class AppCoordinatorSessionRestoreTest {
             }.first { it.record.id == branch }
             assertEquals("迁移分支", migrated.record.title)
             val metadata = Properties().apply { File(fixture.directory, "sessions.properties").inputStream().use(::load) }
-            assertEquals((fixture.ids + created + branch).toSet(), metadata.getProperty("ids").split(',').toSet())
+            assertEquals((fixture.ids + branch).toSet(), metadata.getProperty("ids").split(',').toSet())
+            assertFalse(created in metadata.getProperty("ids").split(','))
             assertEquals("迁移分支", metadata.getProperty("$branch.title"))
             assertEquals("/moved-workspace", metadata.getProperty("$branch.workspace"))
             fixture.ids.filterNot { it == source }.forEach { assertNull(fixture.app.openedSession(it)) }
@@ -205,29 +206,20 @@ class AppCoordinatorSessionRestoreTest {
         }
     }
 
-    @Test fun blankCreationRemainsPendingAcrossRestartButAnExplicitPlaceholderTitleDoesNot() = runBlocking {
-        Fixture(0).use { fixture ->
+    @Test fun emptyNewConversationsAreNotPersistedAndLeavingRemovesOnlyTheDraft() = runBlocking {
+        Fixture(1).use { fixture ->
             fixture.publishContainers()
-            val pending = fixture.app.create("  ", "fixture", "/workspace")
-            val explicit = fixture.app.create(" 新会话 ", "fixture", "/workspace")
-            fixture.restart {
-                listOf(pending, explicit).forEach { id ->
-                    fixture.journal(id).writeText("""{"type":"message_start","messageId":"question","message":{"role":"user","content":" First\n question ","timestamp":1}}
-""")
-                }
-            }
-            val restored = withTimeout(5_000) { fixture.app.sessions.first { it.size == 2 } }
-            assertEquals(SessionTitleSource.PENDING, restored.first { it.record.id == pending }.record.titleSource)
-            assertEquals(SessionTitleSource.MANUAL, restored.first { it.record.id == explicit }.record.titleSource)
-            assertTrue(restored.all { it.record.title == "新会话" && it.state.feed.isEmpty() })
-            val pendingController = fixture.app.openSession(pending)
-            withTimeout(5_000) { pendingController.state.first { it.title == "First question" } }
-            val explicitController = fixture.app.openSession(explicit)
-            withTimeout(5_000) { explicitController.state.first { it.feed.isNotEmpty() } }
-            assertEquals("新会话", explicitController.state.value.title)
-            fixture.app.editSession(pending, " 固定标题 ", "/workspace", "fixture")
-            assertEquals("固定标题", fixture.metadata().getProperty("$pending.title"))
-            assertEquals(SessionTitleSource.MANUAL.name, fixture.metadata().getProperty("$pending.titleSource"))
+            val pending = fixture.app.create("", "fixture", "/workspace")
+            val named = fixture.app.create("手动标题", "fixture", "/workspace")
+            assertEquals(fixture.ids, fixture.metadata().getProperty("ids").split(','))
+            fixture.app.leaveSession(pending)
+            fixture.app.leaveSession(named)
+            withTimeout(5_000) { fixture.app.sessions.first { items -> items.none { it.record.id == pending || it.record.id == named } } }
+            assertFalse(fixture.app.hasSession(pending))
+            assertFalse(fixture.app.hasSession(named))
+            fixture.restart()
+            val restored = withTimeout(5_000) { fixture.app.sessions.first { it.size == 1 } }
+            assertEquals(fixture.ids.single(), restored.single().record.id)
         }
     }
 
@@ -308,7 +300,9 @@ class AppCoordinatorSessionRestoreTest {
             assertFailsWith<IllegalStateException> { fixture.app.createInContext("missing") }
             fixture.containers.value = listOf(ContainerInfo(ContainerConfig("other", "其他容器", File(fixture.directory, "other").path)))
             assertFailsWith<IllegalArgumentException> { fixture.app.createInContext(source) }
-            assertEquals(3, fixture.metadata().getProperty("ids").split(',').size)
+            assertEquals(fixture.ids, fixture.metadata().getProperty("ids").split(','))
+            fixture.app.leaveSession(created)
+            assertFalse(fixture.app.hasSession(created))
             fixture.assertNoEngineCalls()
         }
     }

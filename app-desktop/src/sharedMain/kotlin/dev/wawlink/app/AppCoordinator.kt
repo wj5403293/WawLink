@@ -9,6 +9,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Properties
+import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -56,6 +57,12 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     private val sessionStates = MutableStateFlow<Map<String, ChatSessionUiState>>(emptyMap())
     private val controllers = mutableMapOf<String, AgentSessionController>()
     private val observers = mutableMapOf<String, Job>()
+    private val provisionalSessions = ConcurrentHashMap.newKeySet<String>()
+    private val backgroundDrafts = ConcurrentHashMap.newKeySet<String>()
+    val features = ContainerFeatureService(runtime)
+    val selectedContainerId: StateFlow<String?> = runtime.containers.map { items ->
+        (items.firstOrNull { it.config.isDefault } ?: items.firstOrNull())?.config?.id
+    }.stateIn(scope, SharingStarted.Eagerly, currentContainerId())
     private val _appearance = MutableStateFlow(AgentAppearance())
     val appearance: StateFlow<AgentAppearance> = _appearance.asStateFlow()
     private val _defaultAutoApprove = MutableStateFlow(true)
@@ -231,6 +238,43 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     }
     fun hasSession(id: String): Boolean = records.value.any { it.id == id }
 
+    internal fun isEmptyDraft(session: HomeSession): Boolean = session.record.id in provisionalSessions &&
+        latestUserId(session.state.feed) == null && session.state.queuedPrompts.isEmpty()
+
+    fun currentContainerId(): String? = runtime.containers.value.let { items ->
+        (items.firstOrNull { it.config.isDefault } ?: items.firstOrNull())?.config?.id
+    }
+
+    suspend fun selectContainer(id: String) { runtime.setDefault(id) }
+
+    suspend fun createInSelectedContainer(): String = create("", requireNotNull(currentContainerId()) { "请先安装或导入一个容器" }, "/workspace")
+
+    /** Only new, never-accepted conversations are disposable; existing history is never inspected here. */
+    fun leaveSession(id: String) {
+        if (id !in provisionalSessions) return
+        backgroundDrafts.add(id)
+        discardEmptySession(id)
+    }
+
+    private fun hasAcceptedMessage(feed: List<FeedItem>): Boolean = feed.any {
+        it is UserMessageItem && it.accepted || it is StepGroupNodeItem && hasAcceptedMessage(it.children)
+    }
+
+    private fun discardEmptySession(id: String) {
+        synchronized(controllers) {
+            if (id !in provisionalSessions || id !in backgroundDrafts) return
+            val state = controllers[id]?.state?.value ?: sessionStates.value[id]
+            if (state != null && (latestUserId(state.feed) != null || state.queuedPrompts.isNotEmpty() || state.isRunning)) return
+            provisionalSessions.remove(id)
+            backgroundDrafts.remove(id)
+            observers.remove(id)?.cancel()
+            controllers.remove(id)
+            records.update { all -> all.filterNot { it.id == id } }
+            sessionStates.update { it - id }
+        }
+        launch { pool.deleteSession(id); persistSessions() }
+    }
+
     fun openedSession(id: String): AgentSessionController? = synchronized(controllers) { controllers[id] }
 
     fun openSession(id: String): AgentSessionController = synchronized(controllers) {
@@ -290,6 +334,8 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         observers[id] = scope.launch {
             controller.state.collect { state ->
                 sessionStates.update { it + (id to state) }
+                val becameDurable = hasAcceptedMessage(state.feed) && provisionalSessions.remove(id)
+                if (becameDurable) backgroundDrafts.remove(id)
                 val latest = latestUserId(state.feed)
                 val userChanged = latest != null && latest != lastUser
                 if (userChanged) lastUser = latest
@@ -308,9 +354,10 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
                     }
                     title != null
                 }
-                if (userChanged || titleChanged) {
+                if (userChanged || titleChanged || becameDurable) {
                     runCatching { withContext(Dispatchers.IO) { persistSessions() } }.onFailure(::showError)
                 }
+                if (id in backgroundDrafts) discardEmptySession(id)
             }
         }
     }
@@ -325,6 +372,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         synchronized(controllers) {
             val controller = pool.session(record.id, record.containerId, record.workspace, record.title, autoApprove = _defaultAutoApprove.value)
             controllers[id] = controller
+            provisionalSessions.add(id)
             records.update { it + record }
             observe(id, controller)
         }
@@ -362,6 +410,8 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         for (id in ids) {
             pool.deleteSession(id)
             synchronized(controllers) { controllers.remove(id); observers.remove(id)?.cancel() }
+            provisionalSessions.remove(id)
+            backgroundDrafts.remove(id)
             records.update { all -> all.filterNot { it.id == id } }
             sessionStates.update { it - id }
             persistSessions()
@@ -394,7 +444,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     }
     private fun persistSessions() = synchronized(persistenceLock) {
         val p = Properties()
-        val current = records.value
+        val current = records.value.filterNot { it.id in provisionalSessions }
         p["ids"] = current.joinToString(",") { it.id }
         current.forEach { r ->
             p["${r.id}.title"] = r.title; p["${r.id}.container"] = r.containerId; p["${r.id}.workspace"] = r.workspace
@@ -410,5 +460,5 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         catch (_: java.nio.file.AtomicMoveNotSupportedException) { Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING) }
         Unit
     }
-    override fun close() { scope.cancel(); pool.close(); runtime.close() }
+    override fun close() { scope.cancel(); features.close(); pool.close(); runtime.close() }
 }

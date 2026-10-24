@@ -26,7 +26,7 @@ import dev.wawlink.runtime.*
 import dev.wawlink.ui.*
 
 @Composable
-internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () -> Unit, onNewSession: () -> Unit, onEnterSession: (String) -> Unit, onContainer: (String) -> Unit, onInstall: (Boolean) -> Unit, onTerminal: (String) -> Unit) {
+internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () -> Unit, onNewSession: () -> Unit, onEnterSession: (String) -> Unit, onContainer: (String) -> Unit, onInstall: (Boolean) -> Unit, onFeature: (String) -> Unit, onExtension: (ContainerFeature) -> Unit) {
     var tab by rememberSaveable { mutableStateOf(0) }
     var batch by rememberSaveable { mutableStateOf(false) }
     var selected by rememberSaveable { mutableStateOf(emptySet<String>()) }
@@ -40,8 +40,10 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
     var deleting by remember { mutableStateOf(emptySet<String>()) }
     val sessions by app.sessions.collectAsState()
     val containers by app.runtime.containers.collectAsState()
+    val currentContainerId by app.selectedContainerId.collectAsState()
     val tabStates = rememberSaveableStateHolder()
     val visible = sessions.filter { session ->
+        if (app.isEmptyDraft(session)) return@filter false
         val r = session.record; val c = containers.firstOrNull { it.config.id == r.containerId }?.config
         (if (filter == "已归档") r.archived else !r.archived) &&
             (filter != "运行中" || session.state.status == SessionStatus.RUNNING) &&
@@ -51,7 +53,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
     }
     fun exitBatch() { batch = false; selected = emptySet() }
     Scaffold(topBar = {
-        AgentTopBar(if (batch) "已选 ${selected.size} 项" else if (tab == 0) "会话" else "容器", actions = {
+        AgentTopBar(if (batch) "已选 ${selected.size} 项" else listOf("会话", "功能", "容器")[tab], actions = {
             if (batch) {
                 AgentIconButton("select_all", "全选", { selected = if (visible.all { it.record.id in selected }) selected - visible.map { it.record.id }.toSet() else selected + visible.map { it.record.id } })
                 AgentIconButton("push_pin", "批量置顶", { val ids = selected; app.launch { app.togglePin(ids) }; exitBatch() })
@@ -64,9 +66,8 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                     if (running > 0) FilledTonalButton({ filter = if (filter == "运行中") "全部" else "运行中" }, contentPadding = PaddingValues(horizontal = 10.dp), modifier = Modifier.height(38.dp)) { Symbol("play_arrow", size = 18.dp); Spacer(Modifier.width(4.dp)); Text("$running") }
                     AgentIconButton("checklist", "批量管理", { expanded = null; batch = true })
                     AgentIconButton("edit_square", "新建会话", onNewSession)
-                } else {
-                    AgentIconButton("terminal", "默认终端", { val id = (containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull())?.config?.id; if (id == null) app.report("请先安装容器") else onTerminal(id) })
-                    AgentIconButton("power_settings_new", "全部休眠", { app.launch { containers.forEach { app.runtime.stop(it.config.id) } } })
+                } else if (tab == 2) {
+                    AgentIconButton("power_settings_new", "当前容器休眠", { currentContainerId?.let { app.launch { app.runtime.stop(it) } } })
                     AgentIconButton("add_box", "添加容器", { onInstall(false) })
                 }
                 AgentIconButton("settings", "应用设置", onSettings)
@@ -75,11 +76,12 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
     }, bottomBar = {
         NavigationBar(containerColor = MaterialTheme.colorScheme.surface, modifier = Modifier.height(80.dp)) {
             NavigationBarItem(tab == 0, { tab = 0; exitBatch() }, { Symbol("forum", filled = tab == 0) }, label = { Text("会话", fontSize = 16.sp) }, colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer, selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer))
-            NavigationBarItem(tab == 1, { tab = 1; exitBatch() }, { Symbol("deployed_code", filled = tab == 1) }, label = { Text("容器", fontSize = 16.sp) }, colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer, selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer))
+            NavigationBarItem(tab == 1, { tab = 1; exitBatch() }, { Symbol("widgets", filled = tab == 1) }, label = { Text("功能", fontSize = 16.sp) }, colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer, selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer))
+            NavigationBarItem(tab == 2, { tab = 2; exitBatch() }, { Symbol("deployed_code", filled = tab == 2) }, label = { Text("容器", fontSize = 16.sp) }, colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer, selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer))
         }
     }, floatingActionButton = {
-        if (!batch) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (tab == 1) ExtendedFloatingActionButton(onClick = { onInstall(true) }, icon = { Symbol("folder_zip") }, text = { Text("导入 rootfs", fontSize = 17.sp) }, containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(18.dp))
+        if (!batch && tab != 1) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (tab == 2) ExtendedFloatingActionButton(onClick = { onInstall(true) }, icon = { Symbol("folder_zip") }, text = { Text("导入 rootfs", fontSize = 17.sp) }, containerColor = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(18.dp))
             ExtendedFloatingActionButton(onClick = { if (tab == 0) onNewSession() else onInstall(false) }, icon = { Symbol("add") }, text = { Text(if (tab == 0) "新建会话" else "安装发行版", fontSize = 18.sp) }, shape = RoundedCornerShape(18.dp))
         }
     }) { padding ->
@@ -125,7 +127,8 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                         }
                     }
                 }
-            } else ContainersHome(app, onContainer, onTerminal)
+            } else if (current == 2) ContainersHome(app, onContainer)
+            else ContainerFeaturesScreen(app, app.features, currentContainerId, onFeature, onExtension)
             }
         }
     }
@@ -217,15 +220,15 @@ private fun pendingApprovals(feed: List<FeedItem>): List<ApprovalCardItem> = fee
 @Composable internal fun Meta(icon: String, text: String) { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) { Symbol(icon, size = 19.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant); Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp, maxLines = 1) } }
 
 @Composable
-internal fun SessionEditor(app: AppCoordinator, files: HostFiles, record: SessionRecord?, onDismiss: () -> Unit, onSaved: (String) -> Unit) {
+internal fun SessionEditor(app: AppCoordinator, files: HostFiles, record: SessionRecord, onDismiss: () -> Unit, onSaved: (String) -> Unit) {
     val containers by app.runtime.containers.collectAsState()
-    var title by remember(record?.id) { mutableStateOf(record?.title ?: "") }
-    var workspace by remember(record?.id) { mutableStateOf(record?.workspace ?: "/workspace") }
-    var containerId by remember(record?.id) { mutableStateOf(record?.containerId ?: (containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull())?.config?.id.orEmpty()) }
+    var title by remember(record.id) { mutableStateOf(record.title) }
+    var workspace by remember(record.id) { mutableStateOf(record.workspace) }
+    var containerId by remember(record.id) { mutableStateOf(record.containerId) }
     var saving by remember { mutableStateOf(false) }
     var pickingWorkspace by remember { mutableStateOf(false) }
     val pickerNavigation = remember { HostNavigation() }
-    AgentSheet(if (record == null) "新建会话" else "重命名会话", onDismiss) {
+    AgentSheet("重命名会话", onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             HostField("任务描述或标题", title, { title = it })
             SectionLabel("选择运行容器", "deployed_code")
@@ -233,11 +236,10 @@ internal fun SessionEditor(app: AppCoordinator, files: HostFiles, record: Sessio
             OutlinedTextField(workspace, { workspace = it }, Modifier.fillMaxWidth().padding(vertical = 6.dp), label = { Text("工作区目录") }, singleLine = true, shape = RoundedCornerShape(16.dp), trailingIcon = {
                 IconButton({ pickingWorkspace = true }, enabled = !saving && containers.any { it.config.id == containerId }) { Symbol("folder_open", contentDescription = "浏览容器目录选择工作区") }
             })
-            Text("使用容器内绝对路径。创建后可在聊天页输入任务；不会自动运行示例任务。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp)
-            HostAction(if (saving) "正在保存" else if (record == null) "创建并进入" else "保存修改", "check", {
+            HostAction(if (saving) "正在保存" else "保存修改", "check", {
                 saving = true
-                app.launch { try { val id = if (record == null) app.create(title, containerId, workspace) else { app.editSession(record.id, title, workspace, containerId); record.id }; onSaved(id) } finally { saving = false } }
-            }, Modifier.fillMaxWidth().padding(top = 16.dp), enabled = !saving && containerId.isNotEmpty() && workspace.isNotBlank())
+                app.launch { try { app.editSession(record.id, title, workspace, containerId); onSaved(record.id) } finally { saving = false } }
+            }, Modifier.fillMaxWidth().padding(top = 16.dp), enabled = !saving && title.isNotBlank() && containerId.isNotEmpty() && workspace.isNotBlank())
         }
     }
     if (pickingWorkspace) {

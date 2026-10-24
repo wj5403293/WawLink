@@ -9,7 +9,8 @@
 - UI 文字使用中文；专有名词可以使用英文。相同内容不得同时用中文和英文重复装饰。
 - 文字只保留大号 UI 内容或标题；不添加小号卡片说明、装饰性文本或非必要装饰元素。
 - 不得擅自修改既有显示样式；主页、聊天与框架设置的视觉及非线性动画以 `ref-plan/ref-home.html`、`ref-plan/ref-coding-agent-ui.html`、`ref-plan/ref-agent-setting.html` 为准，新增 Agent 设置以 `ref-plan/agent-settings.html` 为准，功能遵循 `ref-plan/plan.md`。
-- 页面进入保留既有的右侧滑入与非线性曲线；返回时当前页向右滑出、上一级从左侧恢复，不能沿用进入方向。主页底栏按位置定向切换：“会话→容器”向左、“容器→会话”向右。
+- 插件与技能管理分别严格遵循 `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 的布局、控件和非线性交互，不做视觉简化；原型紫色替换为当前主题色，演示数据、模拟加载与假重载不进入实现。
+- 页面进入保留既有的右侧滑入与非线性曲线；返回时当前页向右滑出、上一级从左侧恢复，不能沿用进入方向。主页底栏固定按“会话、功能、容器”排列，功能位于中间、容器左边；按位置定向切换，向右侧页面切换时向左、向左侧页面切换时向右。
 - Android 聊天页状态栏与 AppBar 使用同一背景色并同步滚动变色动画；保留明暗主题的图标对比度和顶部安全区，不重复添加顶部留白。
 - 列表项使用“图标 + 标题 + 副标题（描述）”结构；右侧可放垂直三点按钮打开 popup menu。
 - popup menu 使用“图标 + 标题”结构。聊天右上角设置使用锚定 popup menu，不使用 bottom sheet，保留模型服务、Agent 设置及框架设置三个入口。
@@ -17,6 +18,10 @@
 - 应用默认密度统一校准到原型，主页、聊天和所有设置页共用同一缩放，不在嵌套主题中重复缩放；应用设置提供持久化的“整体缩放”和恢复默认，保留系统字体缩放。当前基线以旧版 115% 为新版 100%；已有 115% 设置迁移为 100%，不得在升级或重启后重复放大。
 - 启动及容器列表更新只读取会话元数据，打开某个会话时才恢复其正文与控制器；主页继续观察已打开的会话，不批量恢复未打开的历史。
 - 未命名会话使用首条用户问题作为标题，过长时截断展示，不覆盖手动命名；主页会话列表长按进入多选。会话内右上角新建直接沿用当前容器与工作区，不弹配置表单且不预设名称。
+- 全应用持久化单个当前容器；点击容器卡片选择，右侧开关独立启停，卡片不再放终端按钮。容器名称单行截断，选中卡片使用主题主色粗边框；新建会话直接使用当前选择容器且无预设名称，未发送消息的空会话离开后不进入持久化列表。
+- 底部“功能”页以双列卡片操作当前容器，内置终端、文件、用户规则、插件与技能。规则通过客体文件服务管理当前用户 `~/.omp/agent/rules/`，使用 Android Sora / Desktop 原生编辑器。功能入口的插件与技能为用户级；会话设置入口为当前工作区的项目级，不允许项目入口隐式修改用户级对象。
+- 自定义功能从当前容器用户 `~/.wawlink/features/<id>/card.json` 发现，必填 `icon`、`title`、`description`，`lifecycle` 可选 `page`（默认）或 `manual`。`start.sh` 前台启动真实同源 WebUI，可选 `stop.sh` 收尾；扫描不执行脚本，离页/手动停止、停止容器与关闭应用按生命周期回收进程组。WebUI 保留白底、中文大字号、Material 3、Google Material Symbols 与非线性动画，跟随主题色；不开放宿主文件、原生 JS 桥或外部来源。
+- 内置 `wawlink-functions` Skill 仅在用户明确要求新增或创建功能页卡片时触发，普通网页、脚本及笼统功能请求不触发；注入已有容器，不覆盖用户修改，不预装示例卡片，不要求重新导入 Rootfs。
 - Agent 配置首屏不等待模型/认证 SDK；模型目录按有界分页传输，仅在编辑时读取完整模型字段。模型配置无效或原生进程退出时结束加载并保留可重试、可修复的界面，不抛到主线程导致闪退。
 - 内置 Provider 的启用状态、OAuth 和操作能力以当前 OMP 原生发现、认证及禁用状态为准，不默认全开，也不对自定义 Provider 显示不支持的 OAuth 或协议功能。内置 Provider 使用稳定颜色与名称首字标识；用户项在前，内置项置底并用分隔线分组，禁用项灰显且在各组内下沉。
 - Provider 配置每次打开从顶部展示；模型服务搜索框与首个列表项保留 16 dp 间距。模型获取按钮显示蓝色“获取模型”并执行实际获取，不用静态目录刷新冒充。删除“读取当前配置档的……”等无实际意义说明及图标；保留必要错误、空态与风险确认。保存失败展示可定位且已脱敏的实际原因，保留全部草稿供修复和重试。
@@ -61,6 +66,7 @@
 
 - `agent-protocol/`：独立 Kotlin 领域模型、会话控制、模型服务与设置契约；仅使用协程状态流，不依赖驱动或容器。
   - `src/commonMain/kotlin/dev/wawlink/protocol/AgentManagement.kt` 定义作用域、来源、Agent、顾问、角色、认证、原始配置与原生管理仓库契约。
+  - 同目录的 `AgentResources.kt` 定义按当前容器、配置档与项目上下文执行原生插件/技能操作的 `AgentResourceRepository`，不依赖模型 SDK。
 - `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonMain/kotlin/dev/wawlink/ui/ModelIcon.kt` 统一离线品牌图标与 ID 字母标识，`src/commonMain/composeResources/files/model-icons/` 保存来源/许可，`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ModelIconTest.kt`、`FeedExpansionStateTest.kt` 和 `MarkdownTest.kt` 覆盖字母标识/颜色区分、展开状态和 Markdown 边界。
   - 同目录的 `AgentPalette.kt`、`AgentPaletteSettings.kt` 提供默认蓝色、Material HCT 种子配色与设置控件；`src/androidMain/kotlin/dev/wawlink/ui/AgentPalette.android.kt` 读取系统动态配色，`src/desktopMain/kotlin/dev/wawlink/ui/AgentPalette.desktop.kt` 明确回退，`AgentPaletteTest.kt` 覆盖明暗配色对比度及 HEX 输入边界。完整 Material Color Utilities 许可随 `src/commonMain/composeResources/files/licenses/material-color-utilities.txt` 打包。
   - 同目录的 `AgentTheme.kt` 提供统一主题、标准表单 sheet，以及参考 WawSSH 的 `AgentActionSheet` / `AgentActionRow` 全宽操作面板与列表行。
@@ -77,6 +83,7 @@
   - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除、无效输入和模型子表单状态保存，以及思考默认值的无操作、整段清除、继承与未知字段保留；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
+  - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpInstallation.kt` 提供容器内安装自检与终端命令，`src/jvmSharedMain/resources/omp-install.sh` 固定 OMP/Bun 来源和完整依赖，分阶段校验真实原生模块与 RPC 后切换安装；缺少 CA 的 APT 基础镜像先通过保留签名校验的临时 HTTP 源安装证书，不修改原软件源或关闭 TLS 校验。`OmpProcessPool.kt` 聚合会话及管理进程故障并暂停/恢复修复关联进程，`src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpInstallationTest.kt` 覆盖引擎故障与缺失安装的区分及自检协议边界。
   - `src/jvmSharedMain/resources/omp-management/diagnostics.mjs` 统一原生配置诊断与敏感值清理，保留字段路径和可得语法位置，不转发源文本片段、凭据或 HTTP 响应正文。
   - `src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpAgentManagementRepositoryTest.kt` 覆盖首屏与模型分阶段加载、无效模型配置修复、原生进程退出后恢复、目录分页完整性及 JSONL 大小/格式边界。
@@ -85,12 +92,15 @@
   - `src/androidUnitTest/kotlin/dev/wawlink/runtime/ContainerFileTextTest.kt` 覆盖文本保存的精确字节与权限、2 MiB 边界、外部修改冲突、链接及挂载根保护与暂存文件清理；运行于 Android JVM，不冒充设备端编辑器或引擎验收。
   - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID 与账户环境。
   - 同目录的 `PtyTransport.kt` 及 `src/androidMain/kotlin/dev/wawlink/runtime/PtyTransport.android.kt`、`src/desktopMain/kotlin/dev/wawlink/runtime/PtyTransport.desktop.kt` 提供两端真实 PTY，`ContainerContract.kt` 定义原始字节读写、调整尺寸与会话回收契约。
+  - 同目录的 `ContainerFeatures.kt` 扫描容器功能声明并监管真实服务及进程组，`ContainerFeatureGateway.kt`、`ContainerFeatureHttpConnection.kt` 提供随机 loopback、每次启动令牌门控的 HTTP/WebSocket 网关与主题/图标注入；`ContainerFeatureSkill.kt` 保存仅明确请求时触发的原生 Skill 与完整扩展契约。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
   - `src/sharedMain/kotlin/dev/wawlink/app/TerminalScreen.kt` 为独立终端导航页，支持一次性授权的 OMP 安装初始命令及离开后的自检刷新；`src/desktopMain/kotlin/dev/wawlink/app/TerminalSurface.desktop.kt` 提供 JediTerm 终端，`src/desktopMain/resources/licenses/` 随桌面分发保留 JediTerm 与 pty4j 许可。`container-runtime/src/jvmSharedTest/kotlin/dev/wawlink/runtime/TerminalInitialCommandTest.kt` 覆盖初始命令与失败后交互式终端保留。
   - `src/sharedMain/kotlin/dev/wawlink/app/ContainerFilesScreen.kt` 移植 WawSSH 独立文件浏览器并提供工作区与附件选择模式；`src/desktopTest/kotlin/dev/wawlink/app/ContainerFileServiceTest.kt` 覆盖文件名、路径、流式字节、覆写与链接边界，不冒充真实引擎验收。
   - `src/sharedMain/kotlin/dev/wawlink/app/HostMounts.kt` 负责主机挂载源访问校验及本机储存卷文档 ID 的边界安全解析；`src/desktopTest/kotlin/dev/wawlink/app/HostMountsTest.kt` 覆盖主储存与可移除卷、路径原名、未知卷、目录越界及已有文件挂载。
   - 同目录的 `ContainerFileActions.kt` 为文件浏览器与模型路径链接共用 MIME、宿主文件名和流式打开/下载操作；`WawLinkApp.kt` 提供当前会话的文件路径处理。
-  - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、上下文内直接新建、持久化整体缩放与配色，以及 OMP 安装修复提示去重和一次性授权，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
+  - 同目录的 `ContainerFeaturesScreen.kt` 提供双列内置/扩展卡片，`ContainerRulesScreen.kt` 提供真实规则文件管理和原生编辑，`ContainerExtensionScreen.kt` 提供服务启停与生命周期导航；`src/desktopMain/kotlin/dev/wawlink/app/ContainerWebSurface.desktop.kt` 使用 JavaFX WebView，Android 对应实现在 `app-android/src/main/kotlin/dev/wawlink/app/ContainerWebSurface.android.kt`，仅允许当前功能的确切 loopback 来源。
+  - 同目录的 `PluginManagementScreen.kt`、`PluginComponents.kt`、`PluginEditors.kt` 实现插件原型与真实管理；`SkillManagementScreen.kt`、`SkillComponents.kt`、`SkillUiState.kt`、`SkillDraft.kt`、`SkillEditorPage.kt`、`SkillPackagePages.kt`、`SkillAuthorPages.kt` 实现技能原型、原文编辑、市场及发布维护。两页按入口固定用户/项目上下文，配置变更明确提示新会话生效，不伪造已加载状态。
+  - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、当前单容器持久化、直接新建与空会话清理、持久化整体缩放与配色，以及 OMP 安装修复提示去重和一次性授权，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。
   - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载、APK 安装及主机挂载目录选择，按 Android 版本处理共享储存授权与本机储存卷路径；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。
@@ -101,6 +111,7 @@
   - `ref-plan/agent-settings-capabilities.md`：以 OMP 18.12.6 为基准的 Agent 与 Models 设置原型能力清单，涵盖作用域、定义、角色、模型服务及高级配置；仅作设计能力说明，不代表已实现。
   - `ref-plan/plugin-skill-management-capabilities.md`：以本机 OMP 18.12.6 及同版本源码为依据的插件与 Skill 双页面功能边界调研，覆盖市场、npm/Git/本地来源、作用域、加载与更新、发布维护、安全和 RPC 接入限制；区分实测、源码能力与设计建议，不代表界面已实现。
   - `ref-plan/agent-settings.html`：新增 Agent 设置的完整视觉与交互原型，保留原文件，不修改演示数据。
+  - `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 为插件与技能管理的完整视觉和交互原型；保留原文件，不修改演示数据。
 - `README.md`：构建运行、独立 UI 接入、能力边界、产物与已验证范围。
 - `scripts/USAGE.txt`：固定输入、免 Docker 构建、原生程序加载与上游许可说明。
 

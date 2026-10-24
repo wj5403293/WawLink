@@ -47,6 +47,8 @@ fun AgentChatScreen(
     onOpenFrameworkSettings: () -> Unit,
     onPickFiles: suspend () -> List<AttachmentFile>,
     onPickContainerFiles: suspend () -> List<AttachmentFile>,
+    onOpenProjectPlugins: () -> Unit,
+    onOpenProjectSkills: () -> Unit,
     appearance: AgentAppearance = AgentAppearance(),
 ) {
     val inheritedColors = if (LocalAgentThemeProvided.current && LocalAgentAppearance.current == appearance) LocalAgentColors.current else null
@@ -180,6 +182,9 @@ fun AgentChatScreen(
                                 ManagementMenuItem(text = { Text("模型服务") }, leadingIcon = { Symbol("deployed_code") }, onClick = { settingsMenu = false; onOpenProviderSettings() })
                                 ManagementMenuItem(text = { Text("Agent 设置") }, leadingIcon = { Symbol("smart_toy") }, onClick = { settingsMenu = false; onOpenAgentSettings() })
                                 ManagementMenuItem(text = { Text("框架设置") }, leadingIcon = { Symbol("tune") }, onClick = { settingsMenu = false; onOpenFrameworkSettings() })
+                                HorizontalDivider()
+                                ManagementMenuItem(text = { Text("项目插件管理") }, leadingIcon = { Symbol("extension") }, onClick = { settingsMenu = false; onOpenProjectPlugins() })
+                                ManagementMenuItem(text = { Text("项目技能管理") }, leadingIcon = { Symbol("school") }, onClick = { settingsMenu = false; onOpenProjectSkills() })
                             }
                         }
                     }

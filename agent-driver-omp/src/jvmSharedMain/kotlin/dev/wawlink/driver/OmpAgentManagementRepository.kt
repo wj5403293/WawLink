@@ -29,6 +29,7 @@ internal class OmpAgentManagementRepository(
     private val pins: suspend () -> Map<String, String>,
     private val applyDefault: suspend (ManagedRole) -> Unit,
     private val runtimeFailure: (String) -> Unit,
+    loadInitially: Boolean = true,
 ) : AgentManagementRepository, AutoCloseable {
     private val job = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + job + Dispatchers.IO)
@@ -49,7 +50,43 @@ internal class OmpAgentManagementRepository(
     private val parkGeneration = AtomicLong()
     private val versions = mutableMapOf<String, String>()
 
-    init { scope.launch { reload() } }
+    init { if (loadInitially) scope.launch { reload() } }
+
+    val resources: AgentResourceRepository = object : AgentResourceRepository {
+        override val context: AgentConfigurationContext get() = this@OmpAgentManagementRepository.context
+        override suspend fun request(operation: String, arguments: Map<String, Any?>): Map<String, Any?> {
+            require(operation.startsWith("plugins.") || operation.startsWith("skills.")) { "未知的资源管理操作" }
+            suspend fun perform(): Map<String, Any?> {
+                val result = try {
+                    this@OmpAgentManagementRepository.request(operation, arguments).configMap()
+                } catch (failure: Exception) {
+                    val mayHaveWritten = when (operation) {
+                        "plugins.install", "plugins.uninstall", "plugins.upgrade", "plugins.upgradeMarket",
+                        "plugins.enable", "plugins.features", "plugins.setting", "plugins.autoUpdate",
+                        "plugins.marketAdd", "plugins.marketUpdate", "plugins.marketRemove" -> true
+                        "skills.setSetting", "skills.disable", "skills.create", "skills.save", "skills.delete", "skills.copy",
+                        "skills.importDirectory", "skills.repairPackageFile", "skills.install", "skills.restore",
+                        "skills.update", "skills.uninstall", "skills.bumpVersion" -> true
+                        "plugins.doctor" -> arguments["fix"] == true
+                        else -> false
+                    }
+                    if (mayHaveWritten) withContext(NonCancellable) {
+                        changed(if (context.projectPath == null) ConfigurationScope.GLOBAL else ConfigurationScope.PROJECT, emptySet())
+                    }
+                    throw failure
+                }
+                if (result["changed"] == true) changed(
+                    if (result["scope"] == "PROJECT") ConfigurationScope.PROJECT else ConfigurationScope.GLOBAL,
+                    emptySet(),
+                )
+                return result
+            }
+            return withContext(Dispatchers.IO) {
+                if (operation == "plugins.cancel" || operation == "skills.cancel") perform()
+                else operations.withLock { ompConfigMutex.withLock { perform() } }
+            }
+        }
+    }
 
     private suspend fun start() = lifecycle.withLock {
         check(!closed) { "Agent management is closed" }
@@ -58,7 +95,7 @@ internal class OmpAgentManagementRepository(
         val root = directory()
         val destination = File(root, "wawlink/management")
         require(destination.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Management bridge path escapes container" }
-        for (name in listOf("bootstrap.mjs", "main.mjs", "agents.ts", "auth-models.ts", "diagnostics.mjs")) {
+        for (name in listOf("bootstrap.mjs", "main.mjs", "agents.ts", "auth-models.ts", "diagnostics.mjs", "plugins.ts", "plugin-native.mjs", "plugin-worker.ts", "skills.ts", "skill-files.ts", "skill-registry.ts")) {
             val source = requireNotNull(javaClass.getResourceAsStream("/omp-management/$name")) { "Missing bundled native management bridge" }.bufferedReader().use { it.readText() }
             val file = File(destination, name)
             if (!file.exists() || file.readText() != source) repoAtomicWrite(file, source)

@@ -4,6 +4,7 @@ import dev.wawlink.protocol.*
 import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.ContainerFileService
+import dev.wawlink.runtime.installContainerFeatureSkill
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.CodingErrorAction
@@ -44,6 +45,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     private val providerRepositories = LinkedHashMap<String, OmpProviderRepository>()
     private val settingsRepositories = LinkedHashMap<String, OmpSettingsRepository>()
     private val managementRepositories = LinkedHashMap<Triple<String, String?, String?>, OmpAgentManagementRepository>()
+    private val resourceRepositories = LinkedHashMap<Triple<String, String?, String?>, OmpAgentManagementRepository>()
     private var closed = false
     private val issueSequence = AtomicLong()
     private val mutableRuntimeIssues = MutableStateFlow<Map<String, OmpRuntimeIssue>>(emptyMap())
@@ -68,7 +70,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         val (chat, management) = synchronized(this@OmpProcessPool) {
             check(!closed) { "进程池已关闭" }
             sessions.values.filter { it.containerId == containerId } to
-                managementRepositories.filterKeys { it.first == containerId }.values.toList()
+                (managementRepositories.filterKeys { it.first == containerId }.values + resourceRepositories.filterKeys { it.first == containerId }.values).toList()
         }
         (chat.map { async { it.parkForRepair() } } + management.map { async { it.park() } }).awaitAll()
     }
@@ -156,6 +158,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val owned = ownedSessionDirectory(source.containerId, id)
             if (owned.exists()) deleteOwnedTree(owned)
         }
+        val ownedBridges = synchronized(this@OmpProcessPool) {
+            val removed = managementRepositories.filterKeys { it.third == id }.values.toList() +
+                resourceRepositories.filterKeys { it.third == id }.values.toList()
+            managementRepositories.keys.removeAll { it.third == id }
+            resourceRepositories.keys.removeAll { it.third == id }
+            removed
+        }
+        ownedBridges.forEach { it.close() }
         for (file in listOf(journalFile(id), metadataFile(id))) check(!file.exists() || file.delete()) { "无法删除会话记录：${file.name}" }
     }
 
@@ -203,6 +213,26 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 runtimeFailure = { message -> reportRuntimeIssue(containerId, message) },
             )
         }
+    }
+
+    /** Resource discovery owns a separate bridge so model/OAuth SDK work cannot block its first screen. */
+    @Synchronized
+    fun resources(containerId: String, workspace: String? = null, sessionId: String? = null): AgentResourceRepository {
+        check(!closed)
+        val project = workspace?.let(::normalizeGuest)
+        val configuration = config(containerId)
+        if (sessionId != null) require(sessions[sessionId]?.let { it.containerId == containerId && it.workspace == project } == true) { "会话不属于当前资源作用域" }
+        return resourceRepositories.getOrPut(Triple(containerId, project, sessionId)) {
+            OmpAgentManagementRepository(runtime, AgentConfigurationContext(containerId, configuration.name, projectPath = project, sessionId = sessionId),
+                { agentDirectory(containerId) }, { guest, write -> resolveWorkspace(containerId, guest, write) }, scope,
+                changed = { changedScope, _ ->
+                    val affected = synchronized(this) { sessions.values.filter { it.containerId == containerId && (changedScope == ConfigurationScope.GLOBAL || it.workspace == project) } }
+                    affected.forEach { it.markConfigurationChanged() }
+                },
+                pin = { _, _ -> error("资源管理不提供模型账户操作") }, pins = { emptyMap() }, applyDefault = {},
+                runtimeFailure = { message -> reportRuntimeIssue(containerId, message) }, loadInitially = false,
+            )
+        }.resources
     }
 
     private suspend fun configurationChanged(containerId: String, key: String?, value: Any?) {
@@ -255,6 +285,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             providerRepositories.values.forEach { it.close() }
             settingsRepositories.values.forEach { it.close() }
             managementRepositories.values.forEach { it.close() }
+            resourceRepositories.values.forEach { it.close() }
         }
         scope.cancel()
     }
@@ -802,6 +833,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             directory.mkdirs()
             val workspaceDirectory = resolveWorkspace(containerId, workspace)
             if (!workspaceDirectory.exists()) check(resolveWorkspace(containerId, workspace, write = true).mkdirs()) { "无法创建工作区" }
+            installContainerFeatureSkill(runtime, containerId)
             val history = newestHistory(directory)
             sessionFile = history?.let { guestSessionDirectory(id) + "/" + it.name }
             val args = mutableListOf("omp", "--mode", "rpc-ui", "--cwd", workspace, "--session-dir", guestSessionDirectory(id), "--approval-mode", if (state.value.autoApprove) "yolo" else "always-ask")

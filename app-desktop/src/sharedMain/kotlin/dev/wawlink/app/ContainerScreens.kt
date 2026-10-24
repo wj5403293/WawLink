@@ -13,6 +13,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.wawlink.runtime.*
@@ -29,10 +33,11 @@ internal fun bytesLabel(bytes: Long): String = when {
     val color = when (distro.lowercase()) { "ubuntu" -> Color(0xFFD9460F); "debian" -> Color(0xFFA80030); "alpine" -> Color(0xFF0D597F); "arch" -> Color(0xFF1793D1); "fedora" -> Color(0xFF294172); "kali" -> Color(0xFF268BEE); else -> MaterialTheme.colorScheme.primary }
     Box(Modifier.size(48.dp).background(color, RoundedCornerShape(if (round) 24.dp else 16.dp)), contentAlignment = Alignment.Center) { Text(distro.take(1).uppercase(), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
 }
-@Composable internal fun ContainersHome(app: AppCoordinator, onDetail: (String) -> Unit, onTerminal: (String) -> Unit) {
+@Composable internal fun ContainersHome(app: AppCoordinator, onDetail: (String) -> Unit) {
     val containers by app.runtime.containers.collectAsState()
     val deployments by app.runtime.deployments.collectAsState()
     val sessions by app.sessions.collectAsState()
+    val selectedContainerId by app.selectedContainerId.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf("全部容器") }
     var filterMenu by remember { mutableStateOf(false) }
@@ -64,14 +69,17 @@ internal fun bytesLabel(bytes: Long): String = when {
         if (visible.isEmpty()) EmptyHost("没有匹配的容器", "deployed_code")
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             visible.forEach { c ->
-                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(20.dp))) {
-                    Row(Modifier.fillMaxWidth().clickable { onDetail(c.config.id) }.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                val selected = c.config.id == selectedContainerId
+                val shape = RoundedCornerShape(20.dp)
+                Column(Modifier.fillMaxWidth().clip(shape).background(MaterialTheme.colorScheme.surfaceContainerLow)
+                    .border(if (selected) 3.dp else 0.dp, if (selected) MaterialTheme.colorScheme.primary else Color.Transparent, shape)) {
+                    Row(Modifier.fillMaxWidth().selectable(selected = selected, role = Role.RadioButton) { app.launch { app.selectContainer(c.config.id) } }.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         DistroAvatar(c.config.distro, c.running)
                         Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Text(c.config.name, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f)); if (c.config.isDefault) Symbol("verified", size = 20.dp, tint = MaterialTheme.colorScheme.primary) }
+                            Text(c.config.name, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Row(Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) { Meta("terminal", "${c.config.distro} ${c.config.version}"); Meta("hard_drive", bytesLabel(c.sizeBytes)); Meta("forum", "${sessions.count { it.record.containerId == c.config.id && !it.record.archived }}") }
                         }
-                        AgentIconButton("terminal", "打开 ${c.config.name} 终端", { onTerminal(c.config.id) })
+                        AgentIconButton("more_vert", "${c.config.name} 容器设置", { onDetail(c.config.id) })
                         Switch(c.running, { run -> app.launch { if (run) app.runtime.start(c.config.id) else app.runtime.stop(c.config.id) } })
                     }
                     c.error?.let { Text(it, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
@@ -192,7 +200,7 @@ internal fun bytesLabel(bytes: Long): String = when {
             Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(26.dp)).padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) { DistroAvatar(c.distro, info.running); Column { Text("${c.distro} ${c.version}", fontSize = 19.sp, fontWeight = FontWeight.SemiBold); Text("${c.arch} · ${bytesLabel(info.sizeBytes)} · ${if (info.running) "运行中" else "已休眠"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DetailAction(if (c.isDefault) "默认容器" else "设为默认", "verified", c.isDefault) { app.launch { app.runtime.setDefault(c.id) } }
+                    DetailAction(if (c.isDefault) "当前容器" else "选择容器", "check_circle", c.isDefault) { app.launch { app.selectContainer(c.id) } }
                     DetailAction("文件", "folder_open") { onFiles(c.id) }
                     DetailAction("终端", "terminal") { onTerminal(c.id) }
                     DetailAction("安装 / 修复 OMP", "build") { app.requestOmpInstallation(c.id) }

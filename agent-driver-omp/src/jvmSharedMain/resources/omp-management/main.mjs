@@ -130,6 +130,8 @@ async function dispatch(op,args) {
   if(op==="modelDetails")return (await auth()).modelDetails(ctx,args.provider,args.modelId);
   if(op==="modelDefaults")return (await auth()).modelDefaults(args.provider,args.modelId,args.api);
   if(op==="fetchProviderModels")return (await auth()).dispatch(op,args,ctx);
+  if(op.startsWith("plugins."))return (await import("./plugins.ts")).dispatch(op,args,ctx);
+  if(op.startsWith("skills."))return (await import("./skills.ts")).dispatch(op,args,ctx);
   if(op==="validateSettings")return validate(args.changes);
   if(op==="updateSettings"){await ctx.editSettings(args.scope,args.changes);return true;}
   if(op==="writeDocument"){await ctx.atomicWrite(args.path,args.content,args.expectedVersion);return true;}
@@ -159,6 +161,6 @@ input.on("line",line=>{
       send({id:message.id,result:{...metadata,modelsCount:models.length}});
     } else send({id:message.id,result});
   }catch(error){const safe=error instanceof ManagementDiagnostic?error.message:error instanceof Error&&/^(UNAVAILABLE|CONFLICT): [\w .,:;/()@-]+$/.test(error.message)?error.message:`Native ${message.op.replace(/[^a-zA-Z]/g,"")} operation failed; check the selected configuration and capability availability`;send({id:message.id,error:safe});}};
-  if(["answerLogin","cancelLogin"].includes(message.op))void execute();else chain=chain.then(execute);
+  if(["answerLogin","cancelLogin","plugins.cancel","skills.cancel"].includes(message.op))void execute();else chain=chain.then(execute);
 });
 input.on("close",async()=>{try{if(authentication)await (await authentication).dispatch("cancelLogin",{},ctx);}finally{process.exit(0);}});
