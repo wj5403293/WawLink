@@ -268,14 +268,17 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         env.remove("LD_PRELOAD")
         if (paths.isAndroid) {
             val native = paths.nativeLibraryDir ?: error("缺少 Android 原生库目录")
-            // Proroot discovers its sibling libraries itself; Android's library search path
-            // must not leak into the glibc environment retained for its runtime hooks.
+            // Keep Android's library search path out of the retained guest glibc hooks.
             if (engine == ContainerEngineType.PROROOT) env.remove("LD_LIBRARY_PATH")
             else env["LD_LIBRARY_PATH"] = if (engine == ContainerEngineType.PROOT) prootLibraryPath else native.path
             if (engine == ContainerEngineType.PROOT) {
                 env["PROOT_LOADER"] = nativeBinary("libproot_loader.so")
             }
-            if (engine == ContainerEngineType.PROROOT) env["PROROOT_TMP_DIR"] = File(paths.dataDir, "tmp").apply { mkdirs() }.path
+            if (engine == ContainerEngineType.PROROOT) {
+                env["PROROOT_TMP_DIR"] = File(paths.dataDir, "tmp").apply { mkdirs() }.path
+                env["PROROOT_LIB_PATH"] = nativeBinary("libproroot-runtime.so")
+                env["PROROOT_LINKER_PATH"] = nativeBinary("libproroot-linker.so")
+            }
             env["PROOT_TMP_DIR"] = File(paths.dataDir, "tmp").apply { mkdirs() }.path
         } else {
             env["QEMU_CPU"] = "max"

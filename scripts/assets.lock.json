@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "prorootVersion": "1.2.8",
-  "prorootSource": "c01039ab017448263a4ddbd9221ecb88e737553c",
+  "prorootVersion": "andClaw-2.3.47",
+  "prorootSource": "376460cc8e76f1652f51493de5180daceecb78c7",
   "prorootLicense": {
     "url": "https://raw.githubusercontent.com/coderredlab/proroot/c01039ab017448263a4ddbd9221ecb88e737553c/README.md",
     "sha256": "2828473d074c326fce46bad4269627a133f1e70c808acb940a6cf102aece4236"
@@ -10,27 +10,27 @@
     {
       "sha256": "1c5bc9537a270e8bf8b1c70222813f57b60b828bfb5503ddf8fe37685092de2f",
       "destination": "libproroot-bridge.so",
-      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot-bridge.so"
+      "url": "https://raw.githubusercontent.com/coderredlab/andClaw/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a/libproroot-bridge.so"
     },
     {
-      "sha256": "51a0ec5bfed00e572a0de09e22d9057e2befc386b78e426613d3e0ab03f4ecee",
+      "sha256": "b1e1e103d98572a95554a63dff16b38844ae8734f485030597edea70a5c34334",
       "destination": "libproroot-linker.so",
-      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot-linker.so"
+      "url": "https://raw.githubusercontent.com/coderredlab/andClaw/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a/libproroot-linker.so"
     },
     {
-      "sha256": "8c47a0a7db32d84c179ebb5bf3640f655a3181860ece5886ae44d92858730c34",
+      "sha256": "eb736c4899ee52be02af5e23f965e49a184c9d8d749d9119f3ba0053ae66935f",
       "destination": "libproroot-runtime.so",
-      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot-runtime.so"
+      "url": "https://raw.githubusercontent.com/coderredlab/andClaw/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a/libproroot-runtime.so"
     },
     {
-      "sha256": "06c6624db3bdc45b9ced151cd781df439a37b47731d244b93e9d6a58cd48cde0",
+      "sha256": "e8b02850a26eec86859f03ec81d186f990f652ddf95ad2e99da9ed9bc5026567",
       "destination": "libproroot-stub-loader.so",
-      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot-stub-loader.so"
+      "url": "https://raw.githubusercontent.com/coderredlab/andClaw/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a/libproroot-stub-loader.so"
     },
     {
-      "sha256": "a4e74d75b66cdc02b080adfe863dbf9951c3b30610d77beddc95488d5fe5de01",
+      "sha256": "c676272495e148cca4e50545d95a72b73c46717be9e466c4f500214725c068e7",
       "destination": "libproroot.so",
-      "url": "https://github.com/coderredlab/proroot/releases/download/v1.2.8/libproroot.so"
+      "url": "https://raw.githubusercontent.com/coderredlab/andClaw/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a/libproroot.so"
     }
   ],
   "termux": [

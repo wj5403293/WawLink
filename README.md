@@ -104,6 +104,7 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - `models.yml` / `config.yml` 位于容器用户的 `~/.omp/agent/`，支持应用写入和外部修改回流。模型服务配置可能含 API Key，应留在本地数据目录，不要提交版本控制。
 - Proroot 上游仅提供 Android arm64 版本；桌面使用真实 PRoot/QEMU 或具备 Root 权限的 chroot，不伪装支持 Proroot。
 - Proroot 参照 DSHA 的显式 `host:guest` 绑定方式修复 `/dev` 等默认路径启动报错，工作区与自定义挂载同样显式映射。修复位于宿主启动参数，无需重新导入 Rootfs。
+- Proroot 五库固定为作者 [andClaw 2.3.47 的同一提交](https://github.com/coderredlab/andClaw/tree/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a)，逐文件校验 SHA-256 并原样打包；启动时显式选择当前 APK 配套的 runtime/linker，避免自动发现混用旧组件。该更新修复旧 syscall relay 破坏寄存器导致的 Bun 崩溃及原生模块加载失败；保留原 Bun、OMP 和 Rootfs，无需禁用缓存、屏蔽错误或加入兼容 shim，更新 APK 即可生效。
 - 容器详情按原型重置操作按钮、工具链卡片、主题色分段控件和挂载 bottom sheet；保留原有功能。普通登录身份可填写容器中已有的用户名或数字 UID，实际启动使用该账户的 UID/GID、HOME、USER 与 LOGNAME，不固定为 `user`，不自动创建账户。
 - 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，并在停止容器时回收所属进程、卸载挂载点。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
@@ -258,7 +259,11 @@ Provider 与默认缩放调整后通过 253 项 Kotlin 回归（Desktop UI 58、
 
 真实 arm64 PRoot/QEMU 另验证 root 身份和宿主补充组、非空目录递归删除、整批删除前的链接子树拒绝且其他目标不受影响、宿主绑定文件删除被拒绝且哨兵不变、显式允许的挂载导入、PNG 字节流及数字 UID 65534 解析为 `nobody` 与其实际 HOME。未调用模型推理、登录或复制开发机凭据。
 
-开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。
+2026-10-24 已在 Android 真机、同一份已导入 Ubuntu Rootfs 上验证 Proroot/Bun 修复：极小内联 `openat` 探针保留 x16/x17，Bun 1.3.14 的 `stat/readFile/readdir` 正常，原生模块版本导出为 `18.12.6`；默认缓存下 `omp --version` 返回 `omp/18.12.6`，`rpc-ui --no-session` 的 `get_state` 和原生命令目录请求均成功。原生 TUI `omp --no-session` 正常显示版本、模型与输入区，Ctrl-D 正常退出。未发送模型推理请求、未复制认证、未使用模拟器；本次不将 Rootfs 手动导入、其他 Android UI 交互或 Root/chroot 挂载卸载标为已验收。
+
+本次通过 30 项容器回归，无失败、错误或跳过；Android Debug APK 构建与签名校验通过，仅含 arm64-v8a 原生库、不含 Rootfs。APK 内五库与上述真机验收的上游原文件逐字节一致。真机验证使用独立临时目录，未覆盖安装用户现有应用；交付更新 APK 后重新打开应用及容器终端即可，无需重导入 Rootfs。
+
+符号诊断以当前 `PROROOT_LIB_PATH` 指向的实际 runtime 为准，并原样保留直接调用 libc 的对比结果；后者在新版 Proroot 中仍返回空地址，不能用它断言 OMP 缺少 N-API。实际 runtime 的符号解析与真实原生模块加载均已通过。探针使用 64 位整数保留主程序伪句柄 `-2`，避免经 FFI 指针浮点转换后截断。
 
 Markdown 代码胶囊与表格视觉参数参照 [Kelivo 的固定版本](https://github.com/Chevey339/kelivo/tree/199647a5d718ed47783dde405007e4c080efdec5/dependencies/markstream)，使用 Compose 独立实现，未复制其 AGPL 代码或资源；正文及 Ask 共用图像全屏与原文件保存入口。
 

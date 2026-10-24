@@ -103,19 +103,25 @@ share an inode and can require additional storage; archive path checks still app
 
 Android native integration
 --------------------------
-The five official coderredlab/proroot1.2.8 files are kept byte-for-byte unchanged:
+The five official Proroot files from coderredlab/andClaw 2.3.47 are unchanged:
   libproroot.so
   libproroot-runtime.so
   libproroot-bridge.so
   libproroot-linker.so
   libproroot-stub-loader.so
 
-Upstream: https://github.com/coderredlab/proroot/releases/tag/v1.2.8
+Pinned source: https://github.com/coderredlab/andClaw/tree/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a
+The version label identifies this upstream application snapshot, not a standalone
+Proroot release. Each file's URL and SHA-256 are pinned in assets.lock.json.
 License: proprietary, free to use in projects; modified binary redistribution is
 not allowed. Proroot-upstream-notice.txt preserves the full pinned upstream notice.
 The app MUST disable native stripping (keepDebugSymbols **/*.so) and package all
-five side-by-side. Invoke libproroot.so -r ROOTFS -0 --link2symlink -w /workspace ...
-and set PROROOT_TMP_DIR to app filesDir. Other four libraries are auto-discovered.
+five side-by-side. Invoke libproroot.so -r ROOTFS -0 -w /workspace with explicit
+host:guest bindings, including -b /dev:/dev -b /proc:/proc -b /sys:/sys.
+Set PROROOT_TMP_DIR=appDataDir/tmp and select the matching installed components:
+  PROROOT_LIB_PATH=nativeDir/libproroot-runtime.so
+  PROROOT_LINKER_PATH=nativeDir/libproroot-linker.so
+Do not rely on automatic component selection or retain paths from an older APK.
 Do not use the obsolete libproroot_hook.so name or fictitious PROROOT_ROOTFS API.
 The runtime library uses guest glibc; do not load it with Android System.loadLibrary.
 

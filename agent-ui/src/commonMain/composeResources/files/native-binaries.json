@@ -1,5 +1,5 @@
 {
-  "prorootVersion": "1.2.8",
+  "prorootVersion": "andClaw-2.3.47",
   "files": [
     {
       "file": "libandroid-shmem.so",
@@ -28,23 +28,23 @@
     },
     {
       "file": "libproroot-linker.so",
-      "sha256": "51a0ec5bfed00e572a0de09e22d9057e2befc386b78e426613d3e0ab03f4ecee",
+      "sha256": "b1e1e103d98572a95554a63dff16b38844ae8734f485030597edea70a5c34334",
       "bytes": 79408
     },
     {
       "file": "libproroot-runtime.so",
-      "sha256": "8c47a0a7db32d84c179ebb5bf3640f655a3181860ece5886ae44d92858730c34",
-      "bytes": 375120
+      "sha256": "eb736c4899ee52be02af5e23f965e49a184c9d8d749d9119f3ba0053ae66935f",
+      "bytes": 378472
     },
     {
       "file": "libproroot-stub-loader.so",
-      "sha256": "06c6624db3bdc45b9ced151cd781df439a37b47731d244b93e9d6a58cd48cde0",
-      "bytes": 144144
+      "sha256": "e8b02850a26eec86859f03ec81d186f990f652ddf95ad2e99da9ed9bc5026567",
+      "bytes": 144184
     },
     {
       "file": "libproroot.so",
-      "sha256": "a4e74d75b66cdc02b080adfe863dbf9951c3b30610d77beddc95488d5fe5de01",
-      "bytes": 43624
+      "sha256": "c676272495e148cca4e50545d95a72b73c46717be9e466c4f500214725c068e7",
+      "bytes": 48032
     },
     {
       "file": "libtalloc.so",
