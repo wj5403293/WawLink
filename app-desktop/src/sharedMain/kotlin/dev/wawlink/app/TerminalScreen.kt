@@ -13,20 +13,24 @@ import kotlinx.coroutines.*
 
 /** A separate destination: no chat renderer, command input field, or bottom sheet. */
 @Composable
-internal fun TerminalScreen(app: AppCoordinator, config: ContainerConfig, onBack: () -> Unit) {
-    var session by remember(config.id) { mutableStateOf<TerminalSession?>(null) }
-    var error by remember(config.id) { mutableStateOf<String?>(null) }
-    LaunchedEffect(config.id) {
+internal fun TerminalScreen(app: AppCoordinator, config: ContainerConfig, onBack: () -> Unit, installationId: String? = null) {
+    var session by remember(config.id, installationId) { mutableStateOf<TerminalSession?>(null) }
+    var error by remember(config.id, installationId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(config.id, installationId) {
         var opened: TerminalSession? = null
         try {
             // Preserve ownership even if navigation cancels while the engine is starting.
-            withContext(NonCancellable + Dispatchers.IO) { opened = app.runtime.openTerminal(config.id) }
+            withContext(NonCancellable + Dispatchers.IO) { opened = app.openTerminal(config.id, installationId) }
             ensureActive()
             session = opened
             awaitCancellation()
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { error = failure.message ?: failure.toString() }
-        finally { opened?.close(); session = null }
+        finally {
+            opened?.close()
+            session = null
+            app.finishOmpInstallation(config.id, installationId, opened)
+        }
     }
     val colors = MaterialTheme.colorScheme.copy(surface = Color.White, background = Color.White)
     MaterialTheme(colorScheme = colors) {

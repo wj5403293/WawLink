@@ -55,6 +55,7 @@
 - PRoot/Proroot 启动前按宿主补充 GID 为容器追加缺失的组名，不覆盖已有组记录，不隐藏 `groups` 错误；既有动态 DNS 修复继续适用，更新 APK 不要求重新导入 Rootfs。
 - Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。
 - Proroot 五库按作者同一固定来源整套校验并原样打包；启动显式指定当前 APK 配套的 runtime/linker，不混用旧组件。OMP/Bun 启动修复须验证真实原生模块与 RPC，不靠屏蔽错误、禁用原生模块或伪造成功输出，也不要求重建已有 Rootfs。
+- 在线镜像安装完成后检查容器内 OMP，缺失或损坏时弹出安装/修复确认；OMP 运行进程或原生管理桥故障也须提示。只有用户同意才打开独立真实 PTY 终端并自动执行随应用打包的安装脚本，取消不执行，重组不重复安装。保留已有配置、认证、工作区与会话，安装失败保留终端真实原因；不要求重导入 Rootfs，也不复制宿主认证。
 
 ## 项目结构与索引
 
@@ -76,6 +77,7 @@
   - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除、无效输入和模型子表单状态保存，以及思考默认值的无操作、整段清除、继承与未知字段保留；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
+  - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpInstallation.kt` 提供容器内安装自检与终端命令，`src/jvmSharedMain/resources/omp-install.sh` 固定 OMP/Bun 来源和完整依赖，分阶段校验真实原生模块与 RPC 后切换安装；缺少 CA 的 APT 基础镜像先通过保留签名校验的临时 HTTP 源安装证书，不修改原软件源或关闭 TLS 校验。`OmpProcessPool.kt` 聚合会话及管理进程故障并暂停/恢复修复关联进程，`src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpInstallationTest.kt` 覆盖引擎故障与缺失安装的区分及自检协议边界。
   - `src/jvmSharedMain/resources/omp-management/diagnostics.mjs` 统一原生配置诊断与敏感值清理，保留字段路径和可得语法位置，不转发源文本片段、凭据或 HTTP 响应正文。
   - `src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpAgentManagementRepositoryTest.kt` 覆盖首屏与模型分阶段加载、无效模型配置修复、原生进程退出后恢复、目录分页完整性及 JSONL 大小/格式边界。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端；`src/jvmSharedMain/kotlin/dev/wawlink/runtime/RuntimeDns.kt` 负责边界安全的原子 DNS 更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeDnsTest.kt` 覆盖链接边界与配置切换。
@@ -84,11 +86,11 @@
   - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID 与账户环境。
   - 同目录的 `PtyTransport.kt` 及 `src/androidMain/kotlin/dev/wawlink/runtime/PtyTransport.android.kt`、`src/desktopMain/kotlin/dev/wawlink/runtime/PtyTransport.desktop.kt` 提供两端真实 PTY，`ContainerContract.kt` 定义原始字节读写、调整尺寸与会话回收契约。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
-  - `src/sharedMain/kotlin/dev/wawlink/app/TerminalScreen.kt` 为独立终端导航页，`src/desktopMain/kotlin/dev/wawlink/app/TerminalSurface.desktop.kt` 提供 JediTerm 终端；`src/desktopMain/resources/licenses/` 随桌面分发保留 JediTerm 与 pty4j 许可。
+  - `src/sharedMain/kotlin/dev/wawlink/app/TerminalScreen.kt` 为独立终端导航页，支持一次性授权的 OMP 安装初始命令及离开后的自检刷新；`src/desktopMain/kotlin/dev/wawlink/app/TerminalSurface.desktop.kt` 提供 JediTerm 终端，`src/desktopMain/resources/licenses/` 随桌面分发保留 JediTerm 与 pty4j 许可。`container-runtime/src/jvmSharedTest/kotlin/dev/wawlink/runtime/TerminalInitialCommandTest.kt` 覆盖初始命令与失败后交互式终端保留。
   - `src/sharedMain/kotlin/dev/wawlink/app/ContainerFilesScreen.kt` 移植 WawSSH 独立文件浏览器并提供工作区与附件选择模式；`src/desktopTest/kotlin/dev/wawlink/app/ContainerFileServiceTest.kt` 覆盖文件名、路径、流式字节、覆写与链接边界，不冒充真实引擎验收。
   - `src/sharedMain/kotlin/dev/wawlink/app/HostMounts.kt` 负责主机挂载源访问校验及本机储存卷文档 ID 的边界安全解析；`src/desktopTest/kotlin/dev/wawlink/app/HostMountsTest.kt` 覆盖主储存与可移除卷、路径原名、未知卷、目录越界及已有文件挂载。
   - 同目录的 `ContainerFileActions.kt` 为文件浏览器与模型路径链接共用 MIME、宿主文件名和流式打开/下载操作；`WawLinkApp.kt` 提供当前会话的文件路径处理。
-  - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、上下文内直接新建及持久化整体缩放与配色，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
+  - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、上下文内直接新建、持久化整体缩放与配色，以及 OMP 安装修复提示去重和一次性授权，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。
   - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载、APK 安装及主机挂载目录选择，按 Android 版本处理共享储存授权与本机储存卷路径；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。

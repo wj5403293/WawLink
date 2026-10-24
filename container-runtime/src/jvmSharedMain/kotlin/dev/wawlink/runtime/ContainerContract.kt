@@ -67,6 +67,7 @@ interface ContainerRuntime : AutoCloseable {
     suspend fun changeToolchain(id: String, toolId: String, install: Boolean): String
     suspend fun execute(id: String, command: String, cwd: String = "/workspace"): String
     suspend fun openProcess(id: String, arguments: List<String>, cwd: String = "/workspace", environment: Map<String, String> = emptyMap()): Process
-    suspend fun openTerminal(id: String): TerminalSession
+    /** Runs an optional trusted script once via /bin/sh, then keeps the configured interactive shell open. */
+    suspend fun openTerminal(id: String, initialCommand: String? = null): TerminalSession
     suspend fun register(config: ContainerConfig)
 }

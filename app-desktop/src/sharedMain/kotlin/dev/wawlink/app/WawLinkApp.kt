@@ -42,12 +42,14 @@ private data class HostRoute(
     val sessionId: String? = null,
     val containerId: String? = null,
     val rootfs: Boolean = false,
+    val installationId: String? = null,
     val returnPage: String = "home",
 ) {
     val stateKey: String = when (page) {
         "chat" -> "chat:$sessionId"
         "providers", "management" -> "$page:$containerId:${sessionId ?: "global"}"
-        "framework", "container", "terminal", "files" -> "$page:$containerId"
+        "framework", "container", "files" -> "$page:$containerId"
+        "terminal" -> "terminal:$containerId:${installationId ?: "shell"}"
         "install" -> "install:$rootfs"
         else -> page
     }
@@ -57,6 +59,7 @@ private data class HostRoute(
 fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation? = null) {
     val appearance by app.appearance.collectAsState()
     val notice by app.notice.collectAsState()
+    val ompSetup by app.ompSetup.collectAsState()
     val busy by app.busy.collectAsState()
     val containers by app.runtime.containers.collectAsState()
     val sessions by app.sessions.collectAsState()
@@ -75,6 +78,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val linkedDirectoryNavigation = remember { HostNavigation() }
     var settingsReturn by rememberSaveable { mutableStateOf("home") }
     var terminalReturn by rememberSaveable { mutableStateOf("home") }
+    var terminalInstallationId by rememberSaveable { mutableStateOf<String?>(null) }
     val fileNavigation = remember { HostNavigation() }
     val settingsNavigation = remember { HostNavigation() }
     var containerAttachmentPick by remember { mutableStateOf<ContainerAttachmentPick?>(null) }
@@ -94,7 +98,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         }
     }
     DisposableEffect(Unit) { onDispose { containerAttachmentPick?.continuation?.cancel() } }
-    fun openTerminal(id: String) { selectedContainer = id; terminalReturn = page; page = "terminal" }
+    fun openTerminal(id: String) { selectedContainer = id; terminalInstallationId = null; terminalReturn = page; page = "terminal" }
     var savedSessionIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     fun goBack(): Boolean = when {
         linkedDirectory != null -> { if (linkedDirectoryNavigation.onBack?.invoke() != true) linkedDirectory = null; true }
@@ -136,7 +140,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         "providers", "management" -> HostRoute(page, containerId = configurationContainer?.config?.id, sessionId = selectedSession.takeIf { settingsReturn == "chat" }, returnPage = settingsReturn)
         "framework" -> HostRoute(page, containerId = configurationContainer?.config?.id, returnPage = settingsReturn)
         "container" -> HostRoute(page, containerId = configurationContainer?.config?.id)
-        "terminal" -> HostRoute(page, containerId = selectedContainer, returnPage = terminalReturn)
+        "terminal" -> HostRoute(page, containerId = selectedContainer, installationId = terminalInstallationId, returnPage = terminalReturn)
         "files" -> HostRoute(page, containerId = selectedContainer, returnPage = "container")
         "install" -> HostRoute(page, rootfs = installRootfs)
         else -> HostRoute(page)
@@ -207,7 +211,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                             "install" -> InstallContainerScreen(app, files, current.rootfs, { page = "home" })
                             "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }, ::openTerminal, { id -> selectedContainer = id; page = "files" }) } ?: MissingContainer { page = "home" }
                             "files" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerFilesScreen(app, files, it.config, { page = "container" }, { fileNavigation.onBack = it }) } ?: MissingContainer { page = "home" }
-                            "terminal" -> containers.firstOrNull { it.config.id == current.containerId }?.let { TerminalScreen(app, it.config, { page = terminalReturn }) } ?: MissingContainer { page = terminalReturn }
+                            "terminal" -> containers.firstOrNull { it.config.id == current.containerId }?.let { TerminalScreen(app, it.config, { page = terminalReturn }, current.installationId) } ?: MissingContainer { page = terminalReturn }
                         }
                         }
                         }
@@ -246,7 +250,26 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                 }
             }
         }
-        notice?.let { item ->
+        val setup = ompSetup
+        if (setup != null) {
+            val containerName = containers.firstOrNull { it.config.id == setup.containerId }?.config?.name.orEmpty()
+            AlertDialog(
+                onDismissRequest = { app.dismissOmpSetup(setup) },
+                title = { Text(if (setup.repair) "修复 OMP" else "安装 OMP") },
+                text = { Text("容器「$containerName」：${setup.message}\n\n同意后将打开终端，自动${if (setup.repair) "重新" else ""}安装 OMP 及运行依赖，并暂停此容器的 OMP 进程。已有配置、认证和会话会保留。安装期间请勿离开终端。") },
+                confirmButton = {
+                    TextButton({
+                        app.confirmOmpSetup(setup)?.let { installationId ->
+                            selectedContainer = setup.containerId
+                            terminalInstallationId = installationId
+                            if (page != "terminal") terminalReturn = page
+                            page = "terminal"
+                        }
+                    }) { Text(if (setup.repair) "打开终端并修复" else "打开终端并安装") }
+                },
+                dismissButton = { TextButton({ app.dismissOmpSetup(setup) }) { Text("取消") } },
+            )
+        } else notice?.let { item ->
             AlertDialog(onDismissRequest = app::dismissNotice, title = { Text(if (item.error) "操作失败" else "提示") }, text = { Text(item.text, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) }, confirmButton = { TextButton(onClick = app::dismissNotice) { Text("知道了") } })
         }
     }

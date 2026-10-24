@@ -129,7 +129,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                         }
                         androidx.compose.animation.AnimatedVisibility(open) { Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
                             HostField("容器名称", alias, { alias = it })
-                            HostAction("下载并创建容器", "download", { app.launch { app.runtime.installDistro(distro, alias, mirror, engine) }; onBack() }, Modifier.fillMaxWidth(), enabled = alias.isNotBlank())
+                            HostAction("下载并创建容器", "download", { app.launch { app.installDistro(distro, alias, mirror, engine) }; onBack() }, Modifier.fillMaxWidth(), enabled = alias.isNotBlank())
                         } }
                     }
                     }
@@ -150,6 +150,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                     app.launch {
                         val config = app.runtime.importRootfs(if (sourceType == "本地文件") source else url.trim(), name.trim(), engine, checksum.trim().ifBlank { null })
                         app.runtime.update(config.copy(distro = family.lowercase(), shell = shell))
+                        app.checkOmpInstallation(config.id)
                     }; onBack()
                 }, Modifier.fillMaxWidth().padding(top = 28.dp), enabled = name.isNotBlank() && (if (sourceType == "本地文件") source.isNotBlank() else url.isNotBlank()))
             }
@@ -194,6 +195,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                     DetailAction(if (c.isDefault) "默认容器" else "设为默认", "verified", c.isDefault) { app.launch { app.runtime.setDefault(c.id) } }
                     DetailAction("文件", "folder_open") { onFiles(c.id) }
                     DetailAction("终端", "terminal") { onTerminal(c.id) }
+                    DetailAction("安装 / 修复 OMP", "build") { app.requestOmpInstallation(c.id) }
                     DetailAction("克隆", "content_copy") { clone = true }
                     DetailAction("导出", "ios_share") { app.launch { if (files.exportRootfs(app.runtime, c)) app.report("容器归档已导出") } }
                 }

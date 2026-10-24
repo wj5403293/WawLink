@@ -33,6 +33,10 @@ internal fun isApprovalRequest(frame: JsonObject): Boolean {
         options.any { it.jsonPrimitive.contentOrNull == "Approve" || it.jsonPrimitive.contentOrNull == "Approve Once" }
 }
 
+data class OmpRuntimeIssue(val id: Long, val containerId: String, val message: String)
+
+internal class OmpProcessStoppedException : IllegalStateException("OMP 进程已主动暂停，请重试")
+
 /** Owns its RPC children; idle model previews share a native management bridge, not a chat process. */
 class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private val resolvConf: StateFlow<String?>? = null) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -41,6 +45,44 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     private val settingsRepositories = LinkedHashMap<String, OmpSettingsRepository>()
     private val managementRepositories = LinkedHashMap<Triple<String, String?, String?>, OmpAgentManagementRepository>()
     private var closed = false
+    private val issueSequence = AtomicLong()
+    private val mutableRuntimeIssues = MutableStateFlow<Map<String, OmpRuntimeIssue>>(emptyMap())
+    val runtimeIssues: StateFlow<Map<String, OmpRuntimeIssue>> = mutableRuntimeIssues.asStateFlow()
+
+    fun dismissRuntimeIssue(containerId: String, issueId: Long) {
+        mutableRuntimeIssues.update { issues ->
+            if (issues[containerId]?.id == issueId) issues - containerId else issues
+        }
+    }
+
+    private fun reportRuntimeIssue(containerId: String, message: String) {
+        synchronized(this) {
+            if (closed || containerId in mutableRuntimeIssues.value) return
+            val issue = OmpRuntimeIssue(issueSequence.incrementAndGet(), containerId, message)
+            mutableRuntimeIssues.update { issues -> if (containerId in issues) issues else issues + (containerId to issue) }
+        }
+    }
+
+    /** Stops owned children without removing controllers, configuration, or durable history. */
+    suspend fun prepareOmpRepair(containerId: String): Unit = coroutineScope {
+        val (chat, management) = synchronized(this@OmpProcessPool) {
+            check(!closed) { "进程池已关闭" }
+            sessions.values.filter { it.containerId == containerId } to
+                managementRepositories.filterKeys { it.first == containerId }.values.toList()
+        }
+        (chat.map { async { it.parkForRepair() } } + management.map { async { it.park() } }).awaitAll()
+    }
+    /** Re-resolves native metadata only; no prompt or model inference is started. */
+    suspend fun refreshAfterOmpRepair(containerId: String) {
+        val (chat, management) = synchronized(this) {
+            check(!closed) { "进程池已关闭" }
+            sessions.values.filter { it.containerId == containerId } to
+                managementRepositories.filterKeys { it.first == containerId }.values.toList()
+        }
+        management.forEach { it.reload() }
+        chat.forEach { it.refreshModelPreview() }
+    }
+
 
     @Synchronized
     fun session(id: String, containerId: String, workspace: String, title: String = "新会话", autoApprove: Boolean = true): AgentSessionController {
@@ -158,6 +200,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 pin = { provider, account -> requireNotNull(selected) { "Runtime account pinning requires an active session" }.managementControl("pin", provider, account) },
                 pins = { if (selected?.managementAvailable() == true) selected.managementControl("pins")["pins"]?.jsonObject?.mapValues { it.value.jsonPrimitive.content }.orEmpty() else emptyMap() },
                 applyDefault = { role -> selected?.applyManagementDefault(role) },
+                runtimeFailure = { message -> reportRuntimeIssue(containerId, message) },
             )
         }
     }
@@ -229,6 +272,12 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         var dispatching: Boolean = false,
     )
 
+    private class ChatAttempt(val generation: Long) {
+        val reported = AtomicBoolean()
+        @Volatile var intentional = false
+        @Volatile var nativeReady = false
+    }
+
     private inner class OmpSession(val id: String, val containerId: String, val workspace: String, title: String, initialAutoApprove: Boolean) : AgentSessionController {
         private val ownerJob = SupervisorJob(scope.coroutineContext[Job])
         private val sessionScope = CoroutineScope(scope.coroutineContext + ownerJob)
@@ -253,6 +302,11 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private val mutableState: MutableStateFlow<ChatSessionUiState>
         override val state: StateFlow<ChatSessionUiState>
         @Volatile private var process: Process? = null
+        @Volatile private var activeAttempt: ChatAttempt? = null
+        @Volatile private var repairing = false
+        @Volatile private var parkRequested = false
+        @Volatile private var hasStartedRpc = false
+        private var previewError: String? = null
         private var startedResolvConf: String? = null
         @Volatile private var backendSettled = true
         private var processJob: Job? = null
@@ -267,7 +321,6 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private var hasExecutionPreference = false
         private var lastHeartbeatNanos = System.nanoTime()
         private var startedNanos = System.nanoTime()
-        private val stderr = StringBuilder()
         @Volatile var sessionFile: String? = null
             private set
 
@@ -309,9 +362,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
         }
 
-        private suspend fun initializeModel() {
+        suspend fun refreshModelPreview() {
+            repairing = false
+            if (!disposed && !hasModelPreference && !hasStartedRpc && sessionFile == null && process == null) initializeModel(refresh = true)
+        }
+
+        private suspend fun initializeModel(refresh: Boolean = false) {
             try {
-                if (state.value.modelId.isNotBlank() || sessionFile != null) {
+                if (hasModelPreference || hasStartedRpc || sessionFile != null || process != null || (!refresh && state.value.modelId.isNotBlank())) {
                     mutate { it.copy(modelLoading = false) }
                     return
                 }
@@ -323,15 +381,22 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 val model = checkNotNull(role.modelId?.takeIf { it.isNotBlank() }) { "原生默认模型缺少模型标识" }
                 stateMutex.withLock {
                     // A late preview must never replace an explicit selection, history or live RPC state.
-                    if (reducer.state.modelId.isBlank() && process == null && sessionFile == null) {
+                    if (!hasModelPreference && !hasStartedRpc && (refresh || reducer.state.modelId.isBlank()) && process == null && sessionFile == null) {
                         reducer.previewModel(provider, model, if (hasThinkingPreference) null else role.thinking)
+                        reducer.update { it.copy(error = if (it.error == previewError) null else it.error) }
+                        previewError = null
                     } else if (reducer.state.modelLoading) reducer.update { it.copy(modelLoading = false) }
                     publishState()
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
-                mutate { it.copy(modelLoading = false, error = if (it.modelId.isBlank() && !it.isRunning && sessionFile == null)
-                    failure.message ?: "无法读取默认模型" else it.error) }
+                if (failure is OmpProcessStoppedException || repairing) return
+                mutate {
+                    val show = !hasModelPreference && !hasStartedRpc && !it.isRunning && sessionFile == null && process == null
+                    val message = failure.message ?: "无法读取默认模型"
+                    if (show) previewError = message
+                    it.copy(modelLoading = false, error = if (show) message else it.error)
+                }
             }
         }
 
@@ -345,7 +410,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             return result.await()
         }
 
-        fun requestPark() = submit { park() }
+        fun requestPark() {
+            beginIntentionalStop()
+            submit { park() }
+        }
 
         suspend fun stopAccepting() {
             disposed = true
@@ -422,7 +490,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     }, timeoutMs = 180_000, requestId = prompt.id)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { rejectPrompt(prompt.id, failure.message ?: failure.javaClass.simpleName) }
+            catch (failure: Exception) {
+                if (failure is OmpProcessStoppedException) completePrompt(prompt.id)
+                else rejectPrompt(prompt.id, failure.message ?: failure.javaClass.simpleName)
+            }
         }
 
         private suspend fun enqueue(text: String, attachments: List<AttachmentFile>, images: JsonArray,
@@ -725,6 +796,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private suspend fun ensureStarted() = lifecycleMutex.withLock {
             check(!disposed) { "会话已关闭" }
             if (process?.isAlive == true) return@withLock
+            repairing = false
             process?.let { stopProcess(it) }
             val directory = ownedSessionDirectory(containerId, id)
             directory.mkdirs()
@@ -756,19 +828,30 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val startupGeneration = stopGeneration.get()
             val startReady = CompletableDeferred<JsonObject>()
             ready = startReady
-            synchronized(stderr) { stderr.clear() }
+            val attempt = ChatAttempt(startupGeneration)
+            activeAttempt = attempt
+            if (parkRequested) { attempt.intentional = true; throw OmpProcessStoppedException() }
             // Bun snapshots DNS servers; resume a fresh process on the next idle send after a network change.
             startedResolvConf = resolvConf?.value
-            val child = runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1", "WAWLINK_MANAGEMENT_DIRECTORY" to "${guestSessionDirectory(id)}/management"))
+            val child = try {
+                runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1", "WAWLINK_MANAGEMENT_DIRECTORY" to "${guestSessionDirectory(id)}/management"))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                reportChatFailure(attempt, inspectInstallation = true)
+                throw failure
+            }
             process = child
             restartRequired = false
             val childJob = SupervisorJob(ownerJob)
             processJob = childJob
             val childScope = CoroutineScope(sessionScope.coroutineContext + childJob)
             childScope.launch { drainStderr(child) }
-            childScope.launch { readOutput(child) }
+            childScope.launch { readOutput(child, attempt) }
             try {
-                val greeting = withTimeout(180_000) { startReady.await() }
+                val greeting = withTimeoutOrNull(180_000) { startReady.await() } ?: run {
+                    reportChatFailure(attempt)
+                    throw IllegalStateException("OMP 启动通信超时，请重试")
+                }
                 if (greeting["supportedProtocolVersions"]?.jsonArray?.any { it.jsonPrimitive.intOrNull == 2 } == true) command("negotiate_protocol", buildJsonObject { put("protocolVersion", 2) })
                 command("set_event_filter", buildJsonObject { put("events", JsonNull); put("messageUpdates", "delta") })
                 command("set_ask_dialog", buildJsonObject { put("enabled", true) })
@@ -809,38 +892,53 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 }
                 saveMetadata()
             } catch (failure: Exception) {
-                process = null
+                if (process === child) process = null
+                attempt.intentional = true
                 childJob.cancel()
                 stopProcess(child)
-                throw IllegalStateException("OMP 启动失败：${failure.message}${stderrText()}", failure)
+                if (failure is CancellationException) throw failure
+                if (repairing || startupGeneration != stopGeneration.get()) throw OmpProcessStoppedException()
+                throw IllegalStateException("OMP 启动失败：${failure.message}", failure)
             }
         }
 
         private suspend fun command(type: String, parameters: JsonObject = JsonObject(emptyMap()), timeoutMs: Long = 45_000, heartbeat: Boolean = false,
             requestId: String = if (heartbeat) "hb-${sequence.incrementAndGet()}" else "req-${sequence.incrementAndGet()}"): JsonObject {
+            val attempt = activeAttempt ?: error("OMP 进程未启动")
             val completion = CompletableDeferred<JsonObject>()
             pending[requestId] = completion
             try {
                 writeFrame(buildJsonObject { put("id", requestId); put("type", type); parameters.forEach { (key, value) -> put(key, value) } })
-                val response = try { withTimeout(timeoutMs) { completion.await() } }
-                catch (failure: TimeoutCancellationException) { throw IllegalStateException("OMP 请求超时：$type", failure) }
+                val response = withTimeoutOrNull(timeoutMs) { completion.await() } ?: run {
+                    reportChatFailure(attempt)
+                    throw IllegalStateException("OMP 请求超时：$type")
+                }
                 check(response["success"]?.jsonPrimitive?.booleanOrNull != false) { response.string("error", "OMP 请求失败：$type") }
                 return response
             } finally { pending.remove(requestId) }
         }
 
         private suspend fun writeFrame(frame: JsonObject) = writeMutex.withLock {
+            val attempt = activeAttempt ?: error("OMP 进程未启动")
+            if (attempt.intentional) throw OmpProcessStoppedException()
             val child = process ?: error("OMP 进程未启动")
-            check(child.isAlive) { "OMP 进程已退出${stderrText()}" }
-            val encoded = frame.toString().toByteArray(Charsets.UTF_8)
-            child.outputStream.write(encoded)
-            child.outputStream.write('\n'.code)
-            child.outputStream.flush()
+            try {
+                check(child.isAlive) { "OMP 进程已退出" }
+                val encoded = frame.toString().toByteArray(Charsets.UTF_8)
+                child.outputStream.write(encoded)
+                child.outputStream.write('\n'.code)
+                child.outputStream.flush()
+            } catch (failure: Exception) {
+                if (failure !is CancellationException) reportChatFailure(attempt, inspectInstallation = !attempt.nativeReady)
+                if (attempt.intentional) throw OmpProcessStoppedException()
+                throw failure
+            }
         }
 
-        private suspend fun readOutput(child: Process) {
+        private suspend fun readOutput(child: Process, attempt: ChatAttempt) {
             val decoder = OmpFrameDecoder()
             var failure: Throwable? = null
+            var protocolFailure = false
             try {
                 child.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                     while (currentCoroutineContext().isActive) {
@@ -853,12 +951,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 }
                 if (process === child) {
                     val status = if (child.waitFor(250, TimeUnit.MILLISECONDS)) "，退出码 ${child.exitValue()}" else ""
-                    failure = IllegalStateException("OMP 输出流已关闭$status${stderrText()}")
+                    failure = IllegalStateException("OMP 输出流已关闭$status")
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (problem: Exception) { failure = problem }
+            catch (_: Exception) { protocolFailure = true; failure = IllegalStateException("OMP 通信响应损坏，请修复后重试") }
             finally {
-                if (process === child && failure != null) {
+                if (process === child && failure != null && !attempt.intentional) {
+                    reportChatFailure(attempt, inspectInstallation = !attempt.nativeReady && !protocolFailure)
                     process = null
                     backendSettled = true
                     ready?.completeExceptionally(failure)
@@ -916,7 +1015,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     rejectPrompt(frame.string("id"), frame["error"]?.jsonObject?.string("message", "消息发送失败") ?: "消息发送失败")
                 } else completePrompt(frame.string("id"))
             }
-            if (type == "ready") ready?.complete(frame)
+            if (type == "ready") { hasStartedRpc = true; activeAttempt?.nativeReady = true; ready?.complete(frame) }
             if (type == "response") pending[frame.string("id")]?.complete(frame)
             if (type == "session_info_update") saveMetadata()
             if (type == "model_changed" || type == "config_update") sessionScope.launch {
@@ -935,25 +1034,49 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         private suspend fun drainStderr(child: Process) {
+            // Native provider errors can contain credentials; never retain or forward stderr.
             try {
-                child.errorStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    val buffer = CharArray(2048)
-                    while (currentCoroutineContext().isActive) {
-                        val count = reader.read(buffer)
-                        if (count < 0) break
-                        synchronized(stderr) {
-                            stderr.append(buffer, 0, count)
-                            if (stderr.length > 16_384) stderr.delete(0, stderr.length - 16_384)
-                        }
-                    }
+                child.errorStream.use { stream ->
+                    val buffer = ByteArray(4096)
+                    while (currentCoroutineContext().isActive && stream.read(buffer) >= 0) { }
                 }
-            } catch (_: java.io.IOException) { /* Closing this owned child closes its diagnostic stream. */ }
+            } catch (_: java.io.IOException) { }
         }
 
-        private fun stderrText(): String = synchronized(stderr) { stderr.toString().trim().let { if (it.isEmpty()) "" else "\n$it" } }
+
+        private fun reportChatFailure(attempt: ChatAttempt, inspectInstallation: Boolean = false) {
+            if (attempt.intentional || repairing || disposed || attempt.generation != stopGeneration.get() || !attempt.reported.compareAndSet(false, true)) return
+            sessionScope.launch {
+                val message = if (inspectInstallation) {
+                    val check = try { OmpInstallation.inspect(runtime, containerId) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { return@launch }
+                    if (check.state == OmpInstallationState.READY) return@launch
+                    "容器中的 OMP 缺失或安装损坏，请在终端中安装修复"
+                } else "容器中的 OMP 进程异常或通信失效，请在终端中修复"
+                if (!repairing && !disposed && attempt.generation == stopGeneration.get()) reportRuntimeIssue(containerId, message)
+            }
+        }
+
+        private fun beginIntentionalStop() {
+            stopGeneration.incrementAndGet()
+            parkRequested = true
+            activeAttempt?.intentional = true
+            ready?.completeExceptionally(OmpProcessStoppedException())
+            pending.values.forEach { it.completeExceptionally(OmpProcessStoppedException()) }
+        }
+
+        suspend fun parkForRepair() {
+            repairing = true
+            beginIntentionalStop()
+            process?.let { stopProcess(it) }
+            park()
+            mutate { it.copy(modelLoading = false) }
+        }
 
         suspend fun park() = lifecycleMutex.withLock {
-            val child = process ?: return@withLock
+            activeAttempt?.intentional = true
+            val child = process ?: run { parkRequested = false; return@withLock }
             process = null
             backendSettled = true
             heartbeat?.cancel(); heartbeat = null
@@ -961,12 +1084,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             writeMutex.withLock { runCatching { child.outputStream.close() } }
             if (!child.waitFor(8, TimeUnit.SECONDS)) stopProcess(child)
             processJob?.cancel(); processJob = null
-            val closedFailure = IllegalStateException("OMP 会话进程已关闭")
+            val closedFailure = OmpProcessStoppedException()
             pending.values.forEach { it.completeExceptionally(closedFailure) }
             pending.clear()
             stateMutex.withLock { requests.clear() }
             if (backendState.isRunning) local(buildJsonObject { put("action", "stopped") })
             saveMetadata()
+            parkRequested = false
         }
 
         fun dispose() {
@@ -976,6 +1100,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         private suspend fun fail(problem: Throwable) {
+            if (problem is OmpProcessStoppedException || repairing) return
             local(buildJsonObject {
                 put("action", if (process?.isAlive == true) "operation_error" else "error")
                 put("message", problem.message ?: problem.javaClass.simpleName)

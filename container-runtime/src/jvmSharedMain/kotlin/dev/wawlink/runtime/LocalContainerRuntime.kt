@@ -30,6 +30,20 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+/** Script and shell are positional parameters, never interpolated into shell source or pasted into the PTY. */
+internal fun terminalArguments(shell: String, initialCommand: String?): List<String> {
+    if (initialCommand == null) return listOf(shell, "-i")
+    require('\u0000' !in initialCommand) { "终端初始命令不能包含 NUL" }
+    return listOf("/bin/sh", "-c", """
+        trap ':' INT
+        /bin/sh -c "${'$'}1"
+        status=${'$'}?
+        trap - INT
+        if [ "${'$'}status" -ne 0 ]; then printf '\n初始命令失败（退出码 %s）；终端保持打开。\n' "${'$'}status"; fi
+        exec "${'$'}2" -i
+    """.trimIndent(), "wawlink-terminal", initialCommand, shell)
+}
+
 @Serializable
 private data class SavedRuntime(val containers: List<ContainerConfig> = emptyList(), val debugRootfsRemoved: Boolean = false)
 
@@ -481,11 +495,11 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         } finally { if (process.isAlive) process.destroy() }
     }
 
-    override suspend fun openTerminal(id: String): TerminalSession = withContext(Dispatchers.IO) {
+    override suspend fun openTerminal(id: String, initialCommand: String?): TerminalSession = withContext(Dispatchers.IO) {
         mutex.withLock {
             ensureOpen(); startLocked(id); idleJobs.remove(id)?.cancel()
             val config = config(id)
-            val tracked = launchLocked(config, listOf(config.shell, "-i"), "/workspace", emptyMap(), true, false, pty = true)
+            val tracked = launchLocked(config, terminalArguments(config.shell, initialCommand), "/workspace", emptyMap(), true, false, pty = true)
             object : TerminalSession {
                 override val process = tracked.process
                 override val processId = requireNotNull(tracked.pid)

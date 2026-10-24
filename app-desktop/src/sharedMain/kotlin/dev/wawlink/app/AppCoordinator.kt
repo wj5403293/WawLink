@@ -1,6 +1,8 @@
 package dev.wawlink.app
 
 import dev.wawlink.driver.OmpProcessPool
+import dev.wawlink.driver.OmpInstallation
+import dev.wawlink.driver.OmpInstallationState
 import dev.wawlink.protocol.*
 import dev.wawlink.runtime.*
 import java.io.File
@@ -39,6 +41,14 @@ data class SessionRecord(
 data class HomeSession(val record: SessionRecord, val state: ChatSessionUiState)
 data class HostNotice(val id: Long = System.nanoTime(), val text: String, val error: Boolean = false)
 
+internal data class OmpSetupRequest(
+    val id: String = UUID.randomUUID().toString(),
+    val containerId: String,
+    val message: String,
+    val repair: Boolean,
+    val runtimeIssueId: Long? = null,
+)
+
 class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, val dataDir: File, val isAndroid: Boolean = false) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val persistenceLock = Any()
@@ -52,6 +62,14 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     val defaultAutoApprove: StateFlow<Boolean> = _defaultAutoApprove.asStateFlow()
     private val notices = MutableStateFlow<List<HostNotice>>(emptyList())
     val notice: StateFlow<HostNotice?> = notices.map { it.firstOrNull() }.stateIn(scope, SharingStarted.Eagerly, null)
+    private val ompSetupLock = Any()
+    private val ompSetups = MutableStateFlow<List<OmpSetupRequest>>(emptyList())
+    private val approvedOmpInstallations = mutableMapOf<String, String>()
+    private val activeOmpInstallations = mutableMapOf<String, String>()
+    private val handledOmpIssues = mutableMapOf<String, Long>()
+    internal val ompSetup = combine(ompSetups, runtime.containers) { requests, containers ->
+        requests.firstOrNull { request -> containers.any { it.config.id == request.containerId } }
+    }.stateIn(scope, SharingStarted.Eagerly, null)
     private val _busy = MutableStateFlow(0)
     val busy: StateFlow<Int> = _busy.asStateFlow()
     val sessions = combine(records, sessionStates) { items, states ->
@@ -101,6 +119,14 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
                 )
             }
         } catch (e: Exception) { showError(e) }
+        scope.launch {
+            pool.runtimeIssues.collect { issues ->
+                issues.values.forEach { issue ->
+                    offerOmpSetup(OmpSetupRequest(containerId = issue.containerId, message = issue.message,
+                        repair = true, runtimeIssueId = issue.id))
+                }
+            }
+        }
     }
     fun report(text: String) { notices.update { it + HostNotice(text = text) } }
     fun showError(error: Throwable) { notices.update { it + HostNotice(text = error.message ?: error.toString(), error = true) } }
@@ -111,6 +137,97 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { showError(e) }
         finally { _busy.update { it - 1 } }
+    }
+
+    suspend fun installDistro(distro: DistroSpec, name: String, mirror: MirrorSource, engine: ContainerEngineType): ContainerConfig {
+        val installed = runtime.installDistro(distro, name, mirror, engine)
+        checkOmpInstallation(installed.id)
+        return installed
+    }
+
+    internal suspend fun checkOmpInstallation(containerId: String) {
+        val check = OmpInstallation.inspect(runtime, containerId)
+        if (check.state != OmpInstallationState.READY) {
+            offerOmpSetup(OmpSetupRequest(containerId = containerId, message = check.message,
+                repair = check.state == OmpInstallationState.BROKEN))
+        }
+    }
+
+    internal fun requestOmpInstallation(containerId: String) {
+        offerOmpSetup(OmpSetupRequest(containerId = containerId, message = "可重新安装 OMP 及其运行依赖。", repair = true))
+    }
+
+    private fun offerOmpSetup(request: OmpSetupRequest) = synchronized(ompSetupLock) {
+        if (runtime.containers.value.none { it.config.id == request.containerId }) return@synchronized
+        if (request.runtimeIssueId != null && handledOmpIssues[request.containerId] == request.runtimeIssueId) return@synchronized
+        if (request.containerId in activeOmpInstallations) {
+            acknowledgeOmpIssue(request)
+            return@synchronized
+        }
+        val existing = ompSetups.value.firstOrNull { it.containerId == request.containerId }
+        if (existing == null) ompSetups.value += request
+        else if (request.runtimeIssueId != null) {
+            ompSetups.value = ompSetups.value.map {
+                if (it.id == existing.id) request.copy(id = existing.id) else it
+            }
+        }
+    }
+
+    private fun acknowledgeOmpIssue(request: OmpSetupRequest) {
+        request.runtimeIssueId?.let {
+            handledOmpIssues[request.containerId] = it
+            pool.dismissRuntimeIssue(request.containerId, it)
+        }
+    }
+
+    internal fun dismissOmpSetup(request: OmpSetupRequest) = synchronized(ompSetupLock) {
+        val current = ompSetups.value.firstOrNull { it.id == request.id } ?: return@synchronized
+        acknowledgeOmpIssue(current)
+        ompSetups.value = ompSetups.value.filterNot { it.id == current.id }
+    }
+
+    internal fun confirmOmpSetup(request: OmpSetupRequest): String? = synchronized(ompSetupLock) {
+        val current = ompSetups.value.firstOrNull { it.id == request.id } ?: return@synchronized null
+        if (runtime.containers.value.none { it.config.id == current.containerId }) return@synchronized null
+        approvedOmpInstallations[current.id] = current.containerId
+        activeOmpInstallations[current.containerId] = current.id
+        acknowledgeOmpIssue(current)
+        ompSetups.value = ompSetups.value.filterNot { it.id == current.id }
+        current.id
+    }
+
+    internal suspend fun openTerminal(containerId: String, installationId: String?): TerminalSession {
+        val install = synchronized(ompSetupLock) {
+            if (installationId != null && approvedOmpInstallations[installationId] == containerId) {
+                approvedOmpInstallations.remove(installationId)
+                true
+            } else false
+        }
+        if (!install) return runtime.openTerminal(containerId)
+        try {
+            pool.prepareOmpRepair(containerId)
+            return runtime.openTerminal(containerId, OmpInstallation.command())
+        } catch (failure: Throwable) {
+            synchronized(ompSetupLock) { activeOmpInstallations.remove(containerId) }
+            throw failure
+        }
+    }
+
+    internal fun finishOmpInstallation(containerId: String, installationId: String?, terminal: TerminalSession?) {
+        val finished = synchronized(ompSetupLock) {
+            if (installationId == null || activeOmpInstallations[containerId] != installationId) false
+            else {
+                approvedOmpInstallations.remove(installationId)
+                activeOmpInstallations.remove(containerId)
+                true
+            }
+        }
+        if (finished) launch {
+            if (terminal != null) withTimeout(15_000) { terminal.isAlive.first { !it } }
+            if (OmpInstallation.inspect(runtime, containerId).state == OmpInstallationState.READY) {
+                pool.refreshAfterOmpRepair(containerId)
+            }
+        }
     }
     fun hasSession(id: String): Boolean = records.value.any { it.id == id }
 

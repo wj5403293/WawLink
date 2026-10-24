@@ -35,6 +35,7 @@ class OmpAgentManagementRepositoryTest {
             assertNull(failed.error)
             assertEquals("review", failed.agents.single().name)
             assertTrue(failed.modelsError!!.contains("模型服务配置无效"))
+            assertTrue(runtimeFailures.isEmpty())
 
             val reload = async { repository.reload() }
             transport.respond(transport.request("snapshot"), configuration)
@@ -58,6 +59,7 @@ class OmpAgentManagementRepositoryTest {
             first.destroy()
             val failed = awaitState { !it.loading && !it.modelsLoading && it.error != null }
             assertEquals("review", failed.agents.single().name)
+            assertEquals(1, runtimeFailures.size)
             val reload = async { repository.reload() }
             val replacement = connect()
             replacement.respond(replacement.request("snapshot"), configuration)
@@ -66,6 +68,7 @@ class OmpAgentManagementRepositoryTest {
             assertNull(repository.state.value.error)
             assertNull(repository.state.value.modelsError)
             assertEquals("local/chat", repository.state.value.roles.single().model)
+            assertEquals(1, runtimeFailures.size)
             assertTrue(uncaught.isEmpty(), uncaught.toString())
         }
     }
@@ -82,6 +85,7 @@ class OmpAgentManagementRepositoryTest {
             reload.await()
             assertNull(repository.state.value.error)
             assertEquals("review", repository.state.value.agents.single().name)
+            assertTrue(runtimeFailures.isEmpty())
             assertTrue(uncaught.isEmpty(), uncaught.toString())
         }
     }
@@ -101,6 +105,7 @@ class OmpAgentManagementRepositoryTest {
             assertTrue(incomplete.modelsError!!.contains("传输不完整"))
             assertEquals("local/chat", incomplete.models.single().key)
             assertEquals("review", incomplete.agents.single().name)
+            assertEquals(1, runtimeFailures.size)
             assertTrue(uncaught.isEmpty(), uncaught.toString())
         }
     }
@@ -143,6 +148,7 @@ class OmpAgentManagementRepositoryTest {
             transport.respond(transport.request("fetchProviderModels"), error = "UNAVAILABLE: Provider local: model discovery unauthenticated; HTTP 401")
             assertTrue(failed.await().exceptionOrNull()!!.message!!.contains("HTTP 401"))
             assertEquals(initial.models, repository.state.value.models)
+            assertTrue(runtimeFailures.isEmpty())
             transport.assertNoRequest()
         }
     }
@@ -165,6 +171,7 @@ class OmpAgentManagementRepositoryTest {
             assertEquals(original, file.readText())
             transport.assertNoRequest()
             assertEquals("review", repository.state.value.agents.single().name)
+            assertTrue(runtimeFailures.isEmpty())
         }
     }
 
@@ -182,6 +189,114 @@ class OmpAgentManagementRepositoryTest {
             assertTrue(failed.modelsError!!.contains("baseUrl"))
             assertEquals(legacy, file.readText())
             transport.assertNoRequest()
+        }
+    }
+
+    @Test fun nativeExitBeforeInitReportsOnceAndReloadCanRecover() = runBlocking {
+        fixture {
+            val first = launchTransport()
+            first.request("init")
+            first.destroy()
+            awaitState { !it.loading && it.error != null }
+            assertEquals(1, runtimeFailures.size)
+            val reload = async { repository.reload() }
+            val replacement = connect()
+            replacement.respond(replacement.request("snapshot"), configuration)
+            replacement.respond(replacement.request("modelsSnapshot"), catalogueResult)
+            reload.await()
+            assertNull(repository.state.value.error)
+            assertEquals(1, runtimeFailures.size)
+        }
+    }
+
+    @Test fun malformedNativeOutputReportsWithoutLeakingPayloadAndRetainsDefinitions() = runBlocking {
+        fixture {
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            transport.request("modelsSnapshot")
+            transport.emitRaw("not-json sk-secret-provider-body")
+            val failed = awaitState { !it.modelsLoading && it.error != null }
+            assertEquals("review", failed.agents.single().name)
+            assertEquals(1, runtimeFailures.size)
+            assertFalse(runtimeFailures.single().contains("sk-secret"))
+            assertFalse(failed.error!!.contains("sk-secret"))
+        }
+    }
+
+    @Test fun brokenRpcWriteReportsOnceAndReloadUsesAnotherNativeProcess() = runBlocking {
+        fixture {
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            transport.respond(transport.request("modelsSnapshot"), catalogueResult)
+            awaitState { !it.modelsLoading }
+            transport.failWrites = true
+            assertTrue(runCatching { repository.generateAgent("描述") }.isFailure)
+            assertEquals(1, runtimeFailures.size)
+            assertEquals("review", repository.state.value.agents.single().name)
+            val reload = async { repository.reload() }
+            val replacement = connect()
+            replacement.respond(replacement.request("snapshot"), configuration)
+            replacement.respond(replacement.request("modelsSnapshot"), catalogueResult)
+            reload.await()
+            assertEquals("chat", repository.state.value.models.single().id)
+            assertEquals(1, runtimeFailures.size)
+        }
+    }
+
+    @Test fun repairParkStopsPendingCatalogueWithoutFaultAndKeepsRepositoryReloadable() = runBlocking {
+        fixture {
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            transport.request("modelsSnapshot")
+            awaitState { !it.loading && it.modelsLoading }
+            repository.park()
+            assertFalse(transport.isAlive)
+            assertTrue(runtimeFailures.isEmpty())
+            assertEquals("review", repository.state.value.agents.single().name)
+            assertNull(repository.state.value.error)
+            val reload = async { repository.reload() }
+            val replacement = connect()
+            replacement.respond(replacement.request("snapshot"), configuration)
+            replacement.respond(replacement.request("modelsSnapshot"), catalogueResult)
+            reload.await()
+            assertNull(repository.state.value.error)
+            assertTrue(runtimeFailures.isEmpty())
+        }
+    }
+
+    @Test fun cancellingNativeOperationAndClosingPendingRequestsDoNotReportInstallationFaults() = runBlocking {
+        fixture {
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            transport.respond(transport.request("modelsSnapshot"), catalogueResult)
+            awaitState { !it.modelsLoading }
+            val generate = async { repository.generateAgent("取消生成") }
+            transport.request("generateAgent")
+            generate.cancelAndJoin()
+            assertFalse(transport.isAlive)
+            assertTrue(runtimeFailures.isEmpty())
+            val reload = async { repository.reload() }
+            val replacement = connect()
+            replacement.request("snapshot")
+            repository.close()
+            reload.join()
+            assertFalse(replacement.isAlive)
+            assertTrue(runtimeFailures.isEmpty())
+        }
+    }
+
+    @Test fun callerTimeoutCancelsNativeWorkWithoutReportingAnRpcTimeout() = runBlocking {
+        fixture {
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            transport.respond(transport.request("modelsSnapshot"), catalogueResult)
+            awaitState { !it.modelsLoading }
+            val generate = async { withTimeout(250) { repository.generateAgent("限时取消") } }
+            transport.request("generateAgent")
+            assertFailsWith<TimeoutCancellationException> { generate.await() }
+            assertFalse(transport.isAlive)
+            assertTrue(runtimeFailures.isEmpty())
+            assertEquals("review", repository.state.value.agents.single().name)
         }
     }
 
@@ -218,6 +333,7 @@ class OmpAgentManagementRepositoryTest {
         private val processes = Channel<Transport>(Channel.UNLIMITED)
         private val transports = CopyOnWriteArrayList<Transport>()
         val uncaught = CopyOnWriteArrayList<Throwable>()
+        val runtimeFailures = CopyOnWriteArrayList<String>()
         private val owner = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, failure -> uncaught += failure })
         private val runtime = object : ContainerRuntime by local {
             override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = processes.receive()
@@ -226,12 +342,14 @@ class OmpAgentManagementRepositoryTest {
             runtime, AgentConfigurationContext("fixture", "验证"),
             { directory.resolve("agent").apply { mkdirs() } },
             { guest, _ -> directory.resolve("agent").resolve(guest.removePrefix("/root/.omp/agent/")) },
-            owner, { _, _ -> }, { _, _ -> }, { emptyMap() }, {},
+            owner, { _, _ -> }, { _, _ -> }, { emptyMap() }, {}, { runtimeFailures += it },
         )
-        suspend fun connect(): Transport {
-            val transport = Transport()
+        suspend fun launchTransport(): Transport = Transport().also { transport ->
             transports += transport
             processes.send(transport)
+        }
+        suspend fun connect(): Transport {
+            val transport = launchTransport()
             transport.respond(transport.request("init"), JsonPrimitive(true))
             return transport
         }
@@ -254,9 +372,11 @@ class OmpAgentManagementRepositoryTest {
         private val errors = PipedOutputStream(stderr)
         private val exited = CountDownLatch(1)
         private val requests = Channel<JsonObject>(Channel.UNLIMITED)
+        @Volatile var failWrites = false
         private val input = object : OutputStream() {
             private val buffer = ByteArrayOutputStream()
             override fun write(value: Int) {
+                if (failWrites) throw IOException("Native pipe is unavailable")
                 if (value != '\n'.code) { buffer.write(value); return }
                 val frame = Json.parseToJsonElement(buffer.toString(Charsets.UTF_8)).jsonObject
                 buffer.reset()
@@ -277,6 +397,10 @@ class OmpAgentManagementRepositoryTest {
                 put("id", request["id"]!!)
                 if (error == null) put("result", body) else put("error", error)
             })
+        }
+        @Synchronized fun emitRaw(value: String) {
+            events.write((value + "\n").toByteArray())
+            events.flush()
         }
         private fun emit(frame: JsonObject) {
             events.write((frame.toString() + "\n").toByteArray())
