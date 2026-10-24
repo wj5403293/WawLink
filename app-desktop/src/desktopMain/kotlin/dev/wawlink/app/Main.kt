@@ -40,7 +40,7 @@ private class DesktopHostFiles : HostFiles {
     }
     override suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean {
         val target = withContext(Dispatchers.Swing) {
-            val chooser = JFileChooser().apply { dialogTitle = "从容器导出"; selectedFile = File(name) }
+            val chooser = JFileChooser().apply { dialogTitle = "保存文件"; selectedFile = File(name) }
             if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) null
             else chooser.selectedFile.takeIf { !it.exists() || javax.swing.JOptionPane.showConfirmDialog(null, "文件已存在，是否替换？", "确认替换", javax.swing.JOptionPane.YES_NO_OPTION) == javax.swing.JOptionPane.YES_OPTION }
         } ?: return false

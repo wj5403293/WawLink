@@ -59,6 +59,9 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val containers by app.runtime.containers.collectAsState()
     val sessions by app.sessions.collectAsState()
     val pageStates = rememberSaveableStateHolder()
+    val saveImage: suspend (String, String, ByteArray) -> Boolean = remember(files) {
+        { name, mimeType, bytes -> files.saveFile(name, mimeType) { output -> output.write(bytes) } }
+    }
     var page by rememberSaveable { mutableStateOf("home") }
     var selectedSession by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedContainer by rememberSaveable { mutableStateOf<String?>(null) }
@@ -156,7 +159,10 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                 val controller = remember(current.sessionId) { runCatching { app.openSession(requireNotNull(current.sessionId)) } }
                                 controller.fold(onSuccess = {
                                     val record = sessions.firstOrNull { s -> s.record.id == current.sessionId }?.record
-                                    if (record != null) CompositionLocalProvider(LocalAgentFileLinkHandler provides { source -> openSessionFile(record, source) }) {
+                                    if (record != null) CompositionLocalProvider(
+                                        LocalAgentFileLinkHandler provides { source -> openSessionFile(record, source) },
+                                        LocalAgentImageSaveHandler provides saveImage,
+                                    ) {
                                         AgentChatScreen(it, app.pool.providers(record.containerId), app.pool.management(record.containerId, record.workspace), { page = "home" }, { createInContext(record.id) },
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" },
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "management" },

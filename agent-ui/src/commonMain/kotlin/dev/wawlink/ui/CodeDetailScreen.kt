@@ -51,7 +51,7 @@ fun CodeDetailScreen(title: String, text: String, language: String?, onBack: () 
 }
 
 @Composable
-internal expect fun PlatformCodeDetail(onBack: () -> Unit, content: @Composable () -> Unit)
+internal expect fun PlatformCodeDetail(onBack: () -> Unit, title: String = "代码详情", content: @Composable () -> Unit)
 
 @Composable
 internal expect fun PlatformCodeViewer(text: String, language: String?, modifier: Modifier, selectionRequest: Int)

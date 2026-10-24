@@ -1,18 +1,14 @@
 package dev.wawlink.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -93,25 +89,12 @@ private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
             var index = 0
             while (index < lines.size) {
                 val line = lines[index]
+                val table = remember(lines, index) { markdownTable(lines, index) }
                 when {
                     line.matches(Regex("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$")) -> HorizontalDivider(color = c.outlineVariant)
-                    line.trim().startsWith("|") && index + 1 < lines.size && lines[index + 1].matches(Regex("^[| :\\-]+$")) -> {
-                        val rows = mutableListOf(line)
-                        index += 2
-                        while (index < lines.size && lines[index].trim().startsWith("|")) rows.add(lines[index++])
-                        Surface(color = c.surfaceContainerLow, shape = RoundedCornerShape(12.dp)) {
-                            Column(Modifier.horizontalScroll(rememberScrollState()).padding(12.dp)) {
-                                rows.forEachIndexed { rowIndex, row ->
-                                    Row {
-                                        row.trim().trim('|').split('|').forEach { cell ->
-                                            InlineMarkdownText(cell.trim(), Modifier.widthIn(min = 110.dp, max = 240.dp).padding(8.dp),
-                                                MaterialTheme.typography.bodyLarge.copy(fontWeight = if (rowIndex == 0) FontWeight.Bold else FontWeight.Normal))
-                                        }
-                                    }
-                                    if (rowIndex == 0) HorizontalDivider(color = c.outlineVariant)
-                                }
-                            }
-                        }
+                    table != null -> {
+                        MarkdownTable(table)
+                        index = table.nextLine
                         continue
                     }
                     line.isBlank() -> Spacer(Modifier.height(2.dp))
@@ -148,17 +131,6 @@ private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-@Composable
-private fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
-    val annotated = inlineMarkdown(text)
-    val fileHandler = LocalAgentFileLinkHandler.current
-    val uri = LocalUriHandler.current
-    ClickableText(annotated, modifier, style = style, onClick = { offset ->
-        val file = annotated.getStringAnnotations("FILE", offset, offset).firstOrNull()
-        if (file != null) fileHandler?.invoke(file.item)
-        else annotated.getStringAnnotations("URL", offset, offset).firstOrNull()?.let { uri.openUri(it.item) }
-    })
-}
 
 private val inlineTokens = Regex(
     "\\\\[\\\\`*{}\\[\\]()#+.!_>~|\\-]|" +
@@ -169,15 +141,6 @@ private val inlineTokens = Regex(
         "(?<![\\p{L}\\p{N}_./-])([\\p{L}\\p{N}_@+.-]+)[ \\t]*[(（]([^()（）\\r\\n]+)[)）]"
 )
 
-@Composable
-private fun inlineMarkdown(text: String): AnnotatedString {
-    val c = LocalAgentColors.current
-    val mono = LocalAgentMono.current
-    return remember(text, c, mono) {
-        buildInline(text, SpanStyle(color = c.primary, textDecoration = TextDecoration.Underline),
-            SpanStyle(color = c.onPrimaryContainer, fontFamily = mono, fontSize = 15.sp, background = c.primaryContainer))
-    }
-}
 
 private val uriScheme = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
 private val unsafePathCharacters = Regex("[\\u0000\\r\\n\\t<>|?*`\"{}\\[\\]=;&$\\\\]")
@@ -204,10 +167,12 @@ internal fun buildInline(text: String, linkStyle: SpanStyle, codeStyle: SpanStyl
         when {
             text[match.range.first] == '\\' -> append(text[match.range.first + 1])
             match.groupValues[1].isNotEmpty() -> {
+                pushStringAnnotation("CODE", "")
                 val code = match.groupValues[2]
                 val path = fileReference(code)
                 if (path != null) appendFile(path, code, codeStyle.copy(textDecoration = TextDecoration.Underline))
                 else withStyle(codeStyle) { append(code) }
+                pop()
             }
             match.groupValues[3].isNotEmpty() -> {
                 val target = match.groupValues[4]

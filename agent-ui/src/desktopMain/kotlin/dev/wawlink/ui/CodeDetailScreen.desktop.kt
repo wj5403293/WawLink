@@ -36,12 +36,12 @@ import org.fife.ui.rsyntaxtextarea.TokenTypes
 import org.fife.ui.rtextarea.RTextScrollPane
 
 @Composable
-internal actual fun PlatformCodeDetail(onBack: () -> Unit, content: @Composable () -> Unit) {
+internal actual fun PlatformCodeDetail(onBack: () -> Unit, title: String, content: @Composable () -> Unit) {
     val density = LocalDensity.current.density
     val screen = remember {
         (MouseInfo.getPointerInfo()?.device ?: GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice).defaultConfiguration.bounds
     }
-    DialogWindow(onCloseRequest = onBack, title = "代码详情", undecorated = true, resizable = false,
+    DialogWindow(onCloseRequest = onBack, title = title, undecorated = true, resizable = false,
         state = rememberDialogState(position = WindowPosition.Absolute((screen.x / density).dp, (screen.y / density).dp),
             width = (screen.width / density).dp, height = (screen.height / density).dp),
         onPreviewKeyEvent = { event ->

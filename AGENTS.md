@@ -4,7 +4,7 @@
 
 - 界面必须遵循 Material 3 风格，使用 Google Material Symbols 图标字体，并使用简洁的非线性交互动画。
 - 背景保持纯白，布局采用现代化 Material 3 设计；独立终端的控制台、快捷键栏与字体按 Love2Droid 原布局保留。
-- 全应用默认使用原型蓝色，不保留 Material 3 默认紫色；分段选择器使用主题主色。应用设置支持持久化的默认蓝色、Android 12+ 系统莫奈配色与自定义主色生成配色；不支持系统取色的平台回退默认蓝色。内联代码使用浅主色背景与深主色文字。
+- 全应用默认使用原型蓝色，不保留 Material 3 默认紫色；分段选择器使用主题主色。应用设置支持持久化的默认蓝色、Android 12+ 系统莫奈配色与自定义主色生成配色；不支持系统取色的平台回退默认蓝色。内联代码例外参照 Kelivo，使用中性浅底、深色文字、圆角与实际内边距，不再使用紧贴文字的主色矩形。
 - 页面除主要文本外，尽量不使用符号和复杂装饰；能用图标表达时优先使用图标。
 - UI 文字使用中文；专有名词可以使用英文。相同内容不得同时用中文和英文重复装饰。
 - 文字只保留大号 UI 内容或标题；不添加小号卡片说明、装饰性文本或非必要装饰元素。
@@ -33,6 +33,8 @@
 - Slash 补全以当前会话 OMP 的原生命令目录及动态更新为准，不用固定菜单冒充可用命令；当前版本的内置命令可预设中文描述与 Material Symbols 图标，未预设或扩展命令仍显示，但使用默认图标且不显示描述。保留无参数 `/model` 的应用模型选择和 `/cost` 的用量快捷入口，带参数的命令交给 OMP。
 - 同一次 OMP ask 的多个问题显示在一张卡片中，按原生问题 ID 保存答案及预览状态；左下角使用灰色、无背景圆形前后切换按钮，配合左右非线性滑动。支持选项说明、推荐项、多选、自定义输入和提交前回看，一次提交完整答案。单选选择后自动进入下一题，多选不自动切题；切题与检查答案不得改变会话滚动锚点。
 - Ask 富预览与 Agent 正文共用 SVG、Mermaid、图像及 Markdown 渲染；图表不依赖在线渲染服务，模型内容不得执行脚本、读取宿主文件或通过 SVG 加载外部资源。
+- 内联代码与 Markdown 表格参照 Kelivo 的视觉参数，独立实现而不复制其 AGPL 代码或资源；内联代码保留原文选择及路径点击，长代码可换行。表格统一列宽与网格，保留列对齐，窄屏多列可横向滚动，转义或代码中的竖线不拆列。
+- 正文及 Ask 预览中的图片点击进入原生全屏，支持缩放、拖动、复位与保存；PNG/JPEG/GIF/WebP 保存已加载的原始字节，SVG 导出安全校验后的矢量内容。全屏与保存复用已加载内容，不重复请求；取消保存不提示成功，失败可重试。
 - 工具、Todo 与思考的运行耗时实时刷新，结束后固定；不足 1 秒隐藏，1–59 秒显示 `15s`，达到 1 分钟后显示 `1:05`，不显示静止的 `0:00`。
 - 长思考及工具内容展开后，标题滚出可视区时将概况吸附在 Todo 与子任务概况下方；各层可回跳，不遮挡原始标题。思考仅在展开动画期间冻结显示快照，结束后恢复平滑增量输出，复用已完成的 Markdown 段落；阅读、选择或上滑时不强制追尾，全文查看使用 Markdown。
 - LLM 代码块、未展开工具的命令摘要、执行脚本及读取/写入/查找的代码共用成熟库高亮；未知语言保留纯文本。全屏代码只读且可选择、复制原文，Android 使用 Sora Editor 与内置 TextMate 语法、依赖和明暗主题，Desktop 使用原生桌面代码组件，不使用 WebView 冒充 Sora；HTML 中的 JavaScript/CSS 也需高亮。
@@ -55,6 +57,8 @@
   - 同目录的 `AgentPalette.kt`、`AgentPaletteSettings.kt` 提供默认蓝色、Material HCT 种子配色与设置控件；`src/androidMain/kotlin/dev/wawlink/ui/AgentPalette.android.kt` 读取系统动态配色，`src/desktopMain/kotlin/dev/wawlink/ui/AgentPalette.desktop.kt` 明确回退，`AgentPaletteTest.kt` 覆盖明暗配色对比度及 HEX 输入边界。完整 Material Color Utilities 许可随 `src/commonMain/composeResources/files/licenses/material-color-utilities.txt` 打包。
   - `src/commonMain/kotlin/dev/wawlink/ui/ComposerSlashCommands.kt` 提供原生命令的图标/中文展示匹配，`AskDraftState.kt` 保存按问题 ID 隔离的答案、页码与预览状态。
   - 同目录的 `MarkdownParts.kt`、`RichGraphic.kt` 共用正文/Ask 富媒体入口；`src/jvmSharedMain/kotlin/dev/wawlink/ui/RichGraphicDocument.kt` 负责离线图表文档、SVG 安全与图像加载，`src/androidMain/kotlin/dev/wawlink/ui/RichGraphic.android.kt` 和 `src/desktopMain/kotlin/dev/wawlink/ui/RichGraphic.desktop.kt` 分别提供沙箱 WebView 与无窗口 Canvas/原生图像显示。
+  - 同目录的 `MarkdownInline.kt` 提供可选择、可点击的内联代码胶囊与长代码分段，`MarkdownTable.kt` 提供表格解析、统一列宽、对齐网格及窄屏横滚，`MarkdownTest.kt` 覆盖原文与链接偏移、转义竖线、缺格和无效表头边界。
+  - 同目录的 `ImageDetailScreen.kt` 提供原生全屏图像、缩放拖动与保存；`RichGraphic.kt` 的 `LocalAgentImageSaveHandler` 由宿主接入系统文档保存，`RichGraphicDocument.kt` 保留校验后的图像字节、MIME 与安全文件名。
   - `src/commonMain/composeResources/files/rich/` 保存 Mermaid 离线引擎、来源与许可证；`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ComposerSlashCommandsTest.kt`、`AskDraftStateTest.kt`、`MarkdownPartsTest.kt` 覆盖命令覆盖优先级、分组作答和富媒体解析边界，`src/desktopTest/kotlin/dev/wawlink/ui/RichGraphicSafetyTest.kt` 覆盖 SVG 主动内容、图像 URI 与重定向边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/FeedPresentation.kt`、`src/jvmSharedMain/kotlin/dev/wawlink/ui/FeedClock.kt` 统一运行耗时、思考稳定展示与详情；`FeedPresentationTest.kt` 覆盖耗时边界，`MarkdownPartsTest.kt` 覆盖稳定 Markdown 段落与代码围栏边界。
   - 同目录的 `CodeLanguage.kt`、`HighlightedCode.kt`、`CodeDetailScreen.kt` 提供语言识别、原生高亮与全屏入口；`src/androidMain/kotlin/dev/wawlink/ui/OfflineTextMate.android.kt` 为行内与 Sora 共用离线 TextMate 语法，`CodeDetailScreen.android.kt` 接入只读 Sora；`src/desktopMain/kotlin/dev/wawlink/ui/HighlightedCode.desktop.kt` 与 `CodeDetailScreen.desktop.kt` 接入 RSyntaxTextArea。

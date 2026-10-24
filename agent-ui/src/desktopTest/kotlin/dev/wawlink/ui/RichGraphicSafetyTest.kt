@@ -71,4 +71,24 @@ class RichGraphicSafetyTest {
             server.stop(0)
         }
     }
+    @Test fun safeNamesUseDetectedFormatAndNeverPathsOrReservedNames() {
+        kotlin.test.assertEquals("photo.gif", graphicImageFileName("https://example.test/a/photo.png?token=secret", "image/gif"))
+        kotlin.test.assertEquals("image_CON.webp", graphicImageFileName("https://example.test/CON.jpg", "image/webp"))
+        kotlin.test.assertEquals("image.svg", graphicImageFileName("data:image/svg+xml,<svg/>", "image/svg+xml"))
+        kotlin.test.assertEquals("image.png", graphicImageFileName("https://example.test/%2e%2e", "image/png"))
+        val name = graphicImageFileName("https://example.test/" + "a".repeat(200) + ".jpg", "image/jpeg")
+        kotlin.test.assertEquals(84, name.length)
+        assertTrue(name.none { it == '/' || it == '\\' || it == ':' })
+    }
+
+    @Test fun realGifBytesRetainOriginalFormatDespiteMisleadingDeclaration() {
+        val bytes = Base64.getDecoder().decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+        val loaded = loadGraphicImage("data:image/png;base64," + Base64.getEncoder().encodeToString(bytes))
+        assertContentEquals(bytes, loaded.first)
+        kotlin.test.assertEquals("image/gif", loaded.second)
+        val bitmap = rasterImage(loaded.first, loaded.second)
+        kotlin.test.assertEquals(1, bitmap.width)
+        kotlin.test.assertEquals(1, bitmap.height)
+    }
+
 }

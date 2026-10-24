@@ -29,11 +29,14 @@ private suspend fun mermaidEngine(): String = engineLock.withLock {
         .replace("</script", "<\\/script", ignoreCase = true).also { engine = it }
 }
 
-internal actual suspend fun prepareRichGraphic(graphic: MarkdownPart.Graphic, theme: RichGraphicTheme): PreparedGraphic {
-    if (graphic.kind == GraphicKind.Image) {
-        val (bytes, type) = loadGraphicImage(graphic.source)
-        if (type != "image/svg+xml") return PreparedGraphic.Raster(rasterImage(bytes, type))
-        return PreparedGraphic.Html(richGraphicDocument(graphic, theme, svgDataUri(bytes.toString(Charsets.UTF_8), theme)))
+internal actual suspend fun prepareRichGraphic(graphic: MarkdownPart.Graphic, theme: RichGraphicTheme, svgRasterizer: suspend (String) -> ImageBitmap): PreparedGraphic {
+    if (graphic.kind != GraphicKind.Mermaid) {
+        val (bytes, type) = if (graphic.kind == GraphicKind.Image) loadGraphicImage(graphic.source)
+            else graphic.source.toByteArray(Charsets.UTF_8) to "image/svg+xml"
+        val validated = if (type == "image/svg+xml") safeSvg(bytes.toString(Charsets.UTF_8), theme).toByteArray(Charsets.UTF_8) else bytes
+        val image = if (type == "image/svg+xml") svgRasterizer(richGraphicDocument(graphic, theme,
+            "data:image/svg+xml;base64," + Base64.getEncoder().encodeToString(validated))) else rasterImage(bytes, type)
+        return PreparedGraphic.Raster(image, validated, type, graphicImageFileName(if (graphic.kind == GraphicKind.Image) graphic.source else "data:", type))
     }
     return PreparedGraphic.Html(richGraphicDocument(graphic, theme))
 }
@@ -234,6 +237,23 @@ private fun detectImageType(bytes: ByteArray, declared: String?): String? {
 
 /** Native decoders inspect bounds before allocating the raster. */
 internal expect fun rasterImage(bytes: ByteArray, type: String): ImageBitmap
+
+internal fun graphicImageFileName(source: String, mimeType: String): String {
+    val extension = when (mimeType) {
+        "image/png" -> "png"
+        "image/jpeg" -> "jpg"
+        "image/gif" -> "gif"
+        "image/webp" -> "webp"
+        "image/svg+xml" -> "svg"
+        else -> error("图片格式不受支持")
+    }
+    val candidate = if (source.startsWith("data:", true)) "image" else
+        runCatching { URI(source).path?.substringAfterLast('/') }.getOrNull().orEmpty().substringBeforeLast('.')
+    val stem = candidate.map { if (it.isLetterOrDigit() || it == '-' || it == '_') it else '_' }
+        .joinToString("").trim('_', '.').take(80).ifBlank { "image" }
+    val safe = if (stem.uppercase() in setOf("CON", "PRN", "AUX", "NUL") || stem.uppercase().matches(Regex("(COM|LPT)[1-9]"))) "image_$stem" else stem
+    return "$safe.$extension"
+}
 
 internal fun svgDataUri(source: String, theme: RichGraphicTheme): String =
     "data:image/svg+xml;base64," + Base64.getEncoder().encodeToString(safeSvg(source, theme).toByteArray(Charsets.UTF_8))

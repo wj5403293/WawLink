@@ -49,7 +49,7 @@ internal fun rememberAgentViewContext(): Context {
 }
 
 @Composable
-internal actual fun PlatformCodeDetail(onBack: () -> Unit, content: @Composable () -> Unit) {
+internal actual fun PlatformCodeDetail(onBack: () -> Unit, title: String, content: @Composable () -> Unit) {
     Dialog(onDismissRequest = onBack, properties = DialogProperties(
         dismissOnBackPress = true, dismissOnClickOutside = false,
         usePlatformDefaultWidth = false, decorFitsSystemWindows = false,

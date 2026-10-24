@@ -66,4 +66,56 @@ class MarkdownTest {
         assertEquals("$absolute app.apk（build/app.apk）", parsed.text)
         assertEquals(listOf(absolute, "build/app.apk"), parsed.getStringAnnotations("FILE", 0, parsed.length).map { it.item })
     }
+
+    @Test fun capsuleFragmentsKeepCopyTextAndNeighboringLinkOffsets() {
+        val path = "/workspace/project/build/outputs/very-long-file-name.apk"
+        val parsed = inline("前 `x` `$path` 后 [文档](https://example.org/docs)")
+        val codes = parsed.getStringAnnotations("CODE", 0, parsed.length)
+        val short = codes.first()
+        val long = codes.last()
+        val split = long.start + 22
+        val displayed = inlineCodeContent(parsed, listOf(short.start until short.end, long.start until split, split until long.end))
+        assertEquals("前 x $path 后 文档", displayed.text)
+        assertEquals(path, inlineLinkAt(displayed, long.start)?.item)
+        assertEquals(path, inlineLinkAt(displayed, split)?.item)
+        assertEquals(path, inlineLinkAt(displayed, long.end - 1)?.item)
+        assertEquals(null, inlineLinkAt(displayed, long.end))
+        val url = displayed.getStringAnnotations("URL", 0, displayed.length).single()
+        assertEquals("https://example.org/docs", inlineLinkAt(displayed, url.start)?.item)
+        assertEquals("文档", displayed.text.substring(url.start, url.end))
+    }
+
+    @Test fun tableEscapesAndCodePipesRemainInsideCells() {
+        val cells = markdownTableCells("| 文本 \\| 文字 | `left|right` | ``a`|b`` | `a \\| b` |")!!
+        assertEquals(listOf("文本 | 文字", "`left|right`", "``a`|b``", "`a | b`"), cells)
+        assertEquals("文本 | 文字", inline(cells[0]).text)
+        assertEquals("left|right", inline(cells[1]).text)
+        assertEquals("a`|b", inline(cells[2]).text)
+        assertEquals("a | b", inline(cells[3]).text)
+    }
+
+    @Test fun tablesNormalizeMissingCellsAndRetainColumnAlignment() {
+        val table = markdownTable(listOf(
+            "左 | 中 | 右 | 默认",
+            ":--- | :---: | ---: | ---",
+            "[配置](./app/settings.json) | `x|y` | 42",
+            "| 仅一格 |",
+            "后续段落",
+        ), 0)!!
+        assertEquals(listOf(MarkdownColumnAlignment.Left, MarkdownColumnAlignment.Center,
+            MarkdownColumnAlignment.Right, MarkdownColumnAlignment.Left), table.alignments)
+        assertEquals(listOf("[配置](./app/settings.json)", "`x|y`", "42", ""), table.rows[1])
+        assertEquals(listOf("仅一格", "", "", ""), table.rows[2])
+        assertEquals("./app/settings.json", inline(table.rows[1][0]).getStringAnnotations("FILE", 0, 2).single().item)
+        assertEquals(4, table.nextLine)
+    }
+
+    @Test fun invalidTableDelimitersDoNotConsumeParagraphs() {
+        assertEquals(null, markdownTable(listOf("A | B", "--- | --"), 0))
+        assertEquals(null, markdownTable(listOf("A | B", "| --- |"), 0))
+        assertEquals(null, markdownTable(listOf("ordinary text", "---"), 0))
+        assertEquals(null, markdownTable(listOf("`only|code`", "--- | ---"), 0))
+        assertEquals(listOf("A", "B"), markdownTableCells("A | B"))
+        assertEquals(listOf("`unclosed", "B"), markdownTableCells("`unclosed | B"))
+    }
 }

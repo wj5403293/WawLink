@@ -173,6 +173,14 @@ private class DesktopGraphicRenderer(
     }
 }
 
+@Composable
+internal actual fun rememberSvgRasterizer(): suspend (String) -> ImageBitmap = remember {
+    { document ->
+        withContext(Dispatchers.IO) { DesktopGraphicRuntime.start() }
+        renderDesktopGraphic(document, 1024f, 1f).image
+    }
+}
+
 internal actual fun rasterImage(bytes: ByteArray, type: String): ImageBitmap {
     // Skia's encoded image is lazy: its dimensions are available before rasterization.
     val image = try { org.jetbrains.skia.Image.makeFromEncoded(bytes) }

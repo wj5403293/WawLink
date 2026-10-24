@@ -84,10 +84,10 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - 思考仅在展开动画期间冻结显示快照，结束后追上最新内容；平时按 32 ms 节奏平滑推进尾部，已完成 Markdown 段落保持稳定，不以整段防抖替代流式输出。上滑、阅读或选择时不强制追尾，使用独立的“回到底部”恢复跟随。思考全文以 Markdown 显示，展开时不从头播放。
 - Markdown 代码块、未展开工具的命令摘要、执行脚本与文件内容共用原生离线高亮；Android 使用 Sora TextMate，Desktop 使用 RSyntaxTextArea 3.6.0。语言依据显式标记、工具名、文件后缀或 shebang 识别，未知显式语言保留纯文本。读取路径支持行号、范围、raw、归档成员和查询选择器，不将这些选择器误当后缀。
 - 读取、写入、创建及查找代码可打开全屏只读查看器，支持行号、选择和复制原文；Android 使用 Sora Editor 0.23.6，Desktop 使用 RSyntaxTextArea 3.6.0，不以网页组件替代 Sora。内置 34 项 TextMate 语言映射、完整语法依赖及明暗主题，包含 HTML/JavaScript/CSS、TypeScript/JSX/TSX、Shell、Python、Kotlin、Java、C/C++/C#、Go、Rust、JSON/YAML/TOML、SQL 等；HTML 内嵌脚本与样式保持跨行状态。来源、哈希、差异和完整许可位于 `agent-ui/src/commonMain/composeResources/files/code/`。
-- 内联代码使用浅主色背景与深主色文字；Markdown 中的绝对路径、带目录相对路径和文件链接可点击。相对路径以当前会话工作区解析，打开、安装和下载均通过当前容器的文件服务，不把容器路径当宿主文件；同样支持 `app-release.apk (app/build/outputs/apk/release/app-release.apk)` 这种输出格式。
+- 内联代码参照 Kelivo，使用带 5×3 dp 留白、6 dp 圆角的中性浅底胶囊与深色等宽文字；长代码可分段换行，原文仍参与选择复制。Markdown 表格使用统一列宽、对齐网格、细边框与浅表头，保留左右/居中对齐和转义竖线，窄屏多列表格可横向滚动。Markdown 中的绝对路径、带目录相对路径和文件链接可点击；相对路径以当前会话工作区解析，打开、安装和下载均通过当前容器的文件服务，不把容器路径当宿主文件；同样支持 `app-release.apk (app/build/outputs/apk/release/app-release.apk)` 这种输出格式。
 - Slash 菜单从当前会话 OMP 的原生命令目录加载并跟随动态更新；第一次输入 `/` 时才启动目录查询，不发送用户 prompt。当前内置命令匹配中文描述与 Material Symbols 图标；未知、扩展或被自定义覆盖的命令仍显示，使用默认图标且不显示描述。无参数 `/model`、`/cost` 保留应用内快捷入口，带参数的命令交给 OMP 原生解析。
 - 同一次 ask 的多个问题共用一张卡片，左下角灰色无背景前后按钮配合左右非线性切换；问题 ID 固定答案、页码和预览状态。单选选择后自动进入下一题，多选停留当前题；切题和检查答案原位更新，不把会话滚回顶部。支持推荐项、选项描述、自定义输入、提交前回看与一次提交完整答案，提交后仍可查看；免审批不会自动回答普通提问。
-- Agent 正文与 ask 富预览共用 Markdown、SVG/Mermaid 代码块与 Markdown 图像显示。Mermaid 12.2.0 随 UI 离线打包；PNG/JPEG/GIF/WebP 使用原生解码，动画图像显示首帧。图像来源仅 HTTP(S) 与图像 data URL，不读取宿主文件；SVG 不允许脚本、外部资源、实体、事件或 foreignObject，错误内容显示中文原因。
+- Agent 正文与 ask 富预览共用 Markdown、SVG/Mermaid 代码块与 Markdown 图像显示。点击图片进入原生全屏，可缩放、拖动、复位并保存；PNG/JPEG/GIF/WebP 保存已加载的原始文件，不截屏或转码，动画图像显示首帧但保留原始动画字节。SVG 保存安全校验后的矢量内容；全屏与保存不重复下载或解码，取消保存不提示成功，失败可重试。Mermaid 12.2.0 随 UI 离线打包，本轮不新增 Mermaid 导出。图像来源仅 HTTP(S) 与图像 data URL，不读取宿主文件；SVG 不允许脚本、外部资源、实体、事件或 foreignObject，错误内容显示中文原因。
 - 用户消息与运行中追加消息即时本地显示，发送失败只撤回对应的未接收消息并显示原因；收到原生用户消息后，后续模型执行失败仍保留该消息。消息按发送时的 Todo 与前置节点定位，后续工具、思考、任务切换及历史重放不改变其位置。加载状态使用 Material 3 标准进度组件。
 - 应用设置中的“新会话默认免审批”默认开启并持久化，只影响以后创建的会话；会话内仍能单独切换。开启免审批会立即回复已等待和后续工具审批，不自动回答普通提问，不改写全局工具权限配置；关闭时在下一轮启动恢复原生审批模式。
 - 新思考节点跟随当前活动 Todo 子任务；没有活动 Todo 时保持扁平。任务切换、完整快照与历史重放不迁移或重复既有思考节点。
@@ -134,6 +134,7 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 | `AgentTheme` | 宿主外观状态；设置页可置于同一主题内 |
 | `CodeDetailScreen` | 标题、原文、可选语言、返回回调；外层提供 `AgentTheme` |
 | `EditableCodeScreen` | 标题、原文、可选语言、返回及保存回调；返回前确认未保存修改 |
+| `LocalAgentImageSaveHandler` | 宿主提供 `suspend (name: String, mimeType: String, bytes: ByteArray) -> Boolean`；保存成功返回 `true`，取消返回 `false`，异常由查看器显示可重试错误。应用已接入 Android 系统文档选择器与 Desktop 原生保存窗口 |
 
 导航、文件选择、认证和 Agent 实现由宿主负责。协议使用 `StateFlow` / `Flow`；UI 只消费状态与控制契约，没有对具体驱动或容器的引用。
 
@@ -254,3 +255,7 @@ Provider 与默认缩放调整后通过 253 项 Kotlin 回归（Desktop UI 58、
 真实 arm64 PRoot/QEMU 另验证 root 身份和宿主补充组、非空目录递归删除、整批删除前的链接子树拒绝且其他目标不受影响、宿主绑定文件删除被拒绝且哨兵不变、显式允许的挂载导入、PNG 字节流及数字 UID 65534 解析为 `nobody` 与其实际 HOME。未调用模型推理、登录或复制开发机凭据。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。
+
+Markdown 代码胶囊与表格视觉参数参照 [Kelivo 的固定版本](https://github.com/Chevey339/kelivo/tree/199647a5d718ed47783dde405007e4c080efdec5/dependencies/markstream)，使用 Compose 独立实现，未复制其 AGPL 代码或资源；正文及 Ask 共用图像全屏与原文件保存入口。
+
+本轮通过 74 项 Android JVM UI 回归，无失败、错误或跳过；Android Debug APK 构建成功，APK 签名校验通过，最低 API 26，仅含 arm64-v8a 原生库。按用户要求暂停 Desktop 验收，未启动模拟器；图片全屏、手势、实际保存及跨胶囊选择复制留待用户真机实测，不将 JVM 测试和编译打包视为设备端交互验收。
