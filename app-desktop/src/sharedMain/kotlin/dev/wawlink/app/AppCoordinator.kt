@@ -16,6 +16,8 @@ data class HostImportFile(val name: String, val openInput: () -> java.io.InputSt
 interface HostFiles {
     suspend fun pickAttachments(): List<AttachmentFile>
     suspend fun pickRootfs(): String?
+    suspend fun pickMountDirectory(): String?
+    suspend fun prepareMountSource(source: String, readWrite: Boolean): String
     suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean
     suspend fun pickImportFiles(): List<HostImportFile>
     suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean

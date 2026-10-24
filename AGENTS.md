@@ -51,6 +51,7 @@
 - 模型 Markdown 中的文件路径可点击，绝对路径与带目录的相对路径均按当前会话容器解析，相对路径以工作区为基准；打开、安装与下载共用文件浏览器操作，不把模型的 file:// 路径直接交给宿主 URI 处理器。
 - 聊天路径操作按类型收敛：目录只显示“打开”和“打包下载”；普通文件只显示“打开”“打开所在文件夹”“编辑”“下载”。打开目录进入当前容器文件浏览器，返回保留聊天滚动与草稿；文件打开复用 FileProvider 系统查看/安装入口。编辑使用原生代码编辑器与客体进程保存，失败保留草稿，返回确认舍弃；拒绝二进制、无效 UTF-8、超过 2 MiB、链接及受保护路径，外部内容变化时不静默覆盖。
 - 聊天加号菜单保留项目文件并增加容器文件，支持跨目录选择普通文件；附件按来源区分主机与容器路径，不伪造工作区路径，不将容器文件复制到主机再发送。浏览器取消不清空草稿或已有附件；项目文件展开子目录后各行不得重叠。
+- 容器主机目录挂载保留手填 `/sdcard/...`，并提供系统目录选择；Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，启动不自动申请。只把可直接访问的本机目录解析为实际挂载路径，不把 SAF URI 或云盘伪装成路径，不复制目录内容；取消选择、拒绝授权及保存失败保留挂载草稿，不放宽 Android 私有目录及引擎只读能力的限制。
 - PRoot/Proroot 启动前按宿主补充 GID 为容器追加缺失的组名，不覆盖已有组记录，不隐藏 `groups` 错误；既有动态 DNS 修复继续适用，更新 APK 不要求重新导入 Rootfs。
 - Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。
 - Proroot 五库按作者同一固定来源整套校验并原样打包；启动显式指定当前 APK 配套的 runtime/linker，不混用旧组件。OMP/Bun 启动修复须验证真实原生模块与 RPC，不靠屏蔽错误、禁用原生模块或伪造成功输出，也不要求重建已有 Rootfs。
@@ -85,11 +86,12 @@
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
   - `src/sharedMain/kotlin/dev/wawlink/app/TerminalScreen.kt` 为独立终端导航页，`src/desktopMain/kotlin/dev/wawlink/app/TerminalSurface.desktop.kt` 提供 JediTerm 终端；`src/desktopMain/resources/licenses/` 随桌面分发保留 JediTerm 与 pty4j 许可。
   - `src/sharedMain/kotlin/dev/wawlink/app/ContainerFilesScreen.kt` 移植 WawSSH 独立文件浏览器并提供工作区与附件选择模式；`src/desktopTest/kotlin/dev/wawlink/app/ContainerFileServiceTest.kt` 覆盖文件名、路径、流式字节、覆写与链接边界，不冒充真实引擎验收。
-  - 同目录的 `ContainerFileActions.kt` 为文件浏览器与模型路径链接共用 MIME、宿主文件名和流式打开/下载操作；`WawLinkApp.kt` 提供当前会话的文件路径处理与两端 `HostFiles` 契约。
-  - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、上下文内直接新建及持久化整体缩放与配色；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
+  - `src/sharedMain/kotlin/dev/wawlink/app/HostMounts.kt` 负责主机挂载源访问校验及本机储存卷文档 ID 的边界安全解析；`src/desktopTest/kotlin/dev/wawlink/app/HostMountsTest.kt` 覆盖主储存与可移除卷、路径原名、未知卷、目录越界及已有文件挂载。
+  - 同目录的 `ContainerFileActions.kt` 为文件浏览器与模型路径链接共用 MIME、宿主文件名和流式打开/下载操作；`WawLinkApp.kt` 提供当前会话的文件路径处理。
+  - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、上下文内直接新建及持久化整体缩放与配色，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。
-  - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载与 APK 安装入口；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。
+  - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载、APK 安装及主机挂载目录选择，按 Android 版本处理共享储存授权与本机储存卷路径；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。
 - `terminal-emulator/`、`terminal-view/`：从 Love2Droid 固定提交移植的 Android Termux 终端解析器、JNI PTY 与视图，仅构建 arm64-v8a；`terminal-emulator/NOTICE` 记录上游来源及修改，许可同时保存在模块 assets 与 `licenses/`。
 - `licenses/`：Termux 终端、JediTerm、pty4j、Love2Droid/r2droid 与 Maple Mono 的完整上游许可及来源。
 - `scripts/`：免 Docker Rootfs、Android 原生二进制与验证脚本。

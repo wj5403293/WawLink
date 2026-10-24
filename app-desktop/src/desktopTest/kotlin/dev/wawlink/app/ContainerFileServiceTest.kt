@@ -36,6 +36,8 @@ class ContainerFileServiceTest {
         val saved = ArrayList<Triple<String, String, ByteArray>>()
         override suspend fun pickAttachments(): List<dev.wawlink.protocol.AttachmentFile> = error("Unexpected picker")
         override suspend fun pickRootfs(): String? = error("Unexpected rootfs picker")
+        override suspend fun pickMountDirectory(): String? = error("Unexpected mount picker")
+        override suspend fun prepareMountSource(source: String, readWrite: Boolean): String = error("Unexpected mount access request")
         override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean = error("Unexpected rootfs export")
         override suspend fun pickImportFiles(): List<HostImportFile> = error("Unexpected import picker")
         override suspend fun openFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit) {

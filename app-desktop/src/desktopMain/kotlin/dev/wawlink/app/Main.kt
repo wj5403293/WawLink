@@ -33,6 +33,13 @@ fun main() = application {
 }
 
 private class DesktopHostFiles : HostFiles {
+    override suspend fun pickMountDirectory(): String? = withContext(Dispatchers.Swing) {
+        val chooser = JFileChooser().apply { dialogTitle = "选择主机挂载目录"; fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+        if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.absolutePath else null
+    }
+    override suspend fun prepareMountSource(source: String, readWrite: Boolean): String = withContext(Dispatchers.IO) {
+        validateHostMountSource(source, readWrite)
+    }
     override suspend fun pickImportFiles(): List<HostImportFile> = withContext(Dispatchers.Swing) {
         val chooser = JFileChooser().apply { dialogTitle = "导入到容器"; isMultiSelectionEnabled = true; fileSelectionMode = JFileChooser.FILES_ONLY }
         if (chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) emptyList()

@@ -272,8 +272,9 @@ internal fun bytesLabel(bytes: Long): String = when {
     }
     if (clone) AgentSheet("克隆容器", { clone = false }) { HostField("新容器名称", cloneName, { cloneName = it }); HostAction("开始克隆", "content_copy", { app.launch { app.runtime.clone(c.id, cloneName); clone = false } }, Modifier.fillMaxWidth(), enabled = cloneName.isNotBlank()) }
     if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text("删除容器 ${c.name}？") }, text = { Text("将停止相关进程并删除此容器。受管导入的 rootfs 会永久删除；外部注册的开发 rootfs 将保留。存在关联会话时请先切换或删除会话。") }, confirmButton = { TextButton({ app.launch { app.deleteContainer(c.id); delete = false; onBack() } }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton({ delete = false }) { Text("取消") } })
-    if (addMount) MountSheet(mountEditor, c.engine == ContainerEngineType.CHROOT, { addMount = false }) { mount ->
-        app.launch { app.runtime.update(c.copy(mounts = if (mountEditor == null) c.mounts + mount else c.mounts.map { if (it == mountEditor) mount else it })); addMount = false }
+    if (addMount) MountSheet(mountEditor, c.engine == ContainerEngineType.CHROOT, files, { addMount = false }) { mount ->
+        app.runtime.update(c.copy(mounts = if (mountEditor == null) c.mounts + mount else c.mounts.map { if (it == mountEditor) mount else it }))
+        addMount = false
     }
     if (addEnv) EnvironmentSheet(envEditor, { addEnv = false }) { key, value ->
         app.launch {
@@ -287,17 +288,38 @@ internal fun bytesLabel(bytes: Long): String = when {
     }
 }
 
-@Composable private fun MountSheet(existing: ContainerMount?, allowReadonly: Boolean, dismiss: () -> Unit, save: (ContainerMount) -> Unit) {
-    var source by remember { mutableStateOf(existing?.source ?: "") }
-    var target by remember { mutableStateOf(existing?.target ?: "/mnt/docs") }
-    var rw by remember { mutableStateOf(existing?.readWrite ?: true) }
+@Composable private fun MountSheet(existing: ContainerMount?, allowReadonly: Boolean, files: HostFiles, dismiss: () -> Unit, save: suspend (ContainerMount) -> Unit) {
+    var source by rememberSaveable { mutableStateOf(existing?.source ?: "") }
+    var target by rememberSaveable { mutableStateOf(existing?.target ?: "/mnt/docs") }
+    var rw by rememberSaveable { mutableStateOf(existing?.readWrite ?: true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    fun run(action: suspend () -> Unit) {
+        if (busy) return
+        busy = true
+        error = null
+        scope.launch {
+            try { action() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { error = failure.message ?: "无法访问主机挂载目录" }
+            finally { busy = false }
+        }
+    }
     AgentSheet(if (existing == null) "添加挂载目录" else "编辑挂载目录", dismiss) {
-        DetailField("主机路径（有访问权限的实际目录）", source) { source = it }
-        DetailField("容器内路径", target) { target = it }
+        DetailField("主机路径（有访问权限的实际目录）", source, enabled = !busy, trailing = {
+            AgentIconButton("folder_open", "选择主机目录", { run { files.pickMountDirectory()?.let { source = it } } }, enabled = !busy)
+        }) { source = it; error = null }
+        DetailField("容器内路径", target, enabled = !busy) { target = it; error = null }
         Text("访问权限", Modifier.padding(start = 4.dp, top = 20.dp, bottom = 8.dp), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        DetailSegments(listOf(true, false), rw, { if (it) "读写模式" else "只读保护" }, { rw = it }, enabled = { it || allowReadonly })
+        DetailSegments(listOf(true, false), rw, { if (it) "读写模式" else "只读保护" }, { rw = it; error = null }, enabled = { !busy && (it || allowReadonly) })
         if (!allowReadonly) Text("只读挂载需要 chroot；proot / proroot 不支持真正只读绑定。", Modifier.padding(top = 12.dp), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        HostAction("确认挂载", "check", { save(ContainerMount(source.trim(), target.trim(), rw)) }, Modifier.fillMaxWidth().padding(top = 24.dp), enabled = source.trim().startsWith('/') && target.trim().startsWith('/'))
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
+        error?.let { Text(it, Modifier.padding(top = 16.dp), color = MaterialTheme.colorScheme.error) }
+        HostAction("确认挂载", "check", { run {
+            val actual = files.prepareMountSource(source, rw)
+            save(ContainerMount(actual, target.trim(), rw))
+        } }, Modifier.fillMaxWidth().padding(top = 24.dp), enabled = !busy && source.startsWith('/') && target.trim().startsWith('/'))
     }
 }
 @Composable private fun EnvironmentSheet(existing: Pair<String, String>?, dismiss: () -> Unit, save: (String, String) -> Unit) {
@@ -336,9 +358,9 @@ internal fun bytesLabel(bytes: Long): String = when {
     }
 }
 
-@Composable private fun DetailField(label: String, value: String, onChange: (String) -> Unit) {
+@Composable private fun DetailField(label: String, value: String, enabled: Boolean = true, trailing: (@Composable () -> Unit)? = null, onChange: (String) -> Unit) {
     Text(label, Modifier.padding(start = 4.dp, top = 20.dp, bottom = 8.dp), fontSize = 16.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    TextField(value, onChange, Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(16.dp), textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = LocalAgentMono.current), colors = TextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent))
+    TextField(value, onChange, Modifier.fillMaxWidth(), enabled = enabled, trailingIcon = trailing, singleLine = true, shape = RoundedCornerShape(16.dp), textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = LocalAgentMono.current), colors = TextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent))
 }
 
 @Composable private fun ExistingUserSheet(value: String, onChange: (String) -> Unit, dismiss: () -> Unit, save: suspend (String) -> Unit) {

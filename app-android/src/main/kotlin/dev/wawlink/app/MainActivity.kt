@@ -3,9 +3,14 @@ package dev.wawlink.app
 import android.Manifest
 import android.content.ClipData
 import android.content.Intent
+import android.content.ActivityNotFoundException
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.storage.StorageManager
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
 import androidx.core.content.FileProvider
@@ -38,6 +43,13 @@ class MainActivity : ComponentActivity(), HostFiles {
     private var fileImportResult: CancellableContinuation<List<Uri>>? = null
     private var fileExportResult: CancellableContinuation<Uri?>? = null
     private var installPermissionResult: CancellableContinuation<Unit>? = null
+    private var mountDirectoryResult: CancellableContinuation<Uri?>? = null
+    private var storageAccessResult: CancellableContinuation<Boolean>? = null
+    private val pickHostDirectory = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        mountDirectoryResult?.let { continuation -> mountDirectoryResult = null; if (continuation.isActive) continuation.resume(uri) }
+    }
+    private val allowSharedStorage = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { finishStorageAccessRequest() }
+    private val legacyStoragePermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { finishStorageAccessRequest() }
     private val allowPackageInstallation = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         installPermissionResult?.let { continuation -> installPermissionResult = null; if (continuation.isActive) continuation.resume(Unit) }
     }
@@ -78,6 +90,65 @@ class MainActivity : ComponentActivity(), HostFiles {
             ) { WawLinkApp(app, this@MainActivity, navigation) }
         }
         if (Build.VERSION.SDK_INT >= 33 && savedInstanceState == null) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    override suspend fun pickMountDirectory(): String? {
+        requireSharedStorageAccess()
+        val uri = withContext(Dispatchers.Main.immediate) {
+            check(mountDirectoryResult == null) { "主机目录选择器已打开" }
+            suspendCancellableCoroutine<Uri?> { continuation ->
+                mountDirectoryResult = continuation
+                continuation.invokeOnCancellation { mountDirectoryResult = null }
+                try { pickHostDirectory.launch(null) }
+                catch (failure: Exception) { mountDirectoryResult = null; throw failure }
+            }
+        } ?: return null
+        return withContext(Dispatchers.IO) {
+            require(uri.scheme == "content" && uri.authority == "com.android.externalstorage.documents" && DocumentsContract.isTreeUri(uri)) {
+                "只能挂载本机共享储存中的实际目录；云盘或其他文档提供方不能直接挂载"
+            }
+            val source = storageTreeMountSource(DocumentsContract.getTreeDocumentId(uri), storageRoots())
+            check(File(source).isDirectory) { "所选主机目录不存在或不可访问：$source" }
+            validateHostMountSource(source, readWrite = false)
+        }
+    }
+    override suspend fun prepareMountSource(source: String, readWrite: Boolean): String {
+        if (withContext(Dispatchers.IO) { isSharedStorageSource(source) }) requireSharedStorageAccess()
+        return withContext(Dispatchers.IO) { validateHostMountSource(source, readWrite) }
+    }
+    private fun hasSharedStorageAccess(): Boolean = if (Build.VERSION.SDK_INT >= 30) {
+        Environment.isExternalStorageManager()
+    } else {
+        checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+    }
+    private fun finishStorageAccessRequest() {
+        storageAccessResult?.let { continuation ->
+            storageAccessResult = null
+            if (continuation.isActive) continuation.resume(hasSharedStorageAccess())
+        }
+    }
+    private suspend fun requireSharedStorageAccess() = withContext(Dispatchers.Main.immediate) {
+        if (hasSharedStorageAccess()) return@withContext
+        check(storageAccessResult == null) { "储存权限授权页面已打开" }
+        val allowed = suspendCancellableCoroutine<Boolean> { continuation ->
+            storageAccessResult = continuation
+            continuation.invokeOnCancellation { storageAccessResult = null }
+            try {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    try {
+                        allowSharedStorage.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
+                    } catch (_: ActivityNotFoundException) {
+                        allowSharedStorage.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                    }
+                } else {
+                    legacyStoragePermissions.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+                }
+            } catch (failure: Exception) { storageAccessResult = null; throw failure }
+        }
+        check(allowed) {
+            if (Build.VERSION.SDK_INT >= 30) "尚未授予“所有文件访问权限”，无法挂载共享储存目录；请授权后重试"
+            else "尚未授予储存读写权限，无法挂载共享储存目录；请授权后重试"
+        }
     }
     override suspend fun pickImportFiles(): List<HostImportFile> {
         val uris = withContext(Dispatchers.Main.immediate) {
@@ -191,6 +262,31 @@ class MainActivity : ComponentActivity(), HostFiles {
                 true
             } finally { temporary.delete() }
         }
+    }
+    private fun isSharedStorageSource(source: String): Boolean {
+        val roots = listOf(File("/sdcard"), File("/mnt/sdcard"), File("/storage"), Environment.getExternalStorageDirectory()).map { it.toPath() }
+        val file = File(source)
+        val supplied = file.toPath().toAbsolutePath().normalize()
+        if (roots.any { supplied.startsWith(it) }) return true
+        val actual = file.canonicalFile.toPath()
+        return roots.any { actual.startsWith(it) }
+    }
+    private fun storageRoots(): Map<String, File> {
+        val roots = linkedMapOf("primary" to Environment.getExternalStorageDirectory())
+        val manager = getSystemService(StorageManager::class.java) ?: error("系统未提供储存卷服务")
+        if (Build.VERSION.SDK_INT >= 30) {
+            manager.storageVolumes.forEach { volume ->
+                val id = if (volume.isPrimary) "primary" else volume.uuid ?: return@forEach
+                volume.directory?.let { roots[id] = it }
+            }
+        } else {
+            getExternalFilesDirs(null).filterNotNull().forEach { directory ->
+                val id = manager.getStorageVolume(directory)?.uuid ?: return@forEach
+                val root = directory.parentFile?.parentFile?.parentFile?.parentFile ?: return@forEach
+                roots[id] = root
+            }
+        }
+        return roots
     }
     private fun displayName(uri: Uri, preserveWhitespace: Boolean = false): String = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
         if (cursor.moveToFirst()) cursor.getString(0) else null
