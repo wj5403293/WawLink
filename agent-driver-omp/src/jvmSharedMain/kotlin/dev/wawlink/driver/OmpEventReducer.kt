@@ -725,8 +725,13 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
 
     private fun model(value: JsonObject) {
         state = state.copy(providerId = value.string("provider") ?: state.providerId,
-            modelId = value.string("id") ?: value.string("modelId") ?: state.modelId,
+            modelId = value.string("id") ?: value.string("modelId") ?: state.modelId, modelLoading = false,
             usage = state.usage.copy(contextWindow = value.number("contextWindow") ?: state.usage.contextWindow))
+    }
+
+    internal fun previewModel(providerId: String, modelId: String, thinkingLevel: String?) {
+        state = state.copy(providerId = providerId, modelId = modelId, modelLoading = false)
+        thinking(thinkingLevel)
     }
 
     private fun thinking(value: String?) {

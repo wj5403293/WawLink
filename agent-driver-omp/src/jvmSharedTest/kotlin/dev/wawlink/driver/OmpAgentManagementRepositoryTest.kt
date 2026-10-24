@@ -300,6 +300,6 @@ class OmpAgentManagementRepositoryTest {
     companion object {
         private val configuration = Json.parseToJsonElement("""{"files":[{"id":"global","path":"/root/.omp/agent/config.yml"}],"agents":[{"name":"review","description":"审查","source":"user","path":"/root/.omp/agent/agents/review.md"}]}""")
         private val configurationWithModels = JsonObject(configuration.jsonObject + ("files" to Json.parseToJsonElement("""[{"id":"global","path":"/root/.omp/agent/config.yml"},{"id":"models","path":"/root/.omp/agent/models.yml"}]""")))
-        private val catalogueResult = Json.parseToJsonElement("""{"models":[{"provider":"local","id":"chat","available":true}],"roles":[{"id":"default","name":"Default","model":"local/chat"}]}""")
+        private val catalogueResult = Json.parseToJsonElement("""{"models":[{"provider":"local","id":"chat","available":true}],"roles":[{"id":"default","name":"Default","model":"local/chat","providerId":"local","modelId":"chat"}]}""")
     }
 }

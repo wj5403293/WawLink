@@ -103,7 +103,7 @@ private val AttachmentDraftSaver = listSaver<SnapshotStateList<AttachmentFile>, 
 
 @OptIn(ExperimentalAnimationApi::class, ExperimentalLayoutApi::class)
 @Composable
-internal fun ComposerArea(controller: AgentSessionController, state: ChatSessionUiState, providerRepository: ProviderConfigRepository,
+internal fun ComposerArea(controller: AgentSessionController, state: ChatSessionUiState, providerRepository: ProviderConfigRepository, modelRepository: AgentManagementRepository,
     onOpenProviderSettings: () -> Unit, onPickFiles: suspend () -> List<AttachmentFile>, onPickContainerFiles: suspend () -> List<AttachmentFile>,
     onPromptSubmitted: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalAgentColors.current
@@ -113,6 +113,9 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     val providers by providerRepository.providers.collectAsState()
     val selectedProvider = providers.firstOrNull { it.id == state.providerId }
     val selectedModel = selectedProvider?.models?.firstOrNull { it.id == state.modelId }
+    val modelState by modelRepository.state.collectAsState()
+    val availableModels = remember(modelState.models) { modelState.models.filter { it.available && it.kind == "chat" }.groupBy { it.provider } }
+    val selectedNativeModel = remember(modelState.models, state.providerId, state.modelId) { modelState.models.firstOrNull { it.provider == state.providerId && it.id == state.modelId } }
     var text by rememberSaveable(state.id) { mutableStateOf("") }
     val attachments = rememberSaveable(state.id, saver = AttachmentDraftSaver) { mutableStateListOf<AttachmentFile>() }
     val workspaceExpanded = rememberSaveable(state.id, saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
@@ -273,16 +276,24 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         }
                     }
                     Box {
-                        ComposerButton("模型 ${state.modelId}", menu == "model", { menu = if (menu == "model") null else "model" }) {
-                            ModelIcon(state.modelId, selectedModel?.name ?: state.modelId)
+                        ComposerButton(if (state.modelId.isNotBlank()) "模型 ${state.modelId}" else if (state.modelLoading) "正在读取默认模型" else "选择模型", menu == "model", { menu = if (menu == "model") null else "model" }) {
+                            if (state.modelId.isNotBlank()) ModelIcon(state.modelId, selectedNativeModel?.name ?: selectedModel?.name ?: state.modelId)
+                            else if (state.modelLoading) AgentProgressIndicator()
+                            else Symbol("tune")
                         }
                         ComposerMenu(menu == "model", { menu = null }) {
-                            providers.filter { it.enabled && it.models.isNotEmpty() }.forEach { provider ->
-                                Text(provider.name, Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant, fontWeight = FontWeight.Medium)
-                                provider.models.forEach { model ->
-                                    PopupRow(model.name, "neurology", state.providerId == provider.id && state.modelId == model.id,
+                            if (modelState.modelsLoading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 14.dp))
+                            (modelState.modelsError ?: modelState.error)?.let { Text(it, Modifier.padding(14.dp), color = c.error, fontSize = 16.sp) }
+                            if (availableModels.isEmpty() && !modelState.modelsLoading) Text("没有可用的对话模型", Modifier.padding(14.dp), fontSize = 16.sp, color = c.onSurfaceVariant)
+                            availableModels.forEach { (providerId, models) ->
+                                val provider = providers.firstOrNull { it.id == providerId }
+                                Text(provider?.name ?: modelState.providers.firstOrNull { it.id == providerId }?.name ?: providerId, Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant, fontWeight = FontWeight.Medium)
+                                models.forEach { model ->
+                                    PopupRow(model.name, "neurology", state.providerId == providerId && state.modelId == model.id,
                                         customIcon = { ModelIcon(model.id, model.name, Modifier.size(32.dp)) }) {
-                                        controller.selectModel(provider.id, model.id); controller.selectThinkingLevel(model.thinkingLevel); menu = null
+                                        controller.selectModel(providerId, model.id)
+                                        provider?.models?.firstOrNull { it.id == model.id }?.let { controller.selectThinkingLevel(it.thinkingLevel) }
+                                        menu = null
                                     }
                                 }
                             }
@@ -294,7 +305,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         ComposerButton("思考强度 ${state.thinkingLevel.label}", menu == "think", { menu = if (menu == "think") null else "think" }, lit = state.thinkingLevel != ThinkingLevel.NONE) { ThinkingBulb(state.thinkingLevel) }
                         ComposerMenu(menu == "think", { menu = null }) {
                             Text("思考强度", Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant)
-                            val levels = if (selectedModel?.reasoning == false) listOf(ThinkingLevel.NONE) else ThinkingLevel.entries
+                            val levels = if ((selectedNativeModel?.metadata?.get("reasoning") ?: selectedModel?.reasoning) == false) listOf(ThinkingLevel.NONE) else ThinkingLevel.entries
                             levels.forEach { level -> PopupRow(level.label, selected = state.thinkingLevel == level,
                                 customIcon = { ThinkingBulb(level) }) { controller.selectThinkingLevel(level); menu = null } }
                         }

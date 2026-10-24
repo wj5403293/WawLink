@@ -133,7 +133,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                 val controller = remember(current.sessionId) { runCatching { app.openSession(requireNotNull(current.sessionId)) } }
                                 controller.fold(onSuccess = {
                                     val record = sessions.firstOrNull { s -> s.record.id == current.sessionId }?.record
-                                    if (record != null) AgentChatScreen(it, app.pool.providers(record.containerId), { page = "home" }, ::openNew,
+                                    if (record != null) AgentChatScreen(it, app.pool.providers(record.containerId), app.pool.management(record.containerId, record.workspace), { page = "home" }, ::openNew,
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" },
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "management" },
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "framework" }, files::pickAttachments,

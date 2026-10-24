@@ -83,6 +83,7 @@ data class ChatSessionUiState(
     val queuedPrompts: List<QueuedPrompt> = emptyList(),
     val providerId: String = "",
     val modelId: String = "",
+    val modelLoading: Boolean = false,
     val thinkingLevel: ThinkingLevel = ThinkingLevel.MEDIUM,
     val autoApprove: Boolean = true,
     val elapsedSec: Int = 0,

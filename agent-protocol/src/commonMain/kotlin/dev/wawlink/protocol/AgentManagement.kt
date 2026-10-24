@@ -50,6 +50,9 @@ data class ManagedRole(
     val source: String? = null,
     val automatic: Boolean = false,
     val diagnostics: List<String> = emptyList(),
+    /** Resolved identity, separate from the formatted selector and its routing suffix. */
+    val providerId: String? = null,
+    val modelId: String? = null,
 )
 
 data class ManagedAdvisor(

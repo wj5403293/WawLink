@@ -39,6 +39,7 @@ import kotlin.math.roundToInt
 fun AgentChatScreen(
     controller: AgentSessionController,
     providers: ProviderConfigRepository,
+    modelRepository: AgentManagementRepository,
     onNavigateToSessionList: () -> Unit,
     onNewSession: () -> Unit,
     onOpenProviderSettings: () -> Unit,
@@ -241,7 +242,7 @@ fun AgentChatScreen(
                             enter = fadeIn(tween(300, easing = EmphDecelEasing)) + scaleIn(agentSpring()), exit = fadeOut(tween(150, easing = EmphAccelEasing))) {
                             FilledTonalIconButton({ followTail = true }) { Symbol("arrow_downward", contentDescription = "回到最新消息") }
                         }
-                        ComposerArea(controller, state, providers, onOpenProviderSettings, onPickFiles, onPickContainerFiles, { followTail = true },
+                        ComposerArea(controller, state, providers, modelRepository, onOpenProviderSettings, onPickFiles, onPickContainerFiles, { followTail = true },
                             Modifier.align(Alignment.BottomCenter).onSizeChanged { size -> composerHeight = with(density) { size.height.toDp() } })
                     }
                 }

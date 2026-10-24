@@ -122,7 +122,7 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 
 | 入口 | 宿主提供的契约 |
 | --- | --- |
-| `AgentChatScreen` | `AgentSessionController`、`ProviderConfigRepository`、返回/新建/设置导航、挂起的主机与容器附件选择回调、可选 `AgentAppearance` |
+| `AgentChatScreen` | `AgentSessionController`、`ProviderConfigRepository`、同容器/项目的 `AgentManagementRepository`、返回/新建/设置导航、挂起的主机与容器附件选择回调、可选 `AgentAppearance` |
 | `ProviderSettingsScreen` | `ProviderConfigRepository`、返回回调 |
 | `AgentManagementScreen` | `AgentManagementRepository`、`ProviderConfigRepository`、返回回调；可选会话、初始分区及返回处理注册 |
 | `AgentConfigScreen` | `AgentSettingsRepository`、返回回调；对应框架设置 |
@@ -146,7 +146,7 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 | --- | ---: | ---: |
 | Rootfs 文件内容合计 | 1,543,298,008 | 1471.80 |
 | `build/outputs/ubuntu-main-debug.tar.zst` | 404,312,713 | 385.58 |
-| Android Debug APK（不含 Rootfs） | 53,125,482 | 50.66 |
+| Android Debug APK（不含 Rootfs） | 53,128,430 | 50.67 |
 
 按已确认的完整功能优先策略，不执行原计划的 150–220 MB 硬上限。每次构建会重新生成 `.sha256` 与 `.sizes.json`，以后者的实际输出为准。构建缓存、Rootfs、APK、原生二进制和本地会话均不纳入源码提交，准备脚本可重建缺失输入。
 
@@ -230,6 +230,12 @@ Provider 与默认缩放调整后通过 253 项 Kotlin 回归（Desktop UI 58、
 
 本轮通过 234 项 Kotlin 回归（Desktop UI 62、Android JVM UI 61、驱动 100、应用 11）及 4 项 Node 回归，构建 Android Debug APK 与 Desktop JAR。真实 arm64 PRoot/QEMU 验证未配置思考可省略、空对象被拒绝，以及普通、内置引用与 Runner API 的原生默认值；真实桌面 360 / 460 像素验证默认值灰字、重复默认选择不产生草稿及文件变更、模型 ID/名称放弃恢复、默认选择后成功保存、整段清除思考覆盖，以及错误提示仍显示时立即放弃。保存前后由原生 Schema 检查配置，未编辑模型保留原值，拒绝保存时原文件哈希不变；未调用模型推理或 OAuth 登录。
 
-模型选择器固定按 OMP 原生 `available` 状态过滤，服务筛选同样只列有可用模型的服务，移除可关闭的“仅可用”开关；默认/自定义角色、Agent、顾问、预设、允许范围、故障转移和当前会话的管理选择入口共用该规则。管理目录与已有绑定保留，不删除配置，也不限制手动高级选择器。Desktop 与 Android JVM 的 123 项 UI 回归通过；真实桌面验证未配置认证的 DeepSeek 等内置模型从候选及搜索结果消失，原生可用的免认证模型仍可选入角色草稿。
+模型选择器固定按 OMP 原生 `available` 状态过滤，服务筛选同样只列有可用模型的服务，移除可关闭的“仅可用”开关；默认/自定义角色、Agent、顾问、预设、允许范围、故障转移和当前会话的管理选择入口共用该规则。聊天输入区的快捷菜单同样读取当前容器/项目的原生目录，仅列可用的对话模型，包含未写入自定义模型文件但已通过原生认证的模型。管理目录与已有绑定保留，不删除配置，也不限制手动高级选择器。Desktop 与 Android JVM 的 123 项 UI 回归通过；真实桌面验证未配置认证的 DeepSeek 等内置模型从候选及搜索结果消失，原生可用的免认证模型仍可选入角色草稿。
+
+新会话在首次发送前，通过同容器、同项目共享的原生管理桥读取默认角色的独立服务/模型 ID，而不是从带路由信息的显示选择器拆分。加载时使用 Material 3 标准进度组件；成功后直接显示当前模型品牌图标及选中项，失败仍可进入模型设置，不显示空 ID 的问号。晚到的结果不覆盖手动选择、历史或运行中 RPC 状态；预览不写配置，也不把默认模型作为显式启动参数，真正启动仍遵循 OMP 原生默认/恢复逻辑。
+
+本轮最终通过 237 项 Kotlin 回归（驱动 103、Desktop UI 62、Android JVM UI 61、应用 11），包含默认模型发送前可见、迟到默认值不覆盖手动选择、选择历史重放及配置失败结束加载；修复前新增默认模型用例超时失败。真实桌面 360 / 460 像素已验证新会话从标准加载组件切换到 DeepSeek 图标，菜单选中 `oc/deepseek-v4.1-flash`；最终构建验证聊天原生目录加载、当前模型选中，以及切换后菜单选中项和按钮图标同步，过程中未发送消息。Android Debug APK 与 Desktop JAR 构建通过，APK 中六份原生管理资源与源码逐字节匹配。
+
+真实 arm64 PRoot/QEMU + OMP 验证：发送前为 `oc/deepseek-v4.1-flash` / `MAX`，聊天进程数为 0；两个会话共用 1 个原生模型桥，手动选择仍保留。预览后把默认角色改为另一可用模型，再仅加载原生 Slash 目录，OMP 无显式模型参数启动，`get_state` 最终同步为更新后的模型，返回 51 项原生命令且无消息/推理执行；验收结束恢复原配置。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。

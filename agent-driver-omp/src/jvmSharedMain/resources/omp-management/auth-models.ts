@@ -222,6 +222,8 @@ function resolveRole(registry: NativeRegistry, settings: NativeSettings, role: s
     name: info.name,
     kind: ({ image: "image", web: "search", speech: "tts", dictation: "stt", judge: "judge" } as Record<string, string>)[role] ?? "chat",
     model: result.model ? resolver.formatModelStringWithRouting(result.model) : null,
+    providerId: result.model?.provider ?? null,
+    modelId: result.model?.id ?? null,
     thinking: result.thinkingLevel ?? (role === "default" ? cfgDefaultThinkingLevel.get(settings) : null),
     error: result.model ? null : "No available model matches this role's native candidate chain",
     source: source ?? settings.getModelRoleProvenance(role),

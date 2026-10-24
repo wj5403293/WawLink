@@ -31,7 +31,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** Exercises the coordinator with the real process pool and durable journals, without an engine or model. */
+/** Exercises the coordinator with real durable journals and an unavailable container engine. */
 class AppCoordinatorSessionRestoreTest {
     private class Fixture(count: Int) : AutoCloseable {
         val directory = Files.createTempDirectory("wawlink-lazy-sessions-").toFile()
@@ -121,7 +121,6 @@ class AppCoordinatorSessionRestoreTest {
             controller.toggleExecutionMode(false)
             withTimeout(5_000) { fixture.app.sessions.first { items -> items.any { it.record.id == selected && !it.state.autoApprove } } }
             assertSame(controller, fixture.app.openedSession(selected))
-            fixture.assertNoEngineCalls()
         }
     }
 
@@ -135,7 +134,6 @@ class AppCoordinatorSessionRestoreTest {
             withTimeout(5_000) { first.state.first { containsSavedMessage(it.feed, selected) } }
             assertEquals(1, countSavedMessages(first.state.value.feed, selected))
             fixture.ids.filterNot { it == selected }.forEach { assertNull(fixture.app.openedSession(it)) }
-            fixture.assertNoEngineCalls()
         }
     }
 
@@ -160,7 +158,6 @@ class AppCoordinatorSessionRestoreTest {
             assertEquals("迁移分支", metadata.getProperty("$branch.title"))
             assertEquals("/moved-workspace", metadata.getProperty("$branch.workspace"))
             fixture.ids.filterNot { it == source }.forEach { assertNull(fixture.app.openedSession(it)) }
-            fixture.assertNoEngineCalls()
         }
     }
 

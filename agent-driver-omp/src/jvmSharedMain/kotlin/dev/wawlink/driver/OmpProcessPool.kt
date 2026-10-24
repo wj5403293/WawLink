@@ -33,7 +33,7 @@ internal fun isApprovalRequest(frame: JsonObject): Boolean {
         options.any { it.jsonPrimitive.contentOrNull == "Approve" || it.jsonPrimitive.contentOrNull == "Approve Once" }
 }
 
-/** Owns only the RPC children it starts. Creating a controller never starts a container/process. */
+/** Owns its RPC children; idle model previews share a native management bridge, not a chat process. */
 class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private val resolvConf: StateFlow<String?>? = null) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessions = LinkedHashMap<String, OmpSession>()
@@ -244,7 +244,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private val answeringApprovals = HashSet<String>()
         private val loadingSlashCommands = AtomicBoolean()
         private val eventJournal = journalFile(id)
-        private val reducer = OmpEventReducer(ChatSessionUiState(id = id, title = title, workspace = workspace, autoApprove = initialAutoApprove))
+        private val reducer = OmpEventReducer(ChatSessionUiState(id = id, title = title, workspace = workspace, autoApprove = initialAutoApprove, modelLoading = true))
         private val presentationLock = Any()
         private val outgoingPrompts = LinkedHashMap<String, OutgoingPrompt>()
         @Volatile private var backendState = reducer.state
@@ -262,6 +262,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         @Volatile private var disposed = false
         @Volatile private var restartRequired = false
         private var hasThinkingPreference = false
+        private var hasModelPreference = false
         private var managementDefault: ManagedRole? = null
         private var hasExecutionPreference = false
         private var lastHeartbeatNanos = System.nanoTime()
@@ -297,6 +298,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     val metadata = metadataFile(id)
                     if (metadata.exists()) sessionFile = DriverJson.parseToJsonElement(metadata.readText()).jsonObject["sessionFile"]?.jsonPrimitive?.contentOrNull
                     saveMetadata()
+                    sessionScope.launch { initializeModel() }
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (failure: Exception) { fail(failure) }
                 for (action in actions) {
@@ -304,6 +306,32 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (failure: Exception) { fail(failure) }
                 }
+            }
+        }
+
+        private suspend fun initializeModel() {
+            try {
+                if (state.value.modelId.isNotBlank() || sessionFile != null) {
+                    mutate { it.copy(modelLoading = false) }
+                    return
+                }
+                val snapshot = management(containerId, workspace).state.first { !it.modelsLoading }
+                check(snapshot.modelsError == null && snapshot.error == null) { snapshot.modelsError ?: snapshot.error.orEmpty() }
+                val role = checkNotNull(snapshot.roles.firstOrNull { it.id == "default" }) { "原生默认模型响应缺失" }
+                check(role.error == null) { role.error.orEmpty() }
+                val provider = checkNotNull(role.providerId?.takeIf { it.isNotBlank() }) { "原生默认模型缺少服务标识" }
+                val model = checkNotNull(role.modelId?.takeIf { it.isNotBlank() }) { "原生默认模型缺少模型标识" }
+                stateMutex.withLock {
+                    // A late preview must never replace an explicit selection, history or live RPC state.
+                    if (reducer.state.modelId.isBlank() && process == null && sessionFile == null) {
+                        reducer.previewModel(provider, model, if (hasThinkingPreference) null else role.thinking)
+                    } else if (reducer.state.modelLoading) reducer.update { it.copy(modelLoading = false) }
+                    publishState()
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                mutate { it.copy(modelLoading = false, error = if (it.modelId.isBlank() && !it.isRunning && sessionFile == null)
+                    failure.message ?: "无法读取默认模型" else it.error) }
             }
         }
 
@@ -662,19 +690,17 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         fun managementAvailable(): Boolean = process?.isAlive == true
 
         suspend fun applyManagementDefault(role: ManagedRole) = exclusive {
-            require(role.error == null && role.model != null) { "Default role has no available model" }
+            require(role.error == null && role.providerId != null && role.modelId != null) { "Default role has no available model" }
             managementDefault = role
             if (state.value.isRunning || !backendSettled) { restartRequired = true; return@exclusive }
-            val model = requireNotNull(role.model)
-            val provider = model.substringBefore('/')
-            val modelId = model.substringAfter('/', "")
-            require(modelId.isNotBlank()) { "Invalid native resolved model" }
+            val provider = requireNotNull(role.providerId)
+            val modelId = requireNotNull(role.modelId)
             if (process != null) {
                 command("set_model", buildJsonObject { put("provider", provider); put("modelId", modelId) })
                 role.thinking?.let { command("set_thinking_level", buildJsonObject { put("level", it) }) }
                 command("get_state")
             } else {
-                reducer.update { it.copy(providerId = provider, modelId = modelId) }
+                reducer.update { it.copy(providerId = provider, modelId = modelId, modelLoading = false) }
                 presentState()
             }
         }
@@ -708,8 +734,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             sessionFile = history?.let { guestSessionDirectory(id) + "/" + it.name }
             val args = mutableListOf("omp", "--mode", "rpc-ui", "--cwd", workspace, "--session-dir", guestSessionDirectory(id), "--approval-mode", if (state.value.autoApprove) "yolo" else "always-ask")
             sessionFile?.let { args += listOf("--resume", it) }
-            // Pass only model identity already selected by the user; credentials stay in the container.
-            if (state.value.providerId.isNotBlank() && state.value.modelId.isNotBlank()) args += listOf("--provider", state.value.providerId, "--model", state.value.modelId)
+            // Display-only defaults are resolved again by native startup; only pin explicit selections.
+            if (hasModelPreference && state.value.providerId.isNotBlank() && state.value.modelId.isNotBlank()) args += listOf("--provider", state.value.providerId, "--model", state.value.modelId)
             prepareOmpConfiguration { agentDirectory(containerId) }
             confined(agentDirectory(containerId), "wawlink-model-payload.mjs")
             args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId)))
@@ -717,10 +743,12 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val managementSource = requireNotNull(javaClass.getResourceAsStream("/omp-management/session.mjs")).bufferedReader().use { it.readText() }
             if (!managementExtension.exists() || managementExtension.readText() != managementSource) repoAtomicWrite(managementExtension, managementSource)
             args += listOf("--extension", "/root/.omp/agent/wawlink/management/session.mjs")
-            managementDefault?.model?.let { model ->
+            managementDefault?.let { role ->
+                val provider = requireNotNull(role.providerId)
+                val modelId = requireNotNull(role.modelId)
                 val providerIndex = args.indexOf("--provider")
-                if (providerIndex >= 0) { args[providerIndex + 1] = model.substringBefore('/'); args[args.indexOf("--model") + 1] = model.substringAfter('/') }
-                else args += listOf("--provider", model.substringBefore('/'), "--model", model.substringAfter('/'))
+                if (providerIndex >= 0) { args[providerIndex + 1] = provider; args[args.indexOf("--model") + 1] = modelId }
+                else args += listOf("--provider", provider, "--model", modelId)
             }
             if (managementDefault?.thinking != null) args += listOf("--thinking", requireNotNull(managementDefault?.thinking))
             else if (hasThinkingPreference) args += listOf("--thinking", thinkingWire(state.value.thinkingLevel))
@@ -1046,7 +1074,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 }) }
                 "queue_remove" -> reducer.update { it.copy(queuedPrompts = it.queuedPrompts.filterNot { queued -> queued.id == frame.string("queueId") }) }
                 "title" -> reducer.update { it.copy(title = frame.string("title")) }
-                "model" -> reducer.update { it.copy(providerId = frame.string("provider"), modelId = frame.string("model")) }
+                "model" -> {
+                    hasModelPreference = true
+                    reducer.update { it.copy(providerId = frame.string("provider"), modelId = frame.string("model")) }
+                }
                 "thinking" -> {
                     hasThinkingPreference = true
                     reducer.update { it.copy(thinkingLevel = ThinkingLevel.valueOf(frame.string("level"))) }

@@ -18,6 +18,54 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class OmpPromptDeliveryTest {
+    @Test fun nativeDefaultModelIsVisibleBeforeTheFirstPrompt() = runBlocking {
+        fixture(withManagement = true) {
+            val catalogue = managementCatalogue()
+            managementTransport.respondManagement(catalogue, nativeDefault)
+            val initial = awaitState { !it.modelLoading && it.modelId == "resolved" }
+            assertEquals("local", initial.providerId)
+            assertEquals(ThinkingLevel.MAX, initial.thinkingLevel)
+            assertEquals(SessionStatus.IDLE, initial.status)
+            assertTrue(initial.feed.isEmpty())
+            assertFalse(opened.isCompleted)
+        }
+    }
+
+    @Test fun delayedDefaultDoesNotReplaceManualSelectionAndReplayRetainsIt() = runBlocking {
+        fixture(withManagement = true) {
+            val catalogue = managementCatalogue()
+            controller.selectModel("manual", "picked")
+            controller.selectThinkingLevel(ThinkingLevel.HIGH)
+            awaitState { it.modelId == "picked" && it.thinkingLevel == ThinkingLevel.HIGH }
+            managementTransport.respondManagement(catalogue, nativeDefault)
+            val selected = awaitState { !it.modelLoading }
+            assertEquals("manual", selected.providerId)
+            assertEquals("picked", selected.modelId)
+            assertEquals(ThinkingLevel.HIGH, selected.thinkingLevel)
+            assertNull(selected.error)
+
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val restored = withTimeout(5_000) { pool.session("session", "fixture", "/workspace").state.first { !it.modelLoading } }
+            assertEquals("manual", restored.providerId)
+            assertEquals("picked", restored.modelId)
+            assertEquals(ThinkingLevel.HIGH, restored.thinkingLevel)
+        }
+    }
+
+    @Test fun nativeDefaultFailureStopsLoadingAndPreservesAnEditableIdleSession() = runBlocking {
+        fixture(withManagement = true) {
+            val catalogue = managementCatalogue()
+            managementTransport.respondManagement(catalogue, error = "UNAVAILABLE: Invalid native model provider configuration")
+            val failed = awaitState { !it.modelLoading }
+            assertEquals("", failed.providerId)
+            assertEquals("", failed.modelId)
+            assertEquals(SessionStatus.IDLE, failed.status)
+            assertTrue(failed.error!!.contains("模型服务配置无效"))
+            assertFalse(opened.isCompleted)
+        }
+    }
+
     @Test fun firstMessageIsVisibleBeforeStartupAndKeepsItsIdentityAfterAcceptance() = runBlocking {
         fixture {
             controller.sendPrompt("立即显示")
@@ -300,20 +348,27 @@ class OmpPromptDeliveryTest {
         }
     }
 
-    private suspend fun fixture(autoApprove: Boolean = true, block: suspend Fixture.() -> Unit) {
-        val fixture = Fixture(autoApprove)
+    private val nativeDefault = Json.parseToJsonElement("""{"models":[{"provider":"local","id":"resolved","available":true}],"roles":[{"id":"default","model":"local/resolved","providerId":"local","modelId":"resolved","thinking":"max"}]}""")
+
+    private suspend fun fixture(autoApprove: Boolean = true, withManagement: Boolean = false, block: suspend Fixture.() -> Unit) {
+        val fixture = Fixture(autoApprove, withManagement)
         try { block(fixture) } finally { fixture.close() }
     }
 
-    private class Fixture(autoApprove: Boolean) : AutoCloseable {
+    private class Fixture(autoApprove: Boolean, withManagement: Boolean) : AutoCloseable {
         val directory = Files.createTempDirectory("wawlink-delivery-").toFile()
         val data = File(directory, "gui")
         val transport = RpcTransport()
+        val managementTransport = RpcTransport(management = true)
         val gate = CompletableDeferred<Process>()
         val opened = CompletableDeferred<Unit>()
         private val local = LocalContainerRuntime(RuntimePaths(File(directory, "runtime")))
         val runtime = object : ContainerRuntime by local {
             override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                if (arguments.firstOrNull() == "/usr/local/bin/bun") {
+                    check(withManagement) { "未配置默认模型" }
+                    return managementTransport
+                }
                 opened.complete(Unit)
                 return gate.await()
             }
@@ -330,10 +385,16 @@ class OmpPromptDeliveryTest {
             pool = OmpProcessPool(runtime, data)
             controller = pool.session("session", "fixture", "/workspace", autoApprove = autoApprove)
         }
+        suspend fun managementCatalogue(): JsonObject {
+            managementTransport.respondManagement(managementTransport.managementRequest("init"), JsonPrimitive(true))
+            managementTransport.respondManagement(managementTransport.managementRequest("snapshot"), JsonObject(emptyMap()))
+            return managementTransport.managementRequest("modelsSnapshot")
+        }
         suspend fun awaitState(predicate: (ChatSessionUiState) -> Boolean): ChatSessionUiState = withTimeout(5_000) { controller.state.first(predicate) }
         override fun close() {
             gate.completeExceptionally(IllegalStateException("验证结束"))
             transport.destroy()
+            managementTransport.destroy()
             pool.close()
             local.close()
             directory.deleteRecursively()
@@ -341,7 +402,7 @@ class OmpPromptDeliveryTest {
     }
 
     /** Controllable RPC transport: admission and terminal events are independent, as in native RPC. */
-    private class RpcTransport : Process() {
+    private class RpcTransport(private val management: Boolean = false) : Process() {
         private val stdout = PipedInputStream(65_536)
         private val eventOutput = PipedOutputStream(stdout)
         private val stderr = PipedInputStream(4096)
@@ -349,6 +410,7 @@ class OmpPromptDeliveryTest {
         private val exited = CountDownLatch(1)
         private val requests = Channel<JsonObject>(Channel.UNLIMITED)
         private val uiResponses = Channel<JsonObject>(Channel.UNLIMITED)
+        private val managementRequests = Channel<JsonObject>(Channel.UNLIMITED)
         private var running = false
         private val stdin = object : OutputStream() {
             private val buffer = ByteArrayOutputStream()
@@ -356,6 +418,7 @@ class OmpPromptDeliveryTest {
                 if (value != '\n'.code) { buffer.write(value); return }
                 val request = Json.parseToJsonElement(buffer.toString(Charsets.UTF_8)).jsonObject
                 buffer.reset()
+                if (request["op"] != null) { check(managementRequests.trySend(request).isSuccess); return }
                 when (request.string("type")) {
                     "prompt", "follow_up" -> check(requests.trySend(request).isSuccess)
                     "extension_ui_response" -> check(uiResponses.trySend(request).isSuccess)
@@ -367,8 +430,22 @@ class OmpPromptDeliveryTest {
             }
             override fun close() = destroy()
         }
-        init { emit("""{"type":"ready"}""") }
+        init { if (!management) emit("""{"type":"ready"}""") }
         suspend fun request(): JsonObject = withTimeout(5_000) { requests.receive() }
+        suspend fun managementRequest(operation: String): JsonObject = withTimeout(5_000) {
+            managementRequests.receive().also { assertEquals(operation, it.string("op")) }
+        }
+        fun respondManagement(request: JsonObject, result: JsonElement = JsonNull, error: String? = null) {
+            val models = (result as? JsonObject)?.get("models") as? JsonArray
+            val body = if (request.string("op") == "modelsSnapshot" && error == null && models != null) {
+                emit(buildJsonObject { put("event", "models_page"); put("id", request["id"]!!); put("models", models) })
+                JsonObject(result.jsonObject - "models" + ("modelsCount" to JsonPrimitive(models.size)))
+            } else result
+            emit(buildJsonObject {
+                put("id", request["id"]!!)
+                if (error == null) put("result", body) else put("error", error)
+            })
+        }
         suspend fun uiResponse(): JsonObject = withTimeout(5_000) { uiResponses.receive() }
         fun hasUiResponse(): Boolean = uiResponses.tryReceive().isSuccess
         fun emit(json: String) = emit(Json.parseToJsonElement(json).jsonObject)
