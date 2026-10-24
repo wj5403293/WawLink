@@ -7,3 +7,4 @@ local.properties
 app-android/src/main/jniLibs/
 app-android/src/debug/assets/
 *.hprof
+/ref-plan/
