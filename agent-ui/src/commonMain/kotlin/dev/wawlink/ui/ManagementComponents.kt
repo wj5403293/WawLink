@@ -309,7 +309,7 @@ internal fun ManagementModelPicker(state: AgentManagementState, current: String?
     var tab by rememberSaveable { mutableStateOf("model") }
     var query by rememberSaveable { mutableStateOf("") }
     var provider by rememberSaveable { mutableStateOf<String?>(null) }
-    var onlyAvailable by rememberSaveable { mutableStateOf(false) }
+    val availableModels = remember(state.models) { state.models.filter { it.available } }
     var strict by rememberSaveable { mutableStateOf(kind != null) }
     val repository = LocalManagementRepository.current
     val actions = LocalManagementActions.current
@@ -330,19 +330,18 @@ internal fun ManagementModelPicker(state: AgentManagementState, current: String?
                             ManagementChip(provider ?: "全部服务", provider != null, { showProviders = true })
                             ManagementMenu(showProviders, { showProviders = false }) {
                                 DropdownMenuItem(text = { Text("全部服务") }, onClick = { provider = null; showProviders = false })
-                                state.models.map { it.provider }.distinct().forEach { id -> DropdownMenuItem(text = { Text(id) }, leadingIcon = { Symbol("hub") }, onClick = { provider = id; showProviders = false }) }
+                                availableModels.map { it.provider }.distinct().forEach { id -> DropdownMenuItem(text = { Text(id) }, leadingIcon = { Symbol("hub") }, onClick = { provider = id; showProviders = false }) }
                             }
                         }
                         if (kind != null) ManagementChip("仅适用类型", strict, { strict = !strict })
-                        ManagementChip("仅可用", onlyAvailable, { onlyAvailable = !onlyAvailable })
                     }
                     val requiredRole = kind?.removePrefix("role:")?.takeIf { kind.startsWith("role:") || state.roles.any { role -> role.id == kind } }
-                    val models = state.models.filter { model -> (provider == null || model.provider == provider) && (!onlyAvailable || model.available) &&
+                    val models = availableModels.filter { model -> (provider == null || model.provider == provider) &&
                         (!strict || kind == null || if (requiredRole != null) (model.metadata["acceptedRoles"] as? List<*>)?.contains(requiredRole) == true else model.kind == kind) &&
                         (query.isBlank() || model.key.contains(query, true) || model.name.contains(query, true)) }
                     LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         itemsIndexed(models, key = { _, model -> model.key }) { index, model ->
-                            ManagementRow(model.name, if (model.available) model.provider else model.unavailableReason ?: "未认证或不可用", index = index, count = models.size,
+                            ManagementRow(model.name, model.provider, index = index, count = models.size,
                                 onClick = { onPick(model.key); onDismiss() }, lead = { ModelIcon(model.id, model.name, Modifier.size(44.dp)) },
                                 trailing = { Row(verticalAlignment = Alignment.CenterVertically) { if (current == model.key) Symbol("check", tint = LocalAgentColors.current.primary); AgentIconButton("info", "模型详情", { actions.launch { detail = repository?.modelDetails(model.provider, model.id) ?: model } }) } })
                         }
