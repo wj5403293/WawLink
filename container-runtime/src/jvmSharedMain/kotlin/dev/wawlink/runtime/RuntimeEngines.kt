@@ -223,7 +223,9 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         val env = linkedMapOf("HOME" to user.home, "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         env.putAll(config.environment)
         environment.forEach { (key, value) -> require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && '\u0000' !in value) { "进程环境变量无效：$key" }; env[key] = value }
-        val guest = listOf("/usr/bin/env", "-i") + env.map { "${it.key}=${it.value}" } + listOf("/bin/sh", "-c", "cd ${shellQuote(cwd)} || exit; exec \"\$@\"", "wawlink") + arguments
+        // Proroot installs its path hooks in the guest environment; env -i would erase them
+        // before the shell exec. PRoot/chroot do not depend on inherited guest LD_* state.
+        val guest = listOf("/usr/bin/env") + (if (config.engine == ContainerEngineType.PROROOT) emptyList() else listOf("-i")) + env.map { "${it.key}=${it.value}" } + listOf("/bin/sh", "-c", "cd ${shellQuote(cwd)} || exit; exec \"\$@\"", "wawlink") + arguments
         val command = when (config.engine) {
             ContainerEngineType.PROOT, ContainerEngineType.PROROOT -> buildList {
                 add(if (config.engine == ContainerEngineType.PROOT) proot() else nativeBinary("libproroot.so"))
@@ -233,8 +235,10 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
                 if (config.sysvipc) add("--sysvipc")
                 if (config.fakeKernel) addAll(listOf("-k", "6.8.0-generic"))
                 if (config.engine == ContainerEngineType.PROOT && guestArch(config.arch) != hostArch()) addAll(listOf("-q", paths.qemuExecutable!!))
-                listOf("/dev", "/proc", "/sys").filter { File(it).exists() }.forEach { addAll(listOf("-b", it)) }
-                if (!paths.isAndroid && File("/etc/resolv.conf").isFile) addAll(listOf("-b", "/etc/resolv.conf"))
+                // The pinned proroot launcher requires host:guest even for identity binds.
+                // Explicit pairs are also accepted by PRoot; never emit its host-only shorthand.
+                listOf("/dev", "/proc", "/sys").filter { File(it).exists() }.forEach { addAll(listOf("-b", "$it:$it")) }
+                if (!paths.isAndroid && File("/etc/resolv.conf").isFile) addAll(listOf("-b", "/etc/resolv.conf:/etc/resolv.conf"))
                 config.mounts.forEach { addAll(listOf("-b", "${File(it.source).canonicalPath}:${it.target}")) }
                 addAll(guest)
             }
@@ -264,7 +268,10 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         env.remove("LD_PRELOAD")
         if (paths.isAndroid) {
             val native = paths.nativeLibraryDir ?: error("缺少 Android 原生库目录")
-            env["LD_LIBRARY_PATH"] = if (engine == ContainerEngineType.PROOT) prootLibraryPath else native.path
+            // Proroot discovers its sibling libraries itself; Android's library search path
+            // must not leak into the glibc environment retained for its runtime hooks.
+            if (engine == ContainerEngineType.PROROOT) env.remove("LD_LIBRARY_PATH")
+            else env["LD_LIBRARY_PATH"] = if (engine == ContainerEngineType.PROOT) prootLibraryPath else native.path
             if (engine == ContainerEngineType.PROOT) {
                 env["PROOT_LOADER"] = nativeBinary("libproot_loader.so")
             }

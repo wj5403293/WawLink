@@ -32,6 +32,8 @@ Agent 设置先加载运行配置、Agent 与文件来源，再异步读取模�
 
 “应用设置 → 整体缩放”对主页、聊天、Agent 设置、框架设置及其他页面统一生效，支持 80%–125%、重启保留和恢复默认 100%。新版 100% 等于此前 115%，原有 115% 偏好自动迁移为 100%，旧默认值随新基线放大，其他自定义比例按基线换算且只迁移一次。窄屏仍按 460 逻辑像素视口统一校准；系统字体缩放保持有效，嵌套页面主题不重复缩放。
 
+“应用设置 → 主题配色”支持默认蓝色、系统配色和自定义主色；自定义通过 Material Color Utilities 的 HCT 色调生成明暗两套 Material 3 角色，可选择预设或输入六位 HEX，设置跨重启保留。Android 12+ 直接读取系统莫奈调色板，旧版 Android 与 Desktop 的系统选项明确回退默认蓝色；默认界面的背景保持纯白，分段选择器及其他控件统一使用主题色，不残留默认紫色。完整上游许可随 UI 资源打包。
+
 ## 构建与运行
 
 构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35 与 Android NDK（编译终端 JNI）、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
@@ -73,15 +75,16 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 
 ## 使用与能力边界
 
-- 主页管理多会话、搜索、容器/状态筛选、分支、批量置顶/归档/删除，并可直接处理待审批操作。
+- 主页管理多会话、搜索、容器/状态筛选、分支、批量置顶/归档/删除；长按会话列表项直接进入多选，并可直接处理待审批操作。未命名会话以首条用户问题自动命名，过长时截断展示，不覆盖手动标题；聊天内右上角新建沿用当前容器与工作区，不弹配置表单。
 - 聊天页支持真实流式输出、Todo 条件归组、工具详情和 Diff、审批/提问、运行中消息排队与编辑、附件、项目文件、斜杠命令和用量详情。
-- 容器独立文件管理移植 WawSSH 的列表、面包屑、路径编辑、筛选/排序、多选、复制/粘贴、重命名、属性、书签与导入导出；删除需确认，仅删除普通文件和空目录，不递归删除或覆盖已有目标。文件操作通过客体进程执行，拒绝符号链接与特殊文件，不直接读写宿主 Rootfs。
+- 容器独立文件管理按 WawSSH 对齐列表、图标操作栏、面包屑、路径编辑、筛选/排序、多选、复制/粘贴、重命名、属性、书签与导入导出；支持系统打开图片、Android APK 安装、单文件下载及目录/多选 ZIP 下载。删除确认后可递归删除非空目录，先检查整批对象及子树，拒绝符号链接、特殊文件、宿主绑定路径及其祖先，不先删掉部分再因边界错误中断；不覆盖已有目标。文件操作通过客体进程执行，不直接读写宿主 Rootfs。失效历史会显示实际错误，但不会重新入栈，仍可继续返回或退出。
 - 新建会话可用工作区输入框右侧的文件夹按钮选择当前容器中的目录；往返浏览器保留名称、容器与原工作区表单。聊天加号菜单保留项目文件，并新增可跨目录选择的“容器文件”；取消保留草稿及已有附件，容器附件使用真实客体绝对路径。
 - 会话发送过消息后，用量条持续显示，运行、空闲、继续下一轮及执行出错时均不再隐藏；项目文件展开子目录后使用独立列表行，不再叠放。
 - 工具、Todo 和思考的运行耗时实时更新，结束后固定；不足 1 秒隐藏，1–59 秒显示 `15s`，达到 1 分钟后显示 `1:05`。展开的长思考/工具概况吸附在计划、子任务下方，三层均可回跳。
 - 思考仅在展开动画期间冻结显示快照，结束后追上最新内容；平时按 32 ms 节奏平滑推进尾部，已完成 Markdown 段落保持稳定，不以整段防抖替代流式输出。上滑、阅读或选择时不强制追尾，使用独立的“回到底部”恢复跟随。思考全文以 Markdown 显示，展开时不从头播放。
 - Markdown 代码块、未展开工具的命令摘要、执行脚本与文件内容共用原生离线高亮；Android 使用 Sora TextMate，Desktop 使用 RSyntaxTextArea 3.6.0。语言依据显式标记、工具名、文件后缀或 shebang 识别，未知显式语言保留纯文本。读取路径支持行号、范围、raw、归档成员和查询选择器，不将这些选择器误当后缀。
 - 读取、写入、创建及查找代码可打开全屏只读查看器，支持行号、选择和复制原文；Android 使用 Sora Editor 0.23.6，Desktop 使用 RSyntaxTextArea 3.6.0，不以网页组件替代 Sora。内置 34 项 TextMate 语言映射、完整语法依赖及明暗主题，包含 HTML/JavaScript/CSS、TypeScript/JSX/TSX、Shell、Python、Kotlin、Java、C/C++/C#、Go、Rust、JSON/YAML/TOML、SQL 等；HTML 内嵌脚本与样式保持跨行状态。来源、哈希、差异和完整许可位于 `agent-ui/src/commonMain/composeResources/files/code/`。
+- 内联代码使用浅主色背景与深主色文字；Markdown 中的绝对路径、带目录相对路径和文件链接可点击。相对路径以当前会话工作区解析，打开、安装和下载均通过当前容器的文件服务，不把容器路径当宿主文件；同样支持 `app-release.apk (app/build/outputs/apk/release/app-release.apk)` 这种输出格式。
 - Slash 菜单从当前会话 OMP 的原生命令目录加载并跟随动态更新；第一次输入 `/` 时才启动目录查询，不发送用户 prompt。当前内置命令匹配中文描述与 Material Symbols 图标；未知、扩展或被自定义覆盖的命令仍显示，使用默认图标且不显示描述。无参数 `/model`、`/cost` 保留应用内快捷入口，带参数的命令交给 OMP 原生解析。
 - 同一次 ask 的多个问题共用一张卡片，左下角灰色无背景前后按钮配合左右非线性切换；问题 ID 固定答案、页码和预览状态。单选选择后自动进入下一题，多选停留当前题；切题和检查答案原位更新，不把会话滚回顶部。支持推荐项、选项描述、自定义输入、提交前回看与一次提交完整答案，提交后仍可查看；免审批不会自动回答普通提问。
 - Agent 正文与 ask 富预览共用 Markdown、SVG/Mermaid 代码块与 Markdown 图像显示。Mermaid 12.2.0 随 UI 离线打包；PNG/JPEG/GIF/WebP 使用原生解码，动画图像显示首帧。图像来源仅 HTTP(S) 与图像 data URL，不读取宿主文件；SVG 不允许脚本、外部资源、实体、事件或 foreignObject，错误内容显示中文原因。
@@ -97,6 +100,8 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - Agent 设置按 OMP Schema 展示，过滤外观及 TUI 专属项。外观独立保存在宿主设置中，不写回 TUI 配置。
 - `models.yml` / `config.yml` 位于容器用户的 `~/.omp/agent/`，支持应用写入和外部修改回流。模型服务配置可能含 API Key，应留在本地数据目录，不要提交版本控制。
 - Proroot 上游仅提供 Android arm64 版本；桌面使用真实 PRoot/QEMU 或具备 Root 权限的 chroot，不伪装支持 Proroot。
+- Proroot 参照 DSHA 的显式 `host:guest` 绑定方式修复 `/dev` 等默认路径启动报错，工作区与自定义挂载同样显式映射。修复位于宿主启动参数，无需重新导入 Rootfs。
+- 容器详情按原型重置操作按钮、工具链卡片、主题色分段控件和挂载 bottom sheet；保留原有功能。普通登录身份可填写容器中已有的用户名或数字 UID，实际启动使用该账户的 UID/GID、HOME、USER 与 LOGNAME，不固定为 `user`，不自动创建账户。
 - 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，并在停止容器时回收所属进程、卸载挂载点。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
 - 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 保留 Love2Droid 的黑色控制台、Maple Mono 字体及两行等宽快捷键栏，移植 Termux TerminalView/TerminalSession；挂载和窗口获焦后重建输入连接，点击终端唤出软键盘，快捷键不抢焦点。Desktop 使用 JediTerm 3.63 + pty4j 0.13.4。支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新；离开页面关闭其终端进程，退出后保留输出并提示重新打开，不关闭其他会话的进程。
@@ -136,6 +141,8 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 
 `AgentChatScreen` 的 `onPickFiles` 与 `onPickContainerFiles` 均由宿主提供；容器选择返回 `source = AttachmentSource.CONTAINER` 的 `AttachmentFile`，`path` 必须是当前容器的真实绝对路径。驱动在容器内校验普通文件并读取图像字节，消息与历史保留附件来源；不把工作区之外的容器附件伪装成项目文件。
 
+文件路径交互由宿主通过 `LocalAgentFileLinkHandler` 提供当前会话的处理器；没有处理器时，不把文件路径交给系统 URI 打开。宿主须把相对路径解析到该会话工作区，再通过当前容器检查并流式打开/下载。Android 使用非导出 FileProvider 和临时读取授权交给系统查看器或 APK 安装器，仅共享应用缓存中的文件；Desktop 使用已有系统文件关联，APK 安装明确提示仅 Android 支持。
+
 ## 预置环境与产物
 
 固定输入：Ubuntu Base 24.04.4 arm64、Bun 1.3.14、Node 22.22.2、OMP 18.12.6，以及 Git、ripgrep、fd、jq、Python、curl、xz、zstd。OMP 使用完整 npm 生产依赖及原生依赖，不以替身命令代替。初始项目位于 `/workspace`，默认工具策略为 `always-ask`。
@@ -146,7 +153,7 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 | --- | ---: | ---: |
 | Rootfs 文件内容合计 | 1,543,298,008 | 1471.80 |
 | `build/outputs/ubuntu-main-debug.tar.zst` | 404,312,713 | 385.58 |
-| Android Debug APK（不含 Rootfs） | 53,128,430 | 50.67 |
+| Android Debug APK（不含 Rootfs） | 56,412,538 | 53.80 |
 
 按已确认的完整功能优先策略，不执行原计划的 150–220 MB 硬上限。每次构建会重新生成 `.sha256` 与 `.sizes.json`，以后者的实际输出为准。构建缓存、Rootfs、APK、原生二进制和本地会话均不纳入源码提交，准备脚本可重建缺失输入。
 
@@ -237,5 +244,13 @@ Provider 与默认缩放调整后通过 253 项 Kotlin 回归（Desktop UI 58、
 本轮最终通过 237 项 Kotlin 回归（驱动 103、Desktop UI 62、Android JVM UI 61、应用 11），包含默认模型发送前可见、迟到默认值不覆盖手动选择、选择历史重放及配置失败结束加载；修复前新增默认模型用例超时失败。真实桌面 360 / 460 像素已验证新会话从标准加载组件切换到 DeepSeek 图标，菜单选中 `oc/deepseek-v4.1-flash`；最终构建验证聊天原生目录加载、当前模型选中，以及切换后菜单选中项和按钮图标同步，过程中未发送消息。Android Debug APK 与 Desktop JAR 构建通过，APK 中六份原生管理资源与源码逐字节匹配。
 
 真实 arm64 PRoot/QEMU + OMP 验证：发送前为 `oc/deepseek-v4.1-flash` / `MAX`，聊天进程数为 0；两个会话共用 1 个原生模型桥，手动选择仍保留。预览后把默认角色改为另一可用模型，再仅加载原生 Slash 目录，OMP 无显式模型参数启动，`get_state` 最终同步为更新后的模型，返回 51 项原生命令且无消息/推理执行；验收结束恢复原配置。
+
+本轮完成内联代码与文件路径交互、WawSSH 文件浏览器对齐、递归安全删除、Proroot 显式绑定、首问标题、长按多选、容器详情原型样式、已有用户身份、全局蓝色/莫奈/自定义配色及会话内直接新建。最终通过 299 项 Kotlin 回归（Desktop UI 71、Android JVM UI 70、驱动 103、容器 30、应用 25），无失败、错误或跳过；Android Debug APK 与 Desktop JAR 构建成功。本轮未重建 Rootfs，已有归档及其校验文件保持不变。
+
+实际 APK 仅含 arm64-v8a 原生库且不含 Rootfs，Material Color Utilities 完整许可与源码逐字节一致；打包后的 Manifest 已确认 APK 安装权限、非导出 FileProvider 及 URI 读取授权配置。既有 Rootfs 归档 SHA-256 校验通过。
+
+真实桌面已验证蓝色浅色界面、深主色内联代码、长按多选、首问自动标题、无表单的当前上下文新建、容器按钮/工具链卡片/挂载 bottom sheet、已有 `nobody` 用户保存、自定义 HEX 明暗配色及跨重启保持。文件链接实际下载 APK，下载文件与容器原文件 SHA-256 一致；PNG 通过隔离配置的系统关联交给原生 feh 查看器打开。已实际删除前一历史目录，再继续返回有效路径，未陷入导航循环。Desktop 系统配色的默认蓝色回退已检查；Android 系统莫奈取色及 APK 安装未冒充设备验收。
+
+真实 arm64 PRoot/QEMU 另验证 root 身份和宿主补充组、非空目录递归删除、整批删除前的链接子树拒绝且其他目标不受影响、宿主绑定文件删除被拒绝且哨兵不变、显式允许的挂载导入、PNG 字节流及数字 UID 65534 解析为 `nobody` 与其实际 HOME。未调用模型推理、登录或复制开发机凭据。
 
 开发环境当前未连接 Android 真机，未启动或使用模拟器。因此修复后的 Android 手动导入、设备端 Proroot，以及 Root 设备上的 chroot 挂载/卸载不标为已验收；这些路径需要相应设备和权限，不能以桌面测试替代。

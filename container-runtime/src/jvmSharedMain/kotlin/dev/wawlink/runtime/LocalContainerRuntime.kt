@@ -161,7 +161,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         if (keepers.containsKey(id)) stopLocked(id)
         try {
             engines.prepare(config)
-            if (config.engine == ContainerEngineType.PROOT) {
+            if (config.engine == ContainerEngineType.PROOT || config.engine == ContainerEngineType.PROROOT) {
                 RuntimeIdentity.update(engines.validateRoot(config), RuntimeIdentity.hostSupplementaryGroupIds(File("/proc/self/status").readText(Charsets.UTF_8)))
             }
             val workspace = File(config.rootfsPath, "workspace")

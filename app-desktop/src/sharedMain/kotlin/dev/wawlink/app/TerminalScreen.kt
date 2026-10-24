@@ -28,7 +28,7 @@ internal fun TerminalScreen(app: AppCoordinator, config: ContainerConfig, onBack
         catch (failure: Exception) { error = failure.message ?: failure.toString() }
         finally { opened?.close(); session = null }
     }
-    val colors = lightColorScheme(primary = MaterialTheme.colorScheme.primary, surface = Color.White)
+    val colors = MaterialTheme.colorScheme.copy(surface = Color.White, background = Color.White)
     MaterialTheme(colorScheme = colors) {
         Surface(Modifier.fillMaxSize(), color = Color.White) {
             Column(Modifier.fillMaxSize().imePadding()) {

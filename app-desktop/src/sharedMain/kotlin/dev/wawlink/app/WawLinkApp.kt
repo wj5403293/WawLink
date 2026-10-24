@@ -25,6 +25,7 @@ import dev.wawlink.runtime.*
 import dev.wawlink.ui.*
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
@@ -33,6 +34,7 @@ import kotlin.math.roundToInt
 class HostNavigation { var onBack: (() -> Boolean)? = null }
 
 private data class ContainerAttachmentPick(val container: ContainerConfig, val initialPath: String, val continuation: CancellableContinuation<List<ContainerFileSelection>>)
+private data class ContainerFileOpenRequest(val config: ContainerConfig, val source: String)
 
 private data class HostRoute(
     val page: String,
@@ -62,6 +64,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     var selectedContainer by rememberSaveable { mutableStateOf<String?>(null) }
     var newSession by remember { mutableStateOf(false) }
     var installRootfs by rememberSaveable { mutableStateOf(false) }
+    var creatingInContext by remember { mutableStateOf(false) }
+    var fileOpenRequest by remember { mutableStateOf<ContainerFileOpenRequest?>(null) }
     var settingsReturn by rememberSaveable { mutableStateOf("home") }
     var terminalReturn by rememberSaveable { mutableStateOf("home") }
     val fileNavigation = remember { HostNavigation() }
@@ -86,6 +90,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     fun openTerminal(id: String) { selectedContainer = id; terminalReturn = page; page = "terminal" }
     var savedSessionIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     fun goBack(): Boolean = when {
+        fileOpenRequest != null -> { fileOpenRequest = null; true }
         containerAttachmentPick != null -> { if (attachmentNavigation.onBack?.invoke() != true) finishAttachmentPick(emptyList()); true }
         newSession -> { newSession = false; true }
         page == "terminal" -> { page = terminalReturn; true }
@@ -99,6 +104,24 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     SideEffect { navigation?.onBack = ::goBack }
     DisposableEffect(navigation) { onDispose { navigation?.onBack = null } }
     fun openNew() { if (containers.isEmpty()) { installRootfs = false; page = "install"; app.report("请先安装或导入一个容器") } else newSession = true }
+    fun createInContext(id: String) {
+        if (creatingInContext) return
+        creatingInContext = true
+        app.launch {
+            try {
+                val next = app.createInContext(id)
+                withContext(Dispatchers.Main.immediate) { selectedSession = next; page = "chat" }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main.immediate) { creatingInContext = false }
+            }
+        }
+    }
+    fun openSessionFile(record: SessionRecord, source: String) {
+        runCatching {
+            val config = containers.firstOrNull { it.config.id == record.containerId }?.config ?: error("会话容器已不存在")
+            ContainerFileOpenRequest(config, ContainerFileService.path(source, record.workspace))
+        }.onSuccess { fileOpenRequest = it }.onFailure(app::showError)
+    }
     val configurationContainer = containers.firstOrNull { it.config.id == selectedContainer } ?: containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull()
     val route = when (page) {
         "chat" -> HostRoute(page, sessionId = selectedSession)
@@ -133,7 +156,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                 val controller = remember(current.sessionId) { runCatching { app.openSession(requireNotNull(current.sessionId)) } }
                                 controller.fold(onSuccess = {
                                     val record = sessions.firstOrNull { s -> s.record.id == current.sessionId }?.record
-                                    if (record != null) AgentChatScreen(it, app.pool.providers(record.containerId), app.pool.management(record.containerId, record.workspace), { page = "home" }, ::openNew,
+                                    if (record != null) CompositionLocalProvider(LocalAgentFileLinkHandler provides { source -> openSessionFile(record, source) }) {
+                                        AgentChatScreen(it, app.pool.providers(record.containerId), app.pool.management(record.containerId, record.workspace), { page = "home" }, { createInContext(record.id) },
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" },
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "management" },
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "framework" }, files::pickAttachments,
@@ -143,6 +167,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                                     sizeBytes = selected.file.size, source = AttachmentSource.CONTAINER)
                                             }
                                         }, appearance = appearance)
+                                    }
                                     else EmptyHost("会话已删除")
                                 }, onFailure = { error -> Column { AgentTopBar("无法进入会话", { page = "home" }); EmptyHost(error.message ?: error.toString()) } })
                             }
@@ -181,6 +206,9 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                         initialPath = request.initialPath, onChooseFiles = ::finishAttachmentPick)
                 }
             }
+        }
+        fileOpenRequest?.let { request ->
+            ContainerFileLinkSheet(app, files, request.config, request.source) { fileOpenRequest = null }
         }
         notice?.let { item ->
             AlertDialog(onDismissRequest = app::dismissNotice, title = { Text(if (item.error) "操作失败" else "提示") }, text = { Text(item.text, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) }, confirmButton = { TextButton(onClick = app::dismissNotice) { Text("知道了") } })
@@ -247,6 +275,7 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
                     },
                 )
             }
+            AgentPaletteSettings(appearance) { app.updateAppearance(it) }
             HostRow("深色主题", icon = "dark_mode") { Switch(appearance.darkTheme, { app.updateAppearance(appearance.copy(darkTheme = it)) }) }
             HostRow("色觉辅助模式", icon = "visibility") { Switch(appearance.colorVisionAssist, { app.updateAppearance(appearance.copy(colorVisionAssist = it)) }) }
             HostRow("平滑流式输出", icon = "animation") { Switch(appearance.smoothStreaming, { app.updateAppearance(appearance.copy(smoothStreaming = it)) }) }

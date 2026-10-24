@@ -100,7 +100,8 @@ data class ChatSessionUiState(
 }
 
 sealed interface FeedItem { val id: String }
-data class UserMessageItem(override val id: String, val text: String, val attachments: List<AttachmentFile> = emptyList(), val timestamp: Long = 0) : FeedItem
+/** [accepted] becomes true only after the agent admits the message; previews may still be withdrawn. */
+data class UserMessageItem(override val id: String, val text: String, val attachments: List<AttachmentFile> = emptyList(), val timestamp: Long = 0, val accepted: Boolean = true) : FeedItem
 /** [startedAtMillis] is the original live start; completed nodes render their frozen [elapsedSec]. */
 data class ThinkingNodeItem(override val id: String, val isStreaming: Boolean = false, val elapsedSec: Int = 0, val text: String = "", val isExpanded: Boolean = false, val startedAtMillis: Long? = null) : FeedItem
 data class PlanStep(val title: String, val icon: String = "radio_button_unchecked", val state: StepState = StepState.PENDING)
@@ -230,6 +231,8 @@ data class SettingItem(
 data class SettingGroup(val id: String, val title: String, val icon: String, val items: List<SettingItem>)
 data class SettingCategory(val id: String, val title: String, val icon: String, val groups: List<SettingGroup>)
 
+enum class AgentColorSource { BLUE, SYSTEM, CUSTOM }
+
 data class AgentAppearance(
     val darkTheme: Boolean = false,
     val colorVisionAssist: Boolean = false,
@@ -238,6 +241,8 @@ data class AgentAppearance(
     val hideToolCalls: Boolean = false,
     val collapseCompacted: Boolean = true,
     val uiScalePercent: Int = DEFAULT_UI_SCALE_PERCENT,
+    val colorSource: AgentColorSource = AgentColorSource.BLUE,
+    val customColor: Long = 0xFF0B57D0L,
 ) {
     val effectiveUiScalePercent: Int get() = uiScalePercent.coerceIn(MIN_UI_SCALE_PERCENT, MAX_UI_SCALE_PERCENT)
     val densityScale: Float get() = effectiveUiScalePercent * UI_SCALE_BASELINE_PERCENT / 10_000f

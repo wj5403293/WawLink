@@ -71,15 +71,19 @@ class OmpPromptDeliveryTest {
             controller.sendPrompt("立即显示")
             val optimistic = controller.state.value.feed.filterIsInstance<UserMessageItem>().single()
             assertEquals("立即显示", optimistic.text)
+            assertFalse(optimistic.accepted)
             assertEquals(SessionStatus.RUNNING, controller.state.value.status)
             opened.await()
             gate.complete(transport)
             val request = transport.request()
+            assertFalse(controller.state.value.feed.filterIsInstance<UserMessageItem>().single().accepted)
             transport.acceptUser(request)
+            val accepted = awaitState { it.feed.filterIsInstance<UserMessageItem>().singleOrNull()?.accepted == true }
+            assertEquals(optimistic.copy(accepted = true), accepted.feed.filterIsInstance<UserMessageItem>().single())
             transport.respond(request)
             transport.finish(request)
             val finished = awaitState { it.status == SessionStatus.DONE }
-            assertEquals(listOf(optimistic), finished.feed.filterIsInstance<UserMessageItem>())
+            assertEquals(listOf(optimistic.copy(accepted = true)), finished.feed.filterIsInstance<UserMessageItem>())
         }
     }
 
@@ -87,6 +91,7 @@ class OmpPromptDeliveryTest {
         fixture {
             controller.sendPrompt("无法启动的消息")
             val id = controller.state.value.feed.single().id
+            assertFalse(controller.state.value.feed.filterIsInstance<UserMessageItem>().single().accepted)
             opened.await()
             gate.completeExceptionally(IllegalStateException("容器启动被拒绝"))
             val failed = awaitState { it.error?.contains("容器启动被拒绝") == true }
@@ -124,6 +129,7 @@ class OmpPromptDeliveryTest {
             controller.sendPrompt("延迟拒绝")
             val id = controller.state.value.feed.single().id
             val request = transport.request()
+            assertFalse(controller.state.value.feed.filterIsInstance<UserMessageItem>().single().accepted)
             transport.respond(request)
             transport.emit(buildJsonObject {
                 put("type", "prompt_result"); put("id", request.string("id")); put("agentInvoked", false)
@@ -180,7 +186,7 @@ class OmpPromptDeliveryTest {
             transport.finish(request, failed = true)
             val failed = awaitState { it.status == SessionStatus.ERROR }
             assertEquals("模型服务不可用", failed.error)
-            assertEquals(listOf(optimistic), failed.feed.filterIsInstance<UserMessageItem>())
+            assertEquals(listOf(optimistic.copy(accepted = true)), failed.feed.filterIsInstance<UserMessageItem>())
         }
     }
 

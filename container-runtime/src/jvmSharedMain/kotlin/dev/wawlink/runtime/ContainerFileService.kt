@@ -42,7 +42,7 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
             checked_dir() {
                 [ "${'$'}1" = / ] || [ -z "${'$'}1" ] && return
                 checked_dir "${'$'}{1%/*}"
-                [ ! -L "${'$'}1" ] && [ -d "${'$'}1" ] || fail "路径包含链接或非目录：${'$'}1"
+                [ ! -L "${'$'}1" ] && [ -d "${'$'}1" ] && [ -x "${'$'}1" ] || fail "路径包含链接、非目录或不可访问目录：${'$'}1"
             }
             checked() {
                 checked_dir "${'$'}{1%/*}"
@@ -53,6 +53,7 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
             tree() (
                 checked "${'$'}1"
                 if [ -d "${'$'}1" ]; then
+                    [ -r "${'$'}1" ] && [ -x "${'$'}1" ] || fail "目录不可读取：${'$'}1"
                     for entry in "${'$'}1"/* "${'$'}1"/.[!.]* "${'$'}1"/..?*; do
                         [ -e "${'$'}entry" ] || [ -L "${'$'}entry" ] || continue
                         tree "${'$'}entry"
@@ -70,14 +71,21 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
         """.trimIndent()
     }
     private val virtualRoots = listOf("/proc", "/sys", "/dev", "/run")
-    private val boundaries = listOf("/", "/workspace") + virtualRoots + config.mounts.map { path(it.target) }
-
+    // resolv.conf is an implicit desktop PRoot bind, even when absent from config.mounts.
+    private val hostBindings = config.mounts.map { path(it.target) } + "/etc/resolv.conf"
+    private val boundaries = listOf("/", "/workspace") + virtualRoots + hostBindings
 
     private fun guardPath(value: String): String = path(value).also { require(it == value) { "路径必须规范化" } }
     private fun mutablePath(value: String) {
         guardPath(value)
         val prefix = "$value/"
-        require(boundaries.none { it == value || it.startsWith(prefix) } && virtualRoots.none { value.startsWith("$it/") }) { "不能修改根目录、工作区根、挂载根及其父目录或系统虚拟目录：$value" }
+        require(boundaries.none { it == value || it.startsWith(prefix) } && virtualRoots.none { value.startsWith("$it/") }) {
+            "不能修改根目录、工作区根、挂载根及其父目录、系统虚拟目录：$value"
+        }
+    }
+    private fun deletablePath(value: String) {
+        mutablePath(value)
+        require(hostBindings.none { value.startsWith("$it/") }) { "不能删除宿主挂载内的文件或目录：$value" }
     }
 
     private suspend fun <T> process(script: String, input: (suspend (OutputStream) -> Unit)? = null, read: (InputStream) -> T): T = withContext(Dispatchers.IO) {
@@ -142,6 +150,7 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
         val normalized = path(directory)
         val script = """
             checked_dir ${quote(normalized)}
+            [ -r ${quote(normalized)} ] && [ -x ${quote(normalized)} ] || fail '目录不可读取'
             cd ${quote(normalized)}
             for entry in ./* ./.[!.]* ./..?*; do
                 [ -e "${'$'}entry" ] || [ -L "${'$'}entry" ] || continue
@@ -169,11 +178,49 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
         val destination = child(source.substringBeforeLast('/').ifEmpty { "/" }, name); mutablePath(destination)
         command("checked ${quote(source)}; absent ${quote(destination)}; mv -n -- ${quote(source)} ${quote(destination)}; [ ! -e ${quote(source)} ] || fail '重命名未完成'")
     }
+    /** Preflight every subtree before the first unlink; never use rm -r or follow links. */
     suspend fun delete(entries: List<String>) {
         require(entries.isNotEmpty())
-        entries.forEach(::mutablePath)
-        val preflight = entries.joinToString("\n") { source -> "checked ${quote(source)}; if [ -d ${quote(source)} ]; then for entry in ${quote(source)}/* ${quote(source)}/.[!.]* ${quote(source)}/..?*; do [ ! -e \"\$entry\" ] && [ ! -L \"\$entry\" ] || fail '只能删除空目录；尚未开始删除'; done; fi" }
-        command(preflight + "\n" + entries.joinToString("\n") { "checked ${quote(it)}; if [ -d ${quote(it)} ]; then rmdir -- ${quote(it)}; else rm -- ${quote(it)}; fi" })
+        entries.forEach(::deletablePath)
+        // Selecting an ancestor already includes its descendants. Avoid a predictable second unlink.
+        val roots = entries.distinct().filter { candidate -> entries.none { it != candidate && candidate.startsWith("$it/") } }
+        val mountChecks = roots.joinToString("\n") { source -> "check_mounts ${quote(source)}" }
+        command("""
+            check_mounts() {
+                [ -r /proc/self/mountinfo ] || fail '无法检查系统挂载，尚未开始删除'
+                while IFS=' ' read -r mount_id parent_id device mount_root mount_path rest; do
+                    # mountinfo escapes whitespace/backslashes. A sentinel preserves trailing newlines.
+                    decoded=${'$'}(printf '%b_' "${'$'}mount_path")
+                    decoded=${'$'}{decoded%_}
+                    [ "${'$'}decoded" = / ] && continue
+                    case "${'$'}1/" in "${'$'}decoded/"*) fail "不能删除挂载及其子目录：${'$'}1" ;; esac
+                    case "${'$'}decoded/" in "${'$'}1/"*) fail "目录包含系统挂载：${'$'}1" ;; esac
+                done < /proc/self/mountinfo
+            }
+            delete_tree() (
+                checked "${'$'}1"
+                parent=${'$'}{1%/*}; [ -n "${'$'}parent" ] || parent=/
+                [ -w "${'$'}parent" ] && [ -x "${'$'}parent" ] || fail "父目录不可写：${'$'}parent"
+                # Sticky directories may only unlink entries owned by the current guest user.
+                if [ -k "${'$'}parent" ] && [ "${'$'}(id -u)" != 0 ]; then
+                    uid=${'$'}(id -u)
+                    [ "${'$'}(stat -c %u -- "${'$'}parent")" = "${'$'}uid" ] || [ "${'$'}(stat -c %u -- "${'$'}1")" = "${'$'}uid" ] || fail "粘滞目录中的条目不属于当前用户：${'$'}1"
+                fi
+                if [ -d "${'$'}1" ]; then
+                    [ -r "${'$'}1" ] && [ -w "${'$'}1" ] && [ -x "${'$'}1" ] || fail "目录不可读取或写入：${'$'}1"
+                    for entry in "${'$'}1"/* "${'$'}1"/.[!.]* "${'$'}1"/..?*; do
+                        [ -e "${'$'}entry" ] || [ -L "${'$'}entry" ] || continue
+                        delete_tree "${'$'}entry" "${'$'}2"
+                    done
+                    [ "${'$'}2" = preflight ] || rmdir -- "${'$'}1"
+                else
+                    [ "${'$'}2" = preflight ] || rm -- "${'$'}1"
+                fi
+            )
+            $mountChecks
+            ${roots.joinToString("\n") { "delete_tree ${quote(it)} preflight" }}
+            ${roots.joinToString("\n") { "delete_tree ${quote(it)} delete" }}
+        """.trimIndent())
     }
     suspend fun copy(entries: List<String>, directory: String) {
         guardPath(directory); require(entries.isNotEmpty())

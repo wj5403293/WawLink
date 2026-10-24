@@ -53,6 +53,31 @@ private class DesktopHostFiles : HostFiles {
             } finally { temporary.delete() }
         }
     }
+    override suspend fun openFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit) = withContext(Dispatchers.IO) {
+        check(mimeType != "application/vnd.android.package-archive") { "桌面平台不支持安装 Android APK，请下载后在 Android 设备上安装" }
+        val directory = java.nio.file.Files.createTempDirectory("wawlink-open-").toFile()
+        val target = File(directory, hostFileName(name))
+        try {
+            target.outputStream().use { write(it) }
+            if (java.awt.Desktop.isDesktopSupported() && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.OPEN)) {
+                java.awt.Desktop.getDesktop().open(target)
+            } else {
+                val opener = when {
+                    System.getProperty("os.name").startsWith("Mac", true) -> listOf("open", target.absolutePath)
+                    System.getProperty("os.name").startsWith("Windows", true) -> listOf("rundll32", "url.dll,FileProtocolHandler", target.absolutePath)
+                    else -> listOf("xdg-open", target.absolutePath)
+                }
+                val process = ProcessBuilder(opener).redirectErrorStream(true).start()
+                val message = process.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                check(process.waitFor() == 0) { message.ifBlank { "系统无法打开 $name" } }
+            }
+            // Native viewers can read after hand-off. Keep this app-owned temporary file available.
+            directory.deleteOnExit(); target.deleteOnExit()
+        } catch (error: Exception) {
+            target.delete(); directory.delete()
+            throw error
+        }
+    }
     override suspend fun pickAttachments(): List<AttachmentFile> = withContext(Dispatchers.Swing) {
         val chooser = JFileChooser().apply { dialogTitle = "选择附件"; isMultiSelectionEnabled = true; fileSelectionMode = JFileChooser.FILES_ONLY }
         if (chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) emptyList()

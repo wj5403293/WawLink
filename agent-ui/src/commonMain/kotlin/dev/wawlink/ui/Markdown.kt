@@ -21,6 +21,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
+/** Resolve model-authored file links in the host's current session, never as host file:// URIs. */
+val LocalAgentFileLinkHandler = staticCompositionLocalOf<((String) -> Unit)?> { null }
+
 /** Pace only the pending suffix; expansion pauses preserve the already visible prefix. */
 @Composable
 internal fun streamedText(text: String, streaming: Boolean, paused: Boolean = false): String {
@@ -84,7 +87,6 @@ private fun MarkdownCode(part: MarkdownPart.Code) {
 @Composable
 private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
     val c = LocalAgentColors.current
-    val uri = LocalUriHandler.current
     val lines = remember(text) { text.lines() }
     SelectionContainer(modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -102,8 +104,8 @@ private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
                                 rows.forEachIndexed { rowIndex, row ->
                                     Row {
                                         row.trim().trim('|').split('|').forEach { cell ->
-                                            Text(inlineMarkdown(cell.trim()), Modifier.widthIn(min = 110.dp, max = 240.dp).padding(8.dp),
-                                                fontWeight = if (rowIndex == 0) FontWeight.Bold else FontWeight.Normal)
+                                            InlineMarkdownText(cell.trim(), Modifier.widthIn(min = 110.dp, max = 240.dp).padding(8.dp),
+                                                MaterialTheme.typography.bodyLarge.copy(fontWeight = if (rowIndex == 0) FontWeight.Bold else FontWeight.Normal))
                                         }
                                     }
                                     if (rowIndex == 0) HorizontalDivider(color = c.outlineVariant)
@@ -131,16 +133,12 @@ private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
                                 Symbol(if (checkbox.groupValues[1].isBlank()) "check_box_outline_blank" else "check_box", tint = c.primary)
                                 Spacer(Modifier.width(8.dp))
                             }
-                            ClickableText(inlineMarkdown(checkbox?.groupValues?.get(2) ?: body),
+                            InlineMarkdownText(checkbox?.groupValues?.get(2) ?: body,
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodyLarge.copy(
                                     color = if (quote) c.onSurfaceVariant else c.onSurface,
                                     fontSize = if (heading != null) (28 - heading.groupValues[1].length * 2).coerceAtLeast(18).sp else 18.sp,
-                                    fontWeight = if (heading != null) FontWeight.Bold else FontWeight.Normal),
-                                onClick = { offset ->
-                                    inlineMarkdownForLinks(checkbox?.groupValues?.get(2) ?: body).getStringAnnotations("URL", offset, offset)
-                                        .firstOrNull()?.let { uri.openUri(it.item) }
-                                })
+                                    fontWeight = if (heading != null) FontWeight.Bold else FontWeight.Normal))
                         }
                     }
                 }
@@ -150,32 +148,79 @@ private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
     }
 }
 
+@Composable
+private fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
+    val annotated = inlineMarkdown(text)
+    val fileHandler = LocalAgentFileLinkHandler.current
+    val uri = LocalUriHandler.current
+    ClickableText(annotated, modifier, style = style, onClick = { offset ->
+        val file = annotated.getStringAnnotations("FILE", offset, offset).firstOrNull()
+        if (file != null) fileHandler?.invoke(file.item)
+        else annotated.getStringAnnotations("URL", offset, offset).firstOrNull()?.let { uri.openUri(it.item) }
+    })
+}
+
 private val inlineTokens = Regex(
     "\\\\[\\\\`*{}\\[\\]()#+.!_>~|\\-]|" +
         "(`+)(.+?)\\1|\\[([^]]+)]\\(([^)]+)\\)|\\*\\*(.+?)\\*\\*|" +
         "(?<![\\p{L}\\p{N}_])__(.+?)__(?![\\p{L}\\p{N}_])|" +
         "~~(.+?)~~|(?<!\\*)\\*([^*]+)\\*(?!\\*)|" +
-        "(?<![\\p{L}\\p{N}_])_(.+?)_(?![\\p{L}\\p{N}_])"
+        "(?<![\\p{L}\\p{N}_])_(.+?)_(?![\\p{L}\\p{N}_])|" +
+        "(?<![\\p{L}\\p{N}_./-])([\\p{L}\\p{N}_@+.-]+)[ \\t]*[(（]([^()（）\\r\\n]+)[)）]"
 )
 
 @Composable
 private fun inlineMarkdown(text: String): AnnotatedString {
     val c = LocalAgentColors.current
     val mono = LocalAgentMono.current
-    return buildInline(text, SpanStyle(color = c.primary, textDecoration = TextDecoration.Underline),
-        SpanStyle(fontFamily = mono, fontSize = 15.sp, background = c.surfaceContainer))
+    return remember(text, c, mono) {
+        buildInline(text, SpanStyle(color = c.primary, textDecoration = TextDecoration.Underline),
+            SpanStyle(color = c.onPrimaryContainer, fontFamily = mono, fontSize = 15.sp, background = c.primaryContainer))
+    }
 }
 
-private fun inlineMarkdownForLinks(text: String) = buildInline(text, SpanStyle(), SpanStyle())
+private val uriScheme = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
+private val unsafePathCharacters = Regex("[\\u0000\\r\\n\\t<>|?*`\"{}\\[\\]=;&$\\\\]")
+
+private fun fileReference(value: String, allowBareName: Boolean = false): String? {
+    if (value.isEmpty() || value != value.trim() || uriScheme.containsMatchIn(value) || value.startsWith("//") || unsafePathCharacters.containsMatchIn(value)) return null
+    val name = value.substringAfterLast('/')
+    if (name.isEmpty() || name == "." || name == "..") return null
+    val rooted = value.startsWith('/') || value.startsWith("./") || value.startsWith("../")
+    if (!rooted && !allowBareName && '/' !in value) return null
+    if (!rooted && (value.any(Char::isWhitespace) || !name.contains('.') || name.startsWith('.'))) return null
+    return value
+}
+
 internal fun buildInline(text: String, linkStyle: SpanStyle, codeStyle: SpanStyle): AnnotatedString = buildAnnotatedString {
+    fun appendFile(path: String, display: String, style: SpanStyle) {
+        pushStringAnnotation("FILE", path)
+        withStyle(style) { append(display) }
+        pop()
+    }
     var last = 0
     inlineTokens.findAll(text).forEach { match ->
         append(text, last, match.range.first)
         when {
             text[match.range.first] == '\\' -> append(text[match.range.first + 1])
-            match.groupValues[1].isNotEmpty() -> withStyle(codeStyle) { append(match.groupValues[2]) }
+            match.groupValues[1].isNotEmpty() -> {
+                val code = match.groupValues[2]
+                val path = fileReference(code)
+                if (path != null) appendFile(path, code, codeStyle.copy(textDecoration = TextDecoration.Underline))
+                else withStyle(codeStyle) { append(code) }
+            }
             match.groupValues[3].isNotEmpty() -> {
-                pushStringAnnotation("URL", match.groupValues[4]); withStyle(linkStyle) { append(match.groupValues[3]) }; pop()
+                val target = match.groupValues[4]
+                val path = fileReference(target, allowBareName = true)
+                if (path != null) appendFile(path, match.groupValues[3], linkStyle)
+                else if (target.startsWith("https://", true) || target.startsWith("http://", true) || target.startsWith("mailto:", true)) {
+                    pushStringAnnotation("URL", target); withStyle(linkStyle) { append(match.groupValues[3]) }; pop()
+                } else append(match.groupValues[3])
+            }
+            match.groupValues[10].isNotEmpty() -> {
+                val target = fileReference(match.groupValues[11].trim(), allowBareName = true)
+                if (target != null && match.groupValues[10] == target.substringAfterLast('/')) appendFile(target, match.value, linkStyle)
+                else append(match.value)
             }
             match.groupValues[5].isNotEmpty() || match.groupValues[6].isNotEmpty() ->
                 withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(match.groupValues[5].ifEmpty { match.groupValues[6] }) }

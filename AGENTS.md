@@ -4,6 +4,7 @@
 
 - 界面必须遵循 Material 3 风格，使用 Google Material Symbols 图标字体，并使用简洁的非线性交互动画。
 - 背景保持纯白，布局采用现代化 Material 3 设计；独立终端的控制台、快捷键栏与字体按 Love2Droid 原布局保留。
+- 全应用默认使用原型蓝色，不保留 Material 3 默认紫色；分段选择器使用主题主色。应用设置支持持久化的默认蓝色、Android 12+ 系统莫奈配色与自定义主色生成配色；不支持系统取色的平台回退默认蓝色。内联代码使用浅主色背景与深主色文字。
 - 页面除主要文本外，尽量不使用符号和复杂装饰；能用图标表达时优先使用图标。
 - UI 文字使用中文；专有名词可以使用英文。相同内容不得同时用中文和英文重复装饰。
 - 文字只保留大号 UI 内容或标题；不添加小号卡片说明、装饰性文本或非必要装饰元素。
@@ -13,6 +14,7 @@
 - Agent 设置的作用域、选择项及新建入口使用原型中的锚定 popup menu，不改成对话框；提示与空态以原型为准，不额外堆叠说明卡片。确认删除、覆盖及舍弃修改仍使用对应确认对话框。
 - 应用默认密度统一校准到原型，主页、聊天和所有设置页共用同一缩放，不在嵌套主题中重复缩放；应用设置提供持久化的“整体缩放”和恢复默认，保留系统字体缩放。当前基线以旧版 115% 为新版 100%；已有 115% 设置迁移为 100%，不得在升级或重启后重复放大。
 - 启动及容器列表更新只读取会话元数据，打开某个会话时才恢复其正文与控制器；主页继续观察已打开的会话，不批量恢复未打开的历史。
+- 未命名会话使用首条用户问题作为标题，过长时截断展示，不覆盖手动命名；主页会话列表长按进入多选。会话内右上角新建直接沿用当前容器与工作区，不弹配置表单且不预设名称。
 - Agent 配置首屏不等待模型/认证 SDK；模型目录按有界分页传输，仅在编辑时读取完整模型字段。模型配置无效或原生进程退出时结束加载并保留可重试、可修复的界面，不抛到主线程导致闪退。
 - 内置 Provider 的启用状态、OAuth 和操作能力以当前 OMP 原生发现、认证及禁用状态为准，不默认全开，也不对自定义 Provider 显示不支持的 OAuth 或协议功能。内置 Provider 使用稳定颜色与名称首字标识；用户项在前，内置项置底并用分隔线分组，禁用项灰显且在各组内下沉。
 - Provider 配置每次打开从顶部展示；模型获取按钮显示蓝色“获取模型”并执行实际获取，不用静态目录刷新冒充。删除“读取当前配置档的……”等无实际意义说明及图标；保留必要错误、空态与风险确认。保存失败展示可定位且已脱敏的实际原因，保留全部草稿供修复和重试。
@@ -39,14 +41,18 @@
 - 用户发送消息、继续下一轮或收到完整状态时，Todo 内容和状态未变化就不追加计划卡片；真正变化才追加，保留先前计划快照及用户消息位置。
 - 会话发送过消息后，用量条持续显示，不因进入空闲、开始下一轮或后续执行失败而消失。
 - 容器独立文件管理沿用 WawSSH 的路径、面包屑、筛选、排序、选择、书签与文件操作布局；新建会话的工作区输入框右侧提供文件夹按钮，通过容器浏览器选择目录，取消或返回不得丢失原表单。
+- 文件浏览器的操作栏保留 WawSSH 图标及布局，支持系统打开图片、Android APK 安装、原文件或 ZIP 下载，以及非空目录递归删除。删除前校验全部选择及子树，不跟随符号链接，不删除宿主绑定目录或其祖先；失效历史不能反复入栈导致无法返回或退出。
+- 模型 Markdown 中的文件路径可点击，绝对路径与带目录的相对路径均按当前会话容器解析，相对路径以工作区为基准；打开、安装与下载共用文件浏览器操作，不把模型的 file:// 路径直接交给宿主 URI 处理器。
 - 聊天加号菜单保留项目文件并增加容器文件，支持跨目录选择普通文件；附件按来源区分主机与容器路径，不伪造工作区路径，不将容器文件复制到主机再发送。浏览器取消不清空草稿或已有附件；项目文件展开子目录后各行不得重叠。
 - PRoot/Proroot 启动前按宿主补充 GID 为容器追加缺失的组名，不覆盖已有组记录，不隐藏 `groups` 错误；既有动态 DNS 修复继续适用，更新 APK 不要求重新导入 Rootfs。
+- Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。
 
 ## 项目结构与索引
 
 - `agent-protocol/`：独立 Kotlin 领域模型、会话控制、模型服务与设置契约；仅使用协程状态流，不依赖驱动或容器。
   - `src/commonMain/kotlin/dev/wawlink/protocol/AgentManagement.kt` 定义作用域、来源、Agent、顾问、角色、认证、原始配置与原生管理仓库契约。
 - `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonMain/kotlin/dev/wawlink/ui/ModelIcon.kt` 统一离线品牌图标与 ID 字母标识，`src/commonMain/composeResources/files/model-icons/` 保存来源/许可，`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ModelIconTest.kt`、`FeedExpansionStateTest.kt` 和 `MarkdownTest.kt` 覆盖字母标识/颜色区分、展开状态和 Markdown 边界。
+  - 同目录的 `AgentPalette.kt`、`AgentPaletteSettings.kt` 提供默认蓝色、Material HCT 种子配色与设置控件；`src/androidMain/kotlin/dev/wawlink/ui/AgentPalette.android.kt` 读取系统动态配色，`src/desktopMain/kotlin/dev/wawlink/ui/AgentPalette.desktop.kt` 明确回退，`AgentPaletteTest.kt` 覆盖明暗配色对比度及 HEX 输入边界。完整 Material Color Utilities 许可随 `src/commonMain/composeResources/files/licenses/material-color-utilities.txt` 打包。
   - `src/commonMain/kotlin/dev/wawlink/ui/ComposerSlashCommands.kt` 提供原生命令的图标/中文展示匹配，`AskDraftState.kt` 保存按问题 ID 隔离的答案、页码与预览状态。
   - 同目录的 `MarkdownParts.kt`、`RichGraphic.kt` 共用正文/Ask 富媒体入口；`src/jvmSharedMain/kotlin/dev/wawlink/ui/RichGraphicDocument.kt` 负责离线图表文档、SVG 安全与图像加载，`src/androidMain/kotlin/dev/wawlink/ui/RichGraphic.android.kt` 和 `src/desktopMain/kotlin/dev/wawlink/ui/RichGraphic.desktop.kt` 分别提供沙箱 WebView 与无窗口 Canvas/原生图像显示。
   - `src/commonMain/composeResources/files/rich/` 保存 Mermaid 离线引擎、来源与许可证；`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ComposerSlashCommandsTest.kt`、`AskDraftStateTest.kt`、`MarkdownPartsTest.kt` 覆盖命令覆盖优先级、分组作答和富媒体解析边界，`src/desktopTest/kotlin/dev/wawlink/ui/RichGraphicSafetyTest.kt` 覆盖 SVG 主动内容、图像 URI 与重定向边界。
@@ -62,13 +68,16 @@
   - `src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpAgentManagementRepositoryTest.kt` 覆盖首屏与模型分阶段加载、无效模型配置修复、原生进程退出后恢复、目录分页完整性及 JSONL 大小/格式边界。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端；`src/jvmSharedMain/kotlin/dev/wawlink/runtime/RuntimeDns.kt` 负责边界安全的原子 DNS 更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeDnsTest.kt` 覆盖链接边界与配置切换。
   - 同目录的 `RuntimeIdentity.kt` 负责 PRoot/Proroot 补充组名的边界检查与原子更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeIdentityTest.kt` 覆盖保留已有记录、幂等与链接越界；`ContainerFileService.kt` 通过客体进程提供文件枚举、流式导入导出、复制、重命名和删除，不访问宿主 Rootfs 路径。
+  - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID 与账户环境。
   - 同目录的 `PtyTransport.kt` 及 `src/androidMain/kotlin/dev/wawlink/runtime/PtyTransport.android.kt`、`src/desktopMain/kotlin/dev/wawlink/runtime/PtyTransport.desktop.kt` 提供两端真实 PTY，`ContainerContract.kt` 定义原始字节读写、调整尺寸与会话回收契约。
 - `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
   - `src/sharedMain/kotlin/dev/wawlink/app/TerminalScreen.kt` 为独立终端导航页，`src/desktopMain/kotlin/dev/wawlink/app/TerminalSurface.desktop.kt` 提供 JediTerm 终端；`src/desktopMain/resources/licenses/` 随桌面分发保留 JediTerm 与 pty4j 许可。
   - `src/sharedMain/kotlin/dev/wawlink/app/ContainerFilesScreen.kt` 移植 WawSSH 独立文件浏览器并提供工作区与附件选择模式；`src/desktopTest/kotlin/dev/wawlink/app/ContainerFileServiceTest.kt` 覆盖文件名、路径、流式字节、覆写与链接边界，不冒充真实引擎验收。
-  - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话及持久化整体缩放；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、单会话恢复与并发重复打开，`AppCoordinatorAppearanceTest.kt` 覆盖缩放基线迁移、跨重启保持、调整及恢复默认。
+  - 同目录的 `ContainerFileActions.kt` 为文件浏览器与模型路径链接共用 MIME、宿主文件名和流式打开/下载操作；`WawLinkApp.kt` 提供当前会话的文件路径处理与两端 `HostFiles` 契约。
+  - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、上下文内直接新建及持久化整体缩放与配色；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。
+  - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载与 APK 安装入口；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。
 - `terminal-emulator/`、`terminal-view/`：从 Love2Droid 固定提交移植的 Android Termux 终端解析器、JNI PTY 与视图，仅构建 arm64-v8a；`terminal-emulator/NOTICE` 记录上游来源及修改，许可同时保存在模块 assets 与 `licenses/`。
 - `licenses/`：Termux 终端、JediTerm、pty4j、Love2Droid/r2droid 与 Maple Mono 的完整上游许可及来源。
 - `scripts/`：免 Docker Rootfs、Android 原生二进制与验证脚本。

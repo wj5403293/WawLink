@@ -19,7 +19,10 @@ interface HostFiles {
     suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean
     suspend fun pickImportFiles(): List<HostImportFile>
     suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean
+    suspend fun openFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit)
 }
+
+enum class SessionTitleSource { MANUAL, PENDING, FIRST_QUESTION }
 
 data class SessionRecord(
     val id: String,
@@ -29,6 +32,7 @@ data class SessionRecord(
     val pinned: Boolean = false,
     val archived: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
+    val titleSource: SessionTitleSource = SessionTitleSource.MANUAL,
 )
 data class HomeSession(val record: SessionRecord, val state: ChatSessionUiState)
 data class HostNotice(val id: Long = System.nanoTime(), val text: String, val error: Boolean = false)
@@ -74,12 +78,25 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
                 smoothStreaming = flag("smooth", true), alwaysShowUsage = flag("usage", false),
                 hideToolCalls = flag("hideTools", false), collapseCompacted = flag("collapse", true),
                 uiScalePercent = uiScale,
+                colorSource = runCatching { AgentColorSource.valueOf(p.getProperty("colorSource", "BLUE")) }.getOrDefault(AgentColorSource.BLUE),
+                customColor = p.getProperty("customColor")?.toLongOrNull()?.takeIf { it in 0xFF000000L..0xFFFFFFFFL } ?: 0xFF0B57D0L,
             )
             _defaultAutoApprove.value = flag("defaultAutoApprove", true)
             val metadata = Properties()
             File(dataDir, "sessions.properties").takeIf { it.exists() }?.inputStream()?.use(metadata::load)
             records.value = metadata.getProperty("ids", "").split(',').filter { it.isNotBlank() }.map { id ->
-                SessionRecord(id, metadata.getProperty("$id.title", "新会话"), metadata.getProperty("$id.container", ""), metadata.getProperty("$id.workspace", "/workspace"), metadata.getProperty("$id.pinned").toBoolean(), metadata.getProperty("$id.archived").toBoolean(), metadata.getProperty("$id.updated", "0").toLong())
+                SessionRecord(
+                    id = id,
+                    title = metadata.getProperty("$id.title", "新会话"),
+                    containerId = metadata.getProperty("$id.container", ""),
+                    workspace = metadata.getProperty("$id.workspace", "/workspace"),
+                    pinned = metadata.getProperty("$id.pinned").toBoolean(),
+                    archived = metadata.getProperty("$id.archived").toBoolean(),
+                    updatedAt = metadata.getProperty("$id.updated", "0").toLong(),
+                    // Older records have no provenance; their saved titles must remain explicit.
+                    titleSource = SessionTitleSource.entries.firstOrNull { it.name == metadata.getProperty("$id.titleSource") }
+                        ?: SessionTitleSource.MANUAL,
+                )
             }
         } catch (e: Exception) { showError(e) }
     }
@@ -115,6 +132,39 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         return null
     }
 
+    private fun firstQuestion(feed: List<FeedItem>): String? {
+        for (item in feed) {
+            when (item) {
+                is UserMessageItem -> if (item.accepted && item.text.isNotBlank()) return item.text
+                is StepGroupNodeItem -> firstQuestion(item.children)?.let { return it }
+                else -> Unit
+            }
+        }
+        return null
+    }
+
+    private fun questionTitle(question: String): String = buildString(48) {
+        var offset = 0
+        var codePoints = 0
+        var separator = false
+        while (offset < question.length && codePoints < 48) {
+            val point = question.codePointAt(offset)
+            offset += Character.charCount(point)
+            if (Character.isWhitespace(point) || Character.isSpaceChar(point)) {
+                separator = isNotEmpty()
+                continue
+            }
+            if (separator) {
+                if (codePoints == 47) break
+                append(' ')
+                codePoints++
+                separator = false
+            }
+            appendCodePoint(point)
+            codePoints++
+        }
+    }
+
     private fun observe(id: String, controller: AgentSessionController) {
         observers.remove(id)?.cancel()
         var lastUser = latestUserId(controller.state.value.feed)
@@ -122,9 +172,24 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             controller.state.collect { state ->
                 sessionStates.update { it + (id to state) }
                 val latest = latestUserId(state.feed)
-                if (latest != null && latest != lastUser) {
-                    lastUser = latest
-                    records.update { all -> all.map { if (it.id == id) it.copy(updatedAt = System.currentTimeMillis()) else it } }
+                val userChanged = latest != null && latest != lastUser
+                if (userChanged) lastUser = latest
+                val titleChanged = synchronized(controllers) {
+                    val record = records.value.firstOrNull { it.id == id }
+                    val title = if (record?.titleSource == SessionTitleSource.PENDING) firstQuestion(state.feed)?.let(::questionTitle) else null
+                    if (record != null && (userChanged || title != null)) {
+                        records.update { all -> all.map {
+                            if (it.id != id) it else it.copy(
+                                title = title ?: it.title,
+                                titleSource = if (title != null) SessionTitleSource.FIRST_QUESTION else it.titleSource,
+                                updatedAt = if (userChanged) System.currentTimeMillis() else it.updatedAt,
+                            )
+                        } }
+                        if (title != null) pool.session(id, record.containerId, record.workspace, title)
+                    }
+                    title != null
+                }
+                if (userChanged || titleChanged) {
                     runCatching { withContext(Dispatchers.IO) { persistSessions() } }.onFailure(::showError)
                 }
             }
@@ -134,7 +199,10 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         require(workspace.startsWith('/')) { "工作区必须是容器内绝对路径" }
         require(runtime.containers.value.any { it.config.id == containerId }) { "请先安装或导入一个容器" }
         val id = UUID.randomUUID().toString()
-        val record = SessionRecord(id, title.trim().ifBlank { "新会话" }, containerId, workspace)
+        val record = SessionRecord(
+            id, title.trim().ifBlank { "新会话" }, containerId, workspace,
+            titleSource = if (title.isBlank()) SessionTitleSource.PENDING else SessionTitleSource.MANUAL,
+        )
         synchronized(controllers) {
             val controller = pool.session(record.id, record.containerId, record.workspace, record.title, autoApprove = _defaultAutoApprove.value)
             controllers[id] = controller
@@ -144,21 +212,29 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         persistSessions()
         return id
     }
+    suspend fun createInContext(sessionId: String): String {
+        val source = records.value.firstOrNull { it.id == sessionId } ?: error("找不到会话 $sessionId")
+        require(runtime.containers.value.any { it.config.id == source.containerId }) { "会话绑定的容器已不存在" }
+        return create("", source.containerId, source.workspace)
+    }
     suspend fun fork(id: String): String {
         val r = records.value.first { it.id == id }
-        val next = r.copy(id = UUID.randomUUID().toString(), title = "${r.title} 分支", pinned = false, archived = false, updatedAt = System.currentTimeMillis())
+        val next = r.copy(id = UUID.randomUUID().toString(), title = "${r.title} 分支", titleSource = SessionTitleSource.MANUAL, pinned = false, archived = false, updatedAt = System.currentTimeMillis())
         val controller = pool.fork(r.id, next.id, r.containerId, r.workspace, next.title)
         records.update { it + next }
         synchronized(controllers) { controllers[next.id] = controller; observe(next.id, controller) }
         persistSessions()
         return next.id
     }
-    suspend fun editSession(id: String, title: String, workspace: String, containerId: String) {
+    suspend fun editSession(id: String, title: String, workspace: String, containerId: String, manualTitle: Boolean = true) {
         require(title.isNotBlank()) { "会话标题不能为空" }
         require(workspace.startsWith('/')) { "工作区必须是容器内绝对路径" }
-        val controller = pool.relocateSession(id, containerId, workspace, title)
-        synchronized(controllers) { controllers[id] = controller; observe(id, controller) }
-        records.update { all -> all.map { if (it.id == id) it.copy(title = title.trim(), workspace = workspace, containerId = containerId, updatedAt = System.currentTimeMillis()) else it } }
+        val controller = pool.relocateSession(id, containerId, workspace, title.trim())
+        synchronized(controllers) {
+            records.update { all -> all.map { if (it.id == id) it.copy(title = title.trim(), titleSource = if (manualTitle) SessionTitleSource.MANUAL else it.titleSource, workspace = workspace, containerId = containerId, updatedAt = System.currentTimeMillis()) else it } }
+            controllers[id] = controller
+            observe(id, controller)
+        }
         persistSessions()
     }
     suspend fun togglePin(ids: Set<String>) { records.update { all -> all.map { if (it.id in ids) it.copy(pinned = !it.pinned) else it } }; persistSessions() }
@@ -193,6 +269,8 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         p["defaultAutoApprove"] = _defaultAutoApprove.value.toString()
         p["uiScalePercent"] = current.effectiveUiScalePercent.toString()
         p["uiScaleBaseline"] = AgentAppearance.UI_SCALE_BASELINE_PERCENT.toString()
+        p["colorSource"] = current.colorSource.name
+        p["customColor"] = current.customColor.toString()
         saveProperties(File(dataDir, "appearance.properties"), p)
     }
     private fun persistSessions() = synchronized(persistenceLock) {
@@ -202,6 +280,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         current.forEach { r ->
             p["${r.id}.title"] = r.title; p["${r.id}.container"] = r.containerId; p["${r.id}.workspace"] = r.workspace
             p["${r.id}.pinned"] = r.pinned.toString(); p["${r.id}.archived"] = r.archived.toString(); p["${r.id}.updated"] = r.updatedAt.toString()
+            p["${r.id}.titleSource"] = r.titleSource.name
         }
         saveProperties(File(dataDir, "sessions.properties"), p)
     }

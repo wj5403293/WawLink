@@ -999,7 +999,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     queue.add(QueuedPrompt(prompt.id, prompt.text, prompt.attachments))
                 } else {
                     feed = placeUserMessage(feed ?: backendState.feed,
-                        UserMessageItem(prompt.id, prompt.text, prompt.attachments, prompt.timestamp), prompt.position)
+                        UserMessageItem(prompt.id, prompt.text, prompt.attachments, prompt.timestamp, accepted = false), prompt.position)
                 }
             }
             mutableState.value = if (feed == null && queue == null) backendState else backendState.copy(
@@ -1052,7 +1052,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 "user" -> {
                     val position = frame["position"] as? JsonObject
                     reducer.addUserMessage(UserMessageItem(frame.string("localId"), frame.string("text"), parseAttachments(frame["attachments"]),
-                        frame["timestamp"]?.jsonPrimitive?.longOrNull ?: 0), position?.let(::parsePosition) ?: reducer.currentUserPosition())
+                        frame["timestamp"]?.jsonPrimitive?.longOrNull ?: 0, accepted = false), position?.let(::parsePosition) ?: reducer.currentUserPosition())
                     if (frame["preserveRun"]?.jsonPrimitive?.booleanOrNull != true)
                         reducer.update { it.copy(status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
                 }

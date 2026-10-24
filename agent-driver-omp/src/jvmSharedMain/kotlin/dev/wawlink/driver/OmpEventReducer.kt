@@ -290,12 +290,17 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
             "user" -> {
                 if (historical) closeGroup(NodeStatus.OK)
                 val text = contentText(message["content"])
-                if (item(id) == null) {
+                val direct = item(id) as? UserMessageItem
+                if (direct != null) {
+                    if (!direct.accepted) put(direct.copy(accepted = true))
+                    reconciledUsers.add(id)
+                } else {
                     val existing = allItems(state.feed).filterIsInstance<UserMessageItem>().firstOrNull {
                         it.text == text && it.id !in reconciledUsers
                     }
                     if (existing != null) {
                         reconciledUsers.add(existing.id)
+                        if (!existing.accepted) put(existing.copy(accepted = true))
                         // Wire start/end share an id, but the pool owns the original attachments and timestamp.
                         reconciledUsers.add(id)
                         userFeedIds[id] = existing.id

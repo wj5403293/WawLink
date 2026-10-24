@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.AgentAppearance
+import dev.wawlink.protocol.AgentColorSource
 import dev.wawlink.ui.resources.*
 import org.jetbrains.compose.resources.Font
 
@@ -36,30 +37,49 @@ fun <T> agentSpring() = spring<T>(dampingRatio = .65f, stiffness = 380f)
 
 @Immutable
 data class AgentColorScheme(
-    val primary: Color = Color(0xFF0B57D0), val onPrimary: Color = Color.White,
-    val primaryContainer: Color = Color(0xFFD3E3FD), val onPrimaryContainer: Color = Color(0xFF041E49),
-    val secondaryContainer: Color = Color(0xFFE8DEF8),
+    val material: ColorScheme = AgentBlueLightScheme,
+    // These are semantic success / warning colors, deliberately independent of the accent seed.
     val tertiary: Color = Color(0xFF146C2E), val tertiaryContainer: Color = Color(0xFFC4EED0),
     val warn: Color = Color(0xFFE65100), val warnContainer: Color = Color(0xFFFFDCC1),
-    val error: Color = Color(0xFFB3261E), val errorContainer: Color = Color(0xFFF9DEDC),
-    val surface: Color = Color.White, val onSurface: Color = Color(0xFF1F1F1F),
-    val onSurfaceVariant: Color = Color(0xFF444746), val outline: Color = Color(0xFF747775),
-    val outlineVariant: Color = Color(0xFFC4C7C5),
-    val surfaceContainerLow: Color = Color(0xFFF8FAFD), val surfaceContainer: Color = Color(0xFFF0F4F9),
-    val surfaceContainerHigh: Color = Color(0xFFE9EEF6), val surfaceContainerHighest: Color = Color(0xFFDDE3EA),
 ) {
+    val primary: Color get() = material.primary
+    val onPrimary: Color get() = material.onPrimary
+    val primaryContainer: Color get() = material.primaryContainer
+    val onPrimaryContainer: Color get() = material.onPrimaryContainer
+    val secondaryContainer: Color get() = material.secondaryContainer
+    val error: Color get() = material.error
+    val errorContainer: Color get() = material.errorContainer
+    val surface: Color get() = material.surface
+    val onSurface: Color get() = material.onSurface
+    val onSurfaceVariant: Color get() = material.onSurfaceVariant
+    val outline: Color get() = material.outline
+    val outlineVariant: Color get() = material.outlineVariant
+    val surfaceContainerLow: Color get() = material.surfaceContainerLow
+    val surfaceContainer: Color get() = material.surfaceContainer
+    val surfaceContainerHigh: Color get() = material.surfaceContainerHigh
+    val surfaceContainerHighest: Color get() = material.surfaceContainerHighest
+
     companion object {
-        fun dark() = AgentColorScheme(
-            primary = Color(0xFFA8C7FA), onPrimary = Color(0xFF062E6F),
-            primaryContainer = Color(0xFF0842A0), onPrimaryContainer = Color(0xFFD3E3FD),
-            secondaryContainer = Color(0xFF4A4458), tertiary = Color(0xFF8DD8A3), tertiaryContainer = Color(0xFF00531E),
-            warn = Color(0xFFFFB77D), warnContainer = Color(0xFF6D3200),
-            error = Color(0xFFF2B8B5), errorContainer = Color(0xFF8C1D18),
-            surface = Color(0xFF131314), onSurface = Color(0xFFE3E3E3), onSurfaceVariant = Color(0xFFC4C7C5),
-            outline = Color(0xFF8E918F), outlineVariant = Color(0xFF444746),
-            surfaceContainerLow = Color(0xFF1B1B1F), surfaceContainer = Color(0xFF1E1F20),
-            surfaceContainerHigh = Color(0xFF282A2C), surfaceContainerHighest = Color(0xFF333537),
-        )
+        fun dark() = fromMaterial(AgentBlueDarkScheme, dark = true)
+
+        internal fun fromMaterial(scheme: ColorScheme, dark: Boolean, assist: Boolean = false): AgentColorScheme {
+            val accessible = if (assist) scheme.copy(
+                error = if (dark) Color(0xFFFFC485) else Color(0xFF9C4400),
+                onError = if (dark) Color(0xFF502400) else Color.White,
+                errorContainer = if (dark) Color(0xFF703400) else Color(0xFFFFDCC1),
+                onErrorContainer = if (dark) Color(0xFFFFDCC1) else Color(0xFF321200),
+            ) else scheme
+            return AgentColorScheme(
+                material = accessible,
+                tertiary = if (assist) { if (dark) Color(0xFF91D7FF) else Color(0xFF005A8D) }
+                    else if (dark) Color(0xFF8DD8A3) else Color(0xFF146C2E),
+                tertiaryContainer = if (assist) { if (dark) Color(0xFF004366) else Color(0xFFC8E6FF) }
+                    else if (dark) Color(0xFF00531E) else Color(0xFFC4EED0),
+                warn = if (assist) { if (dark) Color(0xFFFFDDA0) else Color(0xFF7D5700) }
+                    else if (dark) Color(0xFFFFB77D) else Color(0xFFE65100),
+                warnContainer = if (dark) Color(0xFF6D3200) else Color(0xFFFFDCC1),
+            )
+        }
     }
 }
 
@@ -77,7 +97,7 @@ private val LocalSymbolFont = staticCompositionLocalOf<FontFamily> { FontFamily.
 private val LocalFilledSymbolFont = staticCompositionLocalOf<FontFamily> { FontFamily.Default }
 
 @Composable
-fun AgentTheme(appearance: AgentAppearance = AgentAppearance(), colors: AgentColorScheme? = null, content: @Composable () -> Unit) {
+fun AgentTheme(appearance: AgentAppearance = LocalAgentAppearance.current, colors: AgentColorScheme? = null, content: @Composable () -> Unit) {
     val inheritedDensity = LocalAgentBaseDensity.current
     val deviceDensity = LocalDensity.current
     val windowWidth = if (inheritedDensity == null) LocalWindowInfo.current.containerSize.width else 0
@@ -109,22 +129,12 @@ fun AgentTheme(appearance: AgentAppearance = AgentAppearance(), colors: AgentCol
     val mono = FontFamily(Font(Res.font.jetbrains_mono))
     val symbolFont = FontFamily(Font(Res.font.material_symbols_rounded))
     val filledFont = FontFamily(Font(Res.font.material_symbols_filled))
-    val base = colors ?: if (appearance.darkTheme) AgentColorScheme.dark() else AgentColorScheme()
-    val c = if (appearance.colorVisionAssist) base.copy(
-        tertiary = if (appearance.darkTheme) Color(0xFF91D7FF) else Color(0xFF005A8D),
-        error = if (appearance.darkTheme) Color(0xFFFFC485) else Color(0xFF9C4400),
-        warn = if (appearance.darkTheme) Color(0xFFFFDDA0) else Color(0xFF7D5700),
-    ) else base
-    val scheme = lightColorScheme(
-        primary = c.primary, onPrimary = c.onPrimary, primaryContainer = c.primaryContainer,
-        onPrimaryContainer = c.onPrimaryContainer, secondaryContainer = c.secondaryContainer,
-        tertiary = c.tertiary, tertiaryContainer = c.tertiaryContainer, error = c.error,
-        errorContainer = c.errorContainer, surface = c.surface, background = c.surface,
-        onSurface = c.onSurface, onBackground = c.onSurface, onSurfaceVariant = c.onSurfaceVariant,
-        surfaceVariant = c.surfaceContainer, outline = c.outline, outlineVariant = c.outlineVariant,
-        surfaceContainerLow = c.surfaceContainerLow, surfaceContainer = c.surfaceContainer,
-        surfaceContainerHigh = c.surfaceContainerHigh, surfaceContainerHighest = c.surfaceContainerHighest,
-    )
+    val providedColors = colors ?: if (LocalAgentThemeProvided.current && LocalAgentAppearance.current == appearance) LocalAgentColors.current else null
+    val system = if (providedColors == null && appearance.colorSource == AgentColorSource.SYSTEM) agentSystemColorScheme(appearance.darkTheme) else null
+    val c = providedColors ?: remember(appearance.darkTheme, appearance.colorVisionAssist, appearance.colorSource, appearance.customColor, system) {
+        AgentColorScheme.fromMaterial(agentPaletteScheme(appearance, system), appearance.darkTheme, appearance.colorVisionAssist)
+    }
+    val scheme = c.material
     val normal = TextStyle(fontFamily = font, fontSize = 17.sp, lineHeight = 26.35.sp)
     CompositionLocalProvider(LocalAgentColors provides c, LocalAgentAppearance provides appearance, LocalContentColor provides c.onSurface,
         LocalAgentMono provides mono, LocalSymbols provides symbols, LocalSymbolFont provides symbolFont,

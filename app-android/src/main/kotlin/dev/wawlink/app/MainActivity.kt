@@ -1,10 +1,14 @@
 package dev.wawlink.app
 
 import android.Manifest
+import android.content.ClipData
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
@@ -30,6 +34,10 @@ class MainActivity : ComponentActivity(), HostFiles {
     private var exportResult: CancellableContinuation<Uri?>? = null
     private var fileImportResult: CancellableContinuation<List<Uri>>? = null
     private var fileExportResult: CancellableContinuation<Uri?>? = null
+    private var installPermissionResult: CancellableContinuation<Unit>? = null
+    private val allowPackageInstallation = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        installPermissionResult?.let { continuation -> installPermissionResult = null; if (continuation.isActive) continuation.resume(Unit) }
+    }
     private val pickContainerFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> fileImportResult?.let { continuation -> fileImportResult = null; if (continuation.isActive) continuation.resume(uris) } }
     private val saveContainerFile = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri -> fileExportResult?.let { continuation -> fileExportResult = null; if (continuation.isActive) continuation.resume(uri) } }
     private val pickAttachments = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> attachmentResult?.let { continuation -> attachmentResult = null; if (continuation.isActive) continuation.resume(uris) } }
@@ -91,6 +99,44 @@ class MainActivity : ComponentActivity(), HostFiles {
                 output.use { write(it) }
                 true
             } catch (failure: Exception) { runCatching { contentResolver.delete(uri, null, null) }; throw failure }
+        }
+    }
+    override suspend fun openFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit) {
+        val apk = mimeType == "application/vnd.android.package-archive"
+        if (apk && !packageManager.canRequestPackageInstalls()) {
+            withContext(Dispatchers.Main.immediate) {
+                check(installPermissionResult == null) { "安装来源授权页面已打开" }
+                suspendCancellableCoroutine<Unit> { continuation ->
+                    installPermissionResult = continuation
+                    continuation.invokeOnCancellation { installPermissionResult = null }
+                    try {
+                        allowPackageInstallation.launch(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                    } catch (error: Exception) { installPermissionResult = null; throw error }
+                }
+            }
+            check(packageManager.canRequestPackageInstalls()) { "尚未允许 WawLink 安装 APK；文件未安装，可重试或下载" }
+        }
+        val directory = withContext(Dispatchers.IO) {
+            val cache = File(cacheDir, "container-open").apply { check(isDirectory || mkdirs()) { "无法创建文件缓存" } }
+            File(cache, UUID.randomUUID().toString()).apply { check(mkdir()) { "无法创建文件缓存" } }
+        }
+        val target = File(directory, hostFileName(name))
+        try {
+            withContext(Dispatchers.IO) { target.outputStream().use { write(it) } }
+            withContext(Dispatchers.Main.immediate) {
+                val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", target)
+                val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType).apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    clipData = ClipData.newRawUri(name, uri)
+                    putExtra(Intent.EXTRA_TITLE, name)
+                }
+                // The system package installer always owns APK confirmation; no package is silently installed.
+                startActivity(intent)
+            }
+            // Keep the cache alive after hand-off: the viewer/installer may read asynchronously.
+        } catch (error: Exception) {
+            withContext(NonCancellable + Dispatchers.IO) { target.delete(); directory.delete() }
+            throw error
         }
     }
     override suspend fun pickAttachments(): List<AttachmentFile> {

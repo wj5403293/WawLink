@@ -361,7 +361,7 @@ class OmpEventReducerTest {
         val reducer = reducer()
         reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
         val attachment = AttachmentFile("attachment", "要求.txt", "/workspace/要求.txt")
-        val user = UserMessageItem("local-user", "补充要求", listOf(attachment), 123)
+        val user = UserMessageItem("local-user", "补充要求", listOf(attachment), 123, accepted = false)
         reducer.addUserMessage(user)
         val message = """{"role":"user","content":"补充要求","timestamp":123}"""
         reducer.accept("""{"type":"message_start","messageId":"native-user","message":$message}""")
@@ -370,7 +370,7 @@ class OmpEventReducerTest {
         reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[$message]}""")
         val group = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
         assertEquals(listOf(user.id, "omp:1:tool:after-local"), group.children.map { it.id })
-        assertEquals(listOf(user), allItems(reducer.state.feed).filterIsInstance<UserMessageItem>())
+        assertEquals(listOf(user.copy(accepted = true)), allItems(reducer.state.feed).filterIsInstance<UserMessageItem>())
         assertTrue(reducer.hasConfirmedUser(user.id))
     }
 

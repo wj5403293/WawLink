@@ -2,6 +2,7 @@ package dev.wawlink.app
 
 import dev.wawlink.driver.OmpProcessPool
 import dev.wawlink.protocol.AgentAppearance
+import dev.wawlink.protocol.AgentColorSource
 import dev.wawlink.runtime.ContainerInfo
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.DeploymentProgress
@@ -85,6 +86,28 @@ class AppCoordinatorAppearanceTest {
                 assertEquals(100, app.appearance.value.effectiveUiScalePercent)
                 assertEquals(1.15f, app.appearance.value.densityScale, .0001f)
                 assertFalse(app.defaultAutoApprove.value)
+            }
+        }
+    }
+
+    @Test fun customSeedSurvivesSourceChangesAndUnrelatedPreferenceSaves() = runBlocking {
+        Fixture(Properties()).use { fixture ->
+            fixture.open().use { app ->
+                app.updateAppearance(app.appearance.value.copy(colorSource = AgentColorSource.CUSTOM, customColor = 0xFF167D45L))
+                fixture.awaitSaved("customColor", "${0xFF167D45L}")
+                app.updateDefaultAutoApprove(false)
+                fixture.awaitSaved("defaultAutoApprove", "false")
+            }
+            fixture.open().use { app ->
+                assertEquals(AgentColorSource.CUSTOM, app.appearance.value.colorSource)
+                assertEquals(0xFF167D45L, app.appearance.value.customColor)
+                assertFalse(app.defaultAutoApprove.value)
+                app.updateAppearance(app.appearance.value.copy(colorSource = AgentColorSource.SYSTEM))
+                fixture.awaitSaved("colorSource", "SYSTEM")
+            }
+            fixture.open().use { app ->
+                assertEquals(AgentColorSource.SYSTEM, app.appearance.value.colorSource)
+                assertEquals(0xFF167D45L, app.appearance.value.customColor)
             }
         }
     }

@@ -14,6 +14,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,7 +62,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                 if (tab == 0) {
                     val running = sessions.count { it.state.status == SessionStatus.RUNNING && !it.record.archived }
                     if (running > 0) FilledTonalButton({ filter = if (filter == "运行中") "全部" else "运行中" }, contentPadding = PaddingValues(horizontal = 10.dp), modifier = Modifier.height(38.dp)) { Symbol("play_arrow", size = 18.dp); Spacer(Modifier.width(4.dp)); Text("$running") }
-                    AgentIconButton("checklist", "批量管理", { batch = true })
+                    AgentIconButton("checklist", "批量管理", { expanded = null; batch = true })
                     AgentIconButton("edit_square", "新建会话", onNewSession)
                 } else {
                     AgentIconButton("terminal", "默认终端", { val id = (containers.firstOrNull { it.config.isDefault } ?: containers.firstOrNull())?.config?.id; if (id == null) app.report("请先安装容器") else onTerminal(id) })
@@ -108,7 +111,8 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             items.forEachIndexed { index, session ->
                                 SessionCard(session, containers.firstOrNull { it.config.id == session.record.containerId }?.config?.name ?: "容器已移除", expanded == session.record.id && !batch, batch, session.record.id in selected, index == 0, index == items.lastIndex,
-                                    onExpand = { val id = session.record.id; if (batch) selected = if (id in selected) selected - id else selected + id else expanded = if (expanded == id) null else id },
+                                    onExpand = { val id = session.record.id; if (batch) { expanded = null; selected = if (id in selected) selected - id else selected + id } else expanded = if (expanded == id) null else id },
+                                    onLongPress = { expanded = null; batch = true; selected = selected + session.record.id },
                                     onEnter = { onEnterSession(session.record.id) }, onFork = { app.launch { val id = app.fork(session.record.id); onEnterSession(id) } },
                                     onEdit = { editing = session.record }, onSwitch = { switching = session.record },
                                     onPin = { app.launch { app.togglePin(setOf(session.record.id)) } }, onArchive = { app.launch { app.toggleArchive(setOf(session.record.id)) } }, onDelete = { deleting = setOf(session.record.id) },
@@ -124,7 +128,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
     editing?.let { record -> SessionEditor(app, files, record, { editing = null }) { editing = null } }
     switching?.let { record -> AgentSheet("切换绑定容器", { switching = null }) {
         containers.forEach { c -> HostRow(c.config.name, "${c.config.distro} ${c.config.version}", "deployed_code", {
-            app.launch { app.editSession(record.id, record.title, record.workspace, c.config.id); switching = null }
+            app.launch { app.editSession(record.id, record.title, record.workspace, c.config.id, manualTitle = false); switching = null }
         }) { if (record.containerId == c.config.id) Symbol("check_circle") } }
     } }
     if (deleting.isNotEmpty()) AlertDialog(onDismissRequest = { deleting = emptySet() }, title = { Text("删除 ${deleting.size} 个会话？") }, text = { Text("将停止相关进程并永久删除会话历史，无法撤销。") }, confirmButton = { TextButton({ val ids = deleting; deleting = emptySet(); app.launch { app.deleteSessions(ids) }; exitBatch() }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton({ deleting = emptySet() }) { Text("取消") } })
@@ -135,14 +139,21 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
 }
 
 @Composable
-private fun SessionCard(session: HomeSession, container: String, open: Boolean, batch: Boolean, selected: Boolean, first: Boolean, last: Boolean, onExpand: () -> Unit, onEnter: () -> Unit, onFork: () -> Unit, onEdit: () -> Unit, onSwitch: () -> Unit, onPin: () -> Unit, onArchive: () -> Unit, onDelete: () -> Unit, onApproval: (String, ApprovalDecision) -> Unit) {
+private fun SessionCard(session: HomeSession, container: String, open: Boolean, batch: Boolean, selected: Boolean, first: Boolean, last: Boolean, onExpand: () -> Unit, onLongPress: () -> Unit, onEnter: () -> Unit, onFork: () -> Unit, onEdit: () -> Unit, onSwitch: () -> Unit, onPin: () -> Unit, onArchive: () -> Unit, onDelete: () -> Unit, onApproval: (String, ApprovalDecision) -> Unit) {
     val s = session.state; val r = session.record
     var more by remember { mutableStateOf(false) }
     val rounding by animateDpAsState(if (open || selected || first && last) 26.dp else 8.dp, tween(450, easing = EmphEasing))
     val shape = if (open || selected || first && last) RoundedCornerShape(rounding) else RoundedCornerShape(if (first) 24.dp else 8.dp, if (first) 24.dp else 8.dp, if (last) 24.dp else 8.dp, if (last) 24.dp else 8.dp)
     val background by animateColorAsState(if (selected) MaterialTheme.colorScheme.primaryContainer else if (open) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerLow, tween(300))
     Column(Modifier.fillMaxWidth().clip(shape).background(background).animateContentSize(tween(500, easing = EmphEasing))) {
-        Row(Modifier.fillMaxWidth().clickable(onClick = onExpand).padding(vertical = 14.dp, horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(Modifier.fillMaxWidth().semantics { if (batch) this.selected = selected }
+            .combinedClickable(
+                role = if (batch) Role.Checkbox else Role.Button,
+                onClickLabel = if (batch) if (selected) "取消选择会话" else "选择会话" else if (open) "收起会话操作" else "展开会话操作",
+                onLongClickLabel = "选择会话并进入批量管理",
+                onClick = onExpand,
+                onLongClick = onLongPress,
+            ).padding(vertical = 14.dp, horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             val lead = if (selected || s.status == SessionStatus.RUNNING) MaterialTheme.colorScheme.primary else if (s.status == SessionStatus.WAITING) Color(0xFFFFDCC1) else if (s.status == SessionStatus.DONE) Color(0xFFC4EED0) else MaterialTheme.colorScheme.surfaceContainerHigh
             Box(Modifier.size(48.dp).background(lead, RoundedCornerShape(if (open || selected || s.status == SessionStatus.RUNNING) 24.dp else 14.dp)), contentAlignment = Alignment.Center) {
                 CompositionLocalProvider(LocalContentColor provides if (selected || s.status == SessionStatus.RUNNING) Color.White else MaterialTheme.colorScheme.onSurface) {
