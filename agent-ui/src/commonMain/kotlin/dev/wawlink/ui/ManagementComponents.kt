@@ -31,6 +31,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,7 +47,7 @@ import kotlinx.serialization.json.*
 import kotlin.math.abs
 
 /** Screen-local ordered writes; failed operations leave the editor and its draft in place. */
-internal class ManagementActions(scope: CoroutineScope, private val notify: suspend (String) -> Unit) {
+internal class ManagementActions(scope: CoroutineScope, private val dismissNotification: () -> Unit, private val notify: suspend (String) -> Unit) {
     private val operations = Channel<Pair<String?, suspend () -> Unit>>(Channel.UNLIMITED)
     private var pending by mutableIntStateOf(0)
     val busy: Boolean get() = pending > 0
@@ -69,6 +72,7 @@ internal class ManagementActions(scope: CoroutineScope, private val notify: susp
         pending++
         if (operations.trySend(success to block).isFailure) pending--
     }
+    fun clearError() { error = null; dismissNotification() }
 }
 internal val LocalManagementActions = staticCompositionLocalOf<ManagementActions> { error("Missing management actions") }
 internal val LocalManagementSession = staticCompositionLocalOf<AgentSessionController?> { null }
@@ -154,7 +158,7 @@ internal fun ManagementGroup(title: String, action: (@Composable () -> Unit)? = 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp), content = content)
 }
 @Composable
-internal fun ManagementRow(title: String, subtitle: String = "", icon: String = "tune", onClick: (() -> Unit)? = null, index: Int = 0, count: Int = 1, lead: (@Composable () -> Unit)? = null, trailing: (@Composable () -> Unit)? = null, enabled: Boolean = true, error: Boolean = false, detail: String = "") {
+internal fun ManagementRow(title: String, subtitle: String = "", icon: String = "tune", onClick: (() -> Unit)? = null, index: Int = 0, count: Int = 1, lead: (@Composable () -> Unit)? = null, trailing: (@Composable () -> Unit)? = null, enabled: Boolean = true, error: Boolean = false, detail: String = "", titleSuffix: String? = null) {
     val c = LocalAgentColors.current
     val shape = RoundedCornerShape(topStart = if (index == 0) 24.dp else 6.dp, topEnd = if (index == 0) 24.dp else 6.dp,
         bottomStart = if (index == count - 1) 24.dp else 6.dp, bottomEnd = if (index == count - 1) 24.dp else 6.dp)
@@ -163,12 +167,22 @@ internal fun ManagementRow(title: String, subtitle: String = "", icon: String = 
         .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         if (lead != null) lead() else if (icon.isNotEmpty()) Box(Modifier.size(44.dp).background(if (error) c.errorContainer else c.primaryContainer, CircleShape), contentAlignment = Alignment.Center) { Symbol(icon, tint = if (error) c.error else c.onPrimaryContainer) }
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (enabled) c.onSurface else c.outline)
+            if (titleSuffix == null) Text(title, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (enabled) c.onSurface else c.outline)
+            else ManagementDefaultText(title, titleSuffix)
             if (subtitle.isNotEmpty()) Text(subtitle, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (error) c.error else c.onSurfaceVariant)
             if (detail.isNotEmpty()) Text(detail, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = c.onSurfaceVariant)
         }
         if (trailing != null) trailing() else if (onClick != null) Symbol("chevron_right", tint = c.onSurfaceVariant)
     }
+}
+
+@Composable
+internal fun ManagementDefaultText(title: String, value: String) {
+    val colors = LocalAgentColors.current
+    val text = remember(title, value, colors.onSurfaceVariant) {
+        buildAnnotatedString { append(title); append("  "); withStyle(SpanStyle(color = colors.onSurfaceVariant)) { append(value) } }
+    }
+    Text(text, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = colors.onSurface)
 }
 @Composable
 internal fun ManagementHint(text: String, icon: String = "info", error: Boolean = false) {
@@ -259,12 +273,13 @@ internal fun ManagementChip(label: String, selected: Boolean, onClick: () -> Uni
 }
 @Composable
 internal fun ManagementSaveBar(dirty: Boolean, saving: Boolean, onSave: () -> Unit, onDiscard: () -> Unit, error: String? = null, canSave: Boolean = true) {
+    val actions = LocalManagementActions.current
     AnimatedVisibility(dirty || saving || error != null, enter = slideInVertically(tween(550, easing = EmphDecelEasing)) { it } + fadeIn(), exit = slideOutVertically(tween(350, easing = EmphAccelEasing)) { it } + fadeOut()) {
         Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF303030), contentColor = Color(0xFFF2F2F2), shadowElevation = 6.dp) {
             Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (saving) CircularProgressIndicator(Modifier.size(22.dp), color = Color(0xFFA8C7FA), strokeWidth = 2.dp) else Symbol(if (error == null) "edit" else "error", size = 22.dp)
                 Text(if (saving) "正在保存" else if (error != null) "保存失败" else "有未保存的修改", Modifier.weight(1f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                TextButton(onDiscard, enabled = !saving) { Text("放弃", color = Color(0xFFA8C7FA)) }
+                TextButton({ onDiscard(); actions.clearError() }, enabled = !saving) { Text("放弃", color = Color(0xFFA8C7FA)) }
                 Button(onSave, enabled = !saving && canSave, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA8C7FA), contentColor = Color(0xFF062E6F))) { Text(if (error != null) "重试" else "保存") }
             }
         }

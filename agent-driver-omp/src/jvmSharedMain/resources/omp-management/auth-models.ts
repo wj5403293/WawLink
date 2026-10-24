@@ -18,6 +18,7 @@ const { getSupportedEfforts } = await import("/opt/omp/node_modules/@oh-my-pi/pi
 const { getBundledModel, getBundledProviders, isGeneratedProvider } = await import("/opt/omp/node_modules/@oh-my-pi/pi-catalog/src/models.ts");
 const { ModelRegistry } = await import("/opt/omp/src/config/model-registry.ts");
 const { ModelsConfigFile } = await import("/opt/omp/src/config/models-config.ts");
+const { buildCustomModelOverlay, finalizeCustomModel } = await import("/opt/omp/src/config/custom-models.ts");
 const resolver = await import("/opt/omp/src/config/model-resolver.ts");
 const roles = await import("/opt/omp/src/config/model-roles.ts");
 const { cfgDefaultThinkingLevel } = await import("/opt/omp/src/session/settings.ts");
@@ -366,6 +367,17 @@ export async function modelDetails(ctx: ManagementContext, provider: unknown, mo
     metadata: { ...summary.metadata, modelKinds: MODEL_KINDS, runnerApiKinds: RUNNER_API_KINDS,
       baseline: modelDeclaration(model), catalogueBaseline: catalogue ? modelDeclaration(catalogue) : null },
   };
+}
+
+export function modelDefaults(provider: unknown, modelId: unknown, api: unknown): unknown {
+  if (typeof provider !== "string" || typeof modelId !== "string" || typeof api !== "string" || !api) throw Error("UNAVAILABLE: Invalid model default context");
+  const catalogue = isGeneratedProvider(provider) ? getBundledModel(provider, modelId) : undefined;
+  if (catalogue) return modelDeclaration(catalogue);
+  // Reuse the same native reference inheritance and defaults as a new custom row.
+  // No credentials, endpoint resolution, registry mutation or model request is needed.
+  const overlay = buildCustomModelOverlay(provider, "", api, undefined, undefined, undefined, undefined, undefined, undefined, { id: modelId });
+  if (!overlay) throw Error("UNAVAILABLE: Native model defaults require an API");
+  return modelDeclaration(finalizeCustomModel(overlay, { useDefaults: true }));
 }
 
 function registeredLoginProviders() {

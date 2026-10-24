@@ -128,6 +128,7 @@ async function dispatch(op,args) {
   }
   if(op==="modelsSnapshot")return (await auth()).modelsSnapshot(ctx,args.online===true);
   if(op==="modelDetails")return (await auth()).modelDetails(ctx,args.provider,args.modelId);
+  if(op==="modelDefaults")return (await auth()).modelDefaults(args.provider,args.modelId,args.api);
   if(op==="fetchProviderModels")return (await auth()).dispatch(op,args,ctx);
   if(op==="validateSettings")return validate(args.changes);
   if(op==="updateSettings"){await ctx.editSettings(args.scope,args.changes);return true;}

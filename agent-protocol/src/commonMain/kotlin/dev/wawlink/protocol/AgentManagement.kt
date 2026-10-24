@@ -125,6 +125,8 @@ interface AgentManagementRepository {
     suspend fun reload(online: Boolean = false)
     /** Full model declarations are loaded only for the selected model, never for the whole catalogue. */
     suspend fun modelDetails(provider: String, modelId: String): ManagedModel
+    /** Display-only defaults from the native model builder; never materializes configuration. */
+    suspend fun modelDefaults(provider: String, modelId: String, api: String): Map<String, Any?>
     /** Force native online discovery for this provider only; never substitutes a static catalogue reload. */
     suspend fun fetchProviderModels(provider: String)
     /** Keys are native dotted IDs; null removes this layer's override, never writes a null sentinel. */

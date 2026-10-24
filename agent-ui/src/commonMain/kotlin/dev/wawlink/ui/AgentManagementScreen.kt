@@ -34,7 +34,7 @@ fun AgentManagementScreen(
     val persistedProviders by providers.providers.collectAsState()
     val coroutineScope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    val actions = remember(repository) { ManagementActions(coroutineScope) { snackbar.showSnackbar(it) } }
+    val actions = remember(repository) { ManagementActions(coroutineScope, { snackbar.currentSnackbarData?.dismiss() }) { snackbar.showSnackbar(it) } }
     var page by rememberSaveable { mutableStateOf(initialSection) }
     var targetProvider by rememberSaveable { mutableStateOf("") }
     var configurationScope by rememberSaveable { mutableStateOf(ConfigurationScope.GLOBAL) }
@@ -81,7 +81,7 @@ fun AgentManagementScreen(
                 }
             }
             if (state.loading || actions.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(3.dp).align(Alignment.TopCenter))
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 16.dp, bottom = if (actions.error == null) 16.dp else 96.dp))
         }
         }
     }

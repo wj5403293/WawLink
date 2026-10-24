@@ -32,6 +32,8 @@ private val nativeApis = linkedMapOf(
     "openai-decisions" to "OpenAI Decisions", "workers-ai-systemone" to "Workers AI", "typesafe" to "Typesafe")
 private val nativeDiscovery = linkedMapOf("ollama" to "Ollama", "llama.cpp" to "llama.cpp", "lm-studio" to "LM Studio", "openai-models-list" to "OpenAI 模型列表", "proxy" to "代理", "litellm" to "LiteLLM")
 private val nativeModelKindLabels = linkedMapOf("chat" to "对话", "image" to "图片生成", "tts" to "语音合成", "stt" to "语音识别", "embedding" to "向量", "tiny" to "轻量", "judge" to "评审", "rerank" to "重排", "video" to "视频")
+private val nativeBooleanLabels = linkedMapOf("true" to "开启", "false" to "关闭")
+private val nativeThinkingModes = linkedMapOf("effort" to "档位", "budget" to "数值预算", "google-level" to "Google 档位", "anthropic-adaptive" to "Anthropic 自适应", "anthropic-budget-effort" to "Anthropic 预算与档位")
 private val nativeEnvironmentVariable = Regex("^[A-Z][A-Z0-9_]+$")
 private val remoteListApis = setOf("openai-completions", "openai-responses", "anthropic-messages")
 private fun nativeRuntimeSecret(value: String): Boolean = value.startsWith("!") || value.startsWith("$") || nativeEnvironmentVariable.matches(value)
@@ -43,6 +45,15 @@ internal val NativeProviderFieldsSaver = Saver<Map<String, Any?>, String>(
 
 internal fun mergeProviderFirstRead(initial: Map<String, Any?>, draft: Map<String, Any?>, edited: List<String>): Map<String, Any?> =
     (initial - edited.toSet()) + draft.filterKeys { it in edited }
+
+internal fun changeModelThinkingField(draft: Map<String, Any?>, inherited: Map<String, Any?>, key: String, value: Any?): Map<String, Any?> {
+    // Native thinking is optional as a whole, but its mode is required when present.
+    if (key == "mode" && value == null) return if ("thinking" in draft) draft - "thinking" else draft
+    val current = if ("thinking" in draft) configurationMap(draft["thinking"]) else inherited
+    val next = if (value == null) current - key else current + (key to value)
+    if (next == current) return draft
+    return if (next.isEmpty()) draft - "thinking" else draft + ("thinking" to next)
+}
 
 private val NativeModelEditSaver = Saver<NativeModelEdit?, String>(
     save = { edit -> edit?.let { configurationJson(mapOf("id" to it.id, "values" to it.values, "override" to it.override)).toString() } },
@@ -138,7 +149,7 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
     model?.let { edit ->
         val modelRoute = "model:${edit.id ?: "new"}"
         formStates.SaveableStateProvider(modelRoute) {
-        NativeModelScreen(id, edit, state, onBack = { model = null; formStates.removeState(modelRoute) }, onSave = { modelId, fields ->
+        NativeModelScreen(id, draft["api"] as? String ?: descriptor?.api ?: nativeModel?.api ?: if (!builtin) "openai-completions" else null, edit, state, onBack = { model = null; formStates.removeState(modelRoute) }, onSave = { modelId, fields ->
             if (edit.override) change("modelOverrides", if (fields.isEmpty()) overrides - modelId else overrides + (modelId to fields))
             else change("models", customModels.filterNot { it["id"] == edit.id || it["id"] == modelId } + (fields + ("id" to modelId)))
             model = null
@@ -161,7 +172,7 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
             if (state.accounts.any { it.provider == id }) ManagementMenuItem(text = { Text("清除认证记录", color = LocalAgentColors.current.error) }, leadingIcon = { Symbol("key_off", tint = LocalAgentColors.current.error) }, onClick = { more = false; clearAuthentication = true })
         }
     } },
-        footer = { ManagementSaveBar(dirty, actions.busy, { save() }, { val source = document; draft = configurationMap(configurationMap(source?.values?.get("providers"))[originalId]); dirty = false; editedFields = emptyList(); keySource = null }, actions.error, canSave = document != null && id.isNotBlank()) }) {
+        footer = { ManagementSaveBar(dirty, actions.busy, { save() }, { val source = document; id = originalId; draft = configurationMap(configurationMap(source?.values?.get("providers"))[originalId]); dirty = false; editedFields = emptyList(); keySource = null }, actions.error, canSave = document != null && id.isNotBlank()) }) {
         if (document == null) {
             if (actions.error == null) Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             else TextButton({ readAttempt++ }) { Text("重新读取配置") }
@@ -288,20 +299,20 @@ private fun NativeSection(title: String, initial: Boolean = false, content: @Com
     AnimatedVisibility(open, enter = expandVertically(tween(500, easing = EmphEasing)) + fadeIn(tween(400)), exit = shrinkVertically(tween(500, easing = EmphEasing)) + fadeOut(tween(250))) { Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp), content = content) }
 }
 @Composable
-private fun NativeEnum(label: String, value: String?, options: Map<String, String>, onValue: (String?) -> Unit, inherited: String = "使用默认值") {
+private fun NativeEnum(label: String, value: String?, options: Map<String, String>, onValue: (String?) -> Unit, inherited: String = "使用默认值", defaultValue: String? = null) {
     var open by remember { mutableStateOf(false) }
     SettingsLabel(label)
     Box {
-        ManagementRow(options[value] ?: value ?: inherited, icon = "", onClick = { open = true }, trailing = { Symbol("arrow_drop_down") })
+        ManagementRow(options[value] ?: value ?: inherited, icon = "", onClick = { open = true }, trailing = { Symbol("arrow_drop_down") }, titleSuffix = defaultValue.takeIf { value == null })
         ManagementMenu(open, { open = false }) {
-            ManagementMenuItem(text = { Text(inherited) }, leadingIcon = { Symbol("link") }, onClick = { onValue(null); open = false })
+            ManagementMenuItem(text = { if (defaultValue == null) Text(inherited) else ManagementDefaultText(inherited, defaultValue) }, leadingIcon = { Symbol("link") }, onClick = { onValue(null); open = false })
             options.forEach { (id, name) -> ManagementMenuItem(text = { Text(name) }, selected = id == value, trailingIcon = { if (id == value) Symbol("check") }, onClick = { onValue(id); open = false }) }
         }
     }
 }
 @Composable
-private fun NativeOptionalBoolean(label: String, value: Boolean?, onValue: (Boolean?) -> Unit) {
-    NativeEnum(label, value?.toString(), linkedMapOf("true" to "开启", "false" to "关闭"), { onValue(it?.toBooleanStrictOrNull()) })
+private fun NativeOptionalBoolean(label: String, value: Boolean?, onValue: (Boolean?) -> Unit, defaultValue: String? = null) {
+    NativeEnum(label, value?.toString(), nativeBooleanLabels, { onValue(it?.toBooleanStrictOrNull()) }, defaultValue = defaultValue)
 }
 @Composable
 private fun NativeNumber(label: String, value: Any?, onValue: (Any?) -> Unit) {
@@ -330,10 +341,10 @@ private fun NativeStringMap(values: Map<String, Any?>, onChange: (Map<String, An
 }
 
 @Composable
-private fun NativeModelScreen(provider: String, edit: NativeModelEdit, state: AgentManagementState, onBack: () -> Unit, onSave: (String, Map<String, Any?>) -> Unit, onDelete: () -> Unit, registerBack: ((() -> Boolean)?) -> Unit, existingIds: Set<String>) {
+private fun NativeModelScreen(provider: String, providerApi: String?, edit: NativeModelEdit, state: AgentManagementState, onBack: () -> Unit, onSave: (String, Map<String, Any?>) -> Unit, onDelete: () -> Unit, registerBack: ((() -> Boolean)?) -> Unit, existingIds: Set<String>) {
     var id by rememberSaveable { mutableStateOf(edit.id.orEmpty()) }
     var draft by rememberSaveable(stateSaver = NativeProviderFieldsSaver) { mutableStateOf(edit.values) }
-    var dirty by rememberSaveable { mutableStateOf(false) }
+    val dirty = id != edit.id.orEmpty() || draft != edit.values
     var confirmDiscard by remember { mutableStateOf(false) }
     var delete by remember { mutableStateOf(false) }
     var compat by remember { mutableStateOf(false) }
@@ -355,60 +366,89 @@ private fun NativeModelScreen(provider: String, edit: NativeModelEdit, state: Ag
         finally { detailsLoading = false }
     }
     val base = configurationMap(catalog?.metadata?.get("catalogueBaseline")).ifEmpty { configurationMap(catalog?.metadata?.get("baseline")) }
+    var defaults by remember(provider, edit.id) { mutableStateOf<Map<String, Any?>>(emptyMap()) }
+    var defaultsLoading by remember(provider, edit.id) { mutableStateOf(true) }
+    var defaultsError by remember(provider, edit.id) { mutableStateOf<String?>(null) }
+    val inheritedApi = (if (edit.override) base["api"] as? String else null) ?: providerApi
+    val effectiveApi = draft["api"] as? String ?: inheritedApi
+    LaunchedEffect(repository, provider, id.trim(), effectiveApi, detailsAttempt) {
+        defaults = emptyMap()
+        defaultsError = null
+        defaultsLoading = effectiveApi != null
+        if (effectiveApi == null) return@LaunchedEffect
+        try { defaults = repository.modelDefaults(provider, id.trim(), effectiveApi) }
+        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (failure: Exception) { defaultsError = failure.message ?: "默认值读取失败" }
+        finally { defaultsLoading = false }
+    }
+    fun modelDefault(key: String, labels: Map<String, String> = emptyMap()): String {
+        if (defaultsLoading) return "正在读取"
+        if (defaultsError != null) return "读取失败"
+        val value = configurationValue(defaults, key)?.toString() ?: return "未指定"
+        return labels[value] ?: value
+    }
     fun field(key: String): Any? = if (draft.containsKey(key)) draft[key] else if (edit.override) base[key] else null
-    fun change(key: String, value: Any?) { draft = if (value == null) draft - key else draft + (key to value); dirty = true }
+    fun change(key: String, value: Any?) { draft = if (value == null) draft - key else draft + (key to value) }
     val duplicateId = id.trim() != edit.id && id.trim() in existingIds
     val configuredCost = configurationMap(draft["cost"])
     val completeCost = edit.override || configuredCost.isEmpty() || listOf("input", "output", "cacheRead", "cacheWrite").all { configuredCost[it] is Number }
+    val configuredThinking = configurationMap(draft["thinking"])
+    val completeThinking = "thinking" !in draft || configuredThinking["mode"] is String &&
+        (configuredThinking["efforts"] is List<*> || configuredThinking["levels"] is List<*> ||
+            configuredThinking["minLevel"] is String && configuredThinking["maxLevel"] is String)
     fun back(): Boolean { if (dirty) confirmDiscard = true else onBack(); return true }
     val latestBack by rememberUpdatedState(::back)
     val currentRegistration by rememberUpdatedState(registerBack)
     DisposableEffect(edit) { currentRegistration { latestBack() }; onDispose { currentRegistration(null) } }
         ManagementPage(if (edit.id == null) "添加模型" else "编辑模型", { if (dirty) confirmDiscard = true else onBack() },
-            footer = { ManagementSaveBar(dirty, detailsLoading, { onSave(id.trim(), draft) }, { draft = edit.values; dirty = false }, error = detailsError, canSave = !detailsLoading && detailsError == null && id.isNotBlank() && !duplicateId && completeCost) }) {
+            footer = { ManagementSaveBar(dirty, detailsLoading, { onSave(id.trim(), draft) }, { id = edit.id.orEmpty(); draft = edit.values }, error = detailsError, canSave = !detailsLoading && detailsError == null && id.isNotBlank() && !duplicateId && completeCost && completeThinking) }) {
             if (detailsLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             detailsError?.let {
                 ManagementBanner(it, "error", error = true)
                 TextButton({ detailsAttempt++ }) { Text("重新读取") }
             }
             if (detailsLoading || detailsError != null) return@ManagementPage
+            defaultsError?.let { ManagementBanner(it, "error", error = true); TextButton({ detailsAttempt++ }) { Text("重新读取默认值") } }
             if (edit.override) {
-                Row { TextButton({ original = true }) { Text("对照原始值") }; TextButton({ draft = emptyMap(); dirty = true }) { Text("清除全部覆盖") } }
+                Row { TextButton({ original = true }) { Text("对照原始值") }; TextButton({ draft = emptyMap() }) { Text("清除全部覆盖") } }
             }
             NativeSection("身份与类型", true) {
-                ManagementField("模型 ID", id, { id = it; dirty = true }, mono = true, readOnly = edit.override)
+                ManagementField("模型 ID", id, { id = it }, mono = true, readOnly = edit.override)
                 if (duplicateId) ManagementHint("模型 ID 已存在", "error", error = true)
                 ManagementField("显示名称", field("name") as? String ?: "", { change("name", it.takeIf(String::isNotBlank)) })
                 val nativeKinds = configurationStrings(catalog?.metadata?.get("modelKinds") ?: state.models.firstOrNull()?.metadata?.get("modelKinds")).filter { it != "search" }.ifEmpty { nativeModelKindLabels.keys.toList() }
-                NativeEnum("类型", field("kind") as? String, nativeKinds.associateWith { nativeModelKindLabels[it] ?: it }, { change("kind", it) })
+                NativeEnum("类型", draft["kind"] as? String, nativeKinds.associateWith { nativeModelKindLabels[it] ?: it }, { change("kind", it) }, defaultValue = modelDefault("kind", nativeModelKindLabels))
                 val runnerApis = configurationMap(catalog?.metadata?.get("runnerApiKinds") ?: state.models.firstOrNull()?.metadata?.get("runnerApiKinds")).keys.filter { it != "web-search" }.associateWith { it }
-                NativeEnum("接口协议", field("api") as? String, nativeApis + runnerApis + state.models.map { it.api }.filter(String::isNotBlank).associateWith { it }, { change("api", it) })
+                NativeEnum("接口协议", draft["api"] as? String, nativeApis + runnerApis + state.models.map { it.api }.filter(String::isNotBlank).associateWith { it }, { change("api", it) }, defaultValue = inheritedApi?.let { nativeApis[it] ?: it } ?: "未指定")
             }
             NativeSection("输入与工具") {
                 val input = configurationStrings(field("input"))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("text" to "文本", "image" to "图片").forEach { (key, name) -> ManagementChip(name, key in input, { change("input", if (key in input) input - key else input + key) }) } }
-                NativeOptionalBoolean("支持工具调用", field("supportsTools") as? Boolean, { change("supportsTools", it) })
-                NativeEnum("图像解码器", field("imageInputDecoder") as? String, mapOf("stb" to "STB"), { change("imageInputDecoder", it) })
+                NativeOptionalBoolean("支持工具调用", draft["supportsTools"] as? Boolean, { change("supportsTools", it) }, defaultValue = modelDefault("supportsTools", nativeBooleanLabels))
+                val decoders = mapOf("stb" to "STB")
+                NativeEnum("图像解码器", draft["imageInputDecoder"] as? String, decoders, { change("imageInputDecoder", it) }, defaultValue = modelDefault("imageInputDecoder", decoders))
                 NativeNumber("图片数量预算", field("imageCountBudget"), { change("imageCountBudget", it) })
-                NativeEnum("分词器", field("tokenizer") as? String, listOf("claude-v3", "claude-v47", "claude-v5", "claude-v5-sonnet", "qwen3", "deepseek-v3", "kimi-k2", "glm5", "o200k").associateWith { it }, { change("tokenizer", it) })
+                NativeEnum("分词器", draft["tokenizer"] as? String, listOf("claude-v3", "claude-v47", "claude-v5", "claude-v5-sonnet", "qwen3", "deepseek-v3", "kimi-k2", "glm5", "o200k").associateWith { it }, { change("tokenizer", it) }, defaultValue = modelDefault("tokenizer"))
             }
             NativeSection("上下文与输出", true) {
                 listOf("contextWindow" to "上下文窗口", "maxContextWindow" to "最大上下文窗口", "maxTokens" to "输出上限").forEach { (key, name) -> NativeNumber("$name · tokens", field(key), { change(key, it) }) }
-                NativeOptionalBoolean("请求中不发送输出上限", field("omitMaxOutputTokens") as? Boolean, { change("omitMaxOutputTokens", it) })
+                NativeOptionalBoolean("请求中不发送输出上限", draft["omitMaxOutputTokens"] as? Boolean, { change("omitMaxOutputTokens", it) }, defaultValue = modelDefault("omitMaxOutputTokens", nativeBooleanLabels))
             }
             NativeSection("思考能力", true) {
-                NativeOptionalBoolean("支持思考", field("reasoning") as? Boolean, { change("reasoning", it) })
+                NativeOptionalBoolean("支持思考", draft["reasoning"] as? Boolean, { change("reasoning", it) }, defaultValue = modelDefault("reasoning", nativeBooleanLabels))
                 val thinking = configurationMap(field("thinking"))
-                fun thought(key: String, value: Any?) { change("thinking", if (value == null) thinking - key else thinking + (key to value)) }
-                NativeEnum("控制方式", thinking["mode"] as? String, linkedMapOf("effort" to "档位", "budget" to "数值预算", "google-level" to "Google 档位", "anthropic-adaptive" to "Anthropic 自适应", "anthropic-budget-effort" to "Anthropic 预算与档位"), { thought("mode", it) })
+                val thinkingOverride = configurationMap(draft["thinking"])
+                fun thought(key: String, value: Any?) { draft = changeModelThinkingField(draft, if (edit.override) configurationMap(base["thinking"]) else emptyMap(), key, value) }
+                NativeEnum("控制方式", thinkingOverride["mode"] as? String, nativeThinkingModes, { thought("mode", it) }, defaultValue = modelDefault("thinking.mode", nativeThinkingModes))
+                if (!completeThinking) ManagementHint("请选择控制方式和支持的档位，或将控制方式恢复为使用默认值", "error", error = true)
                 SettingsLabel("支持的档位")
                 val efforts = configurationStrings(thinking["efforts"])
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { listOf("minimal", "low", "medium", "high", "xhigh", "max").forEach { effort -> ManagementChip(managementThinkingLabel(effort), effort in efforts, { thought("efforts", if (effort in efforts) efforts - effort else efforts + effort) }) } }
-                NativeEnum("默认档位", thinking["defaultLevel"] as? String, (efforts + listOfNotNull(thinking["defaultLevel"] as? String)).distinct().associateWith(::managementThinkingLabel), { thought("defaultLevel", it) })
-                NativeOptionalBoolean("必须指定档位", thinking["requiresEffort"] as? Boolean, { thought("requiresEffort", it) })
-                NativeOptionalBoolean("返回思考内容", thinking["supportsDisplay"] as? Boolean, { thought("supportsDisplay", it) })
+                NativeEnum("默认档位", thinkingOverride["defaultLevel"] as? String, (efforts + listOfNotNull(thinking["defaultLevel"] as? String)).distinct().associateWith(::managementThinkingLabel), { thought("defaultLevel", it) }, defaultValue = if (thinkingOverride.isNotEmpty()) "跟随会话" else modelDefault("thinking.defaultLevel", listOf("minimal", "low", "medium", "high", "xhigh", "max").associateWith(::managementThinkingLabel)))
+                NativeOptionalBoolean("必须指定档位", thinkingOverride["requiresEffort"] as? Boolean, { thought("requiresEffort", it) }, defaultValue = if (thinkingOverride.isNotEmpty()) "未指定" else modelDefault("thinking.requiresEffort", nativeBooleanLabels))
+                NativeOptionalBoolean("返回思考内容", thinkingOverride["supportsDisplay"] as? Boolean, { thought("supportsDisplay", it) }, defaultValue = if (thinkingOverride.isNotEmpty()) "未指定" else modelDefault("thinking.supportsDisplay", nativeBooleanLabels))
                 SettingsLabel("服务端档位映射")
-                NativeStringMap(configurationMap(thinking["effortMap"]), { thought("effortMap", it) })
+                NativeStringMap(configurationMap(thinking["effortMap"]), { thought("effortMap", it.takeIf { values -> values.isNotEmpty() }) })
             }
             NativeSection("费用与缓存") {
                 val cost = configurationMap(field("cost"))
@@ -422,7 +462,7 @@ private fun NativeModelScreen(provider: String, edit: NativeModelEdit, state: Ag
                 listOf("short" to "短期缓存时长", "long" to "长期缓存时长").forEach { (key, label) -> NativeNumber(label, cache[key], { value -> change("promptCache", if (value == null) cache - key else cache + (key to value)) }) }
             }
             NativeSection("传输与兼容") {
-                NativeOptionalBoolean("优先使用 WebSocket", field("preferWebsockets") as? Boolean, { change("preferWebsockets", it) })
+                NativeOptionalBoolean("优先使用 WebSocket", draft["preferWebsockets"] as? Boolean, { change("preferWebsockets", it) }, defaultValue = modelDefault("preferWebsockets", nativeBooleanLabels))
                 ManagementRow("协议兼容项", "消息角色、工具调用、推理格式、流式用量", "swap_calls", { compat = true })
                 ManagementField("上下文提升目标", field("contextPromotionTarget") as? String ?: "", { change("contextPromotionTarget", it.takeIf(String::isNotBlank)) }, mono = true)
                 ManagementField("压缩模型", field("compactionModel") as? String ?: "", { change("compactionModel", it.takeIf(String::isNotBlank)) }, mono = true)
@@ -433,7 +473,7 @@ private fun NativeModelScreen(provider: String, edit: NativeModelEdit, state: Ag
             }
             if (edit.id != null) TextButton({ delete = true }, modifier = Modifier.padding(top = 20.dp)) { Symbol("delete"); Text(if (edit.override) "清除模型覆盖" else "删除模型") }
         }
-        if (confirmDiscard) AlertDialog(onDismissRequest = { confirmDiscard = false }, title = { Text("有未保存的修改") }, text = { Text("保存模型后仍需在服务页面保存配置。") }, confirmButton = { TextButton({ onSave(id.trim(), draft) }, enabled = id.isNotBlank() && !duplicateId && completeCost) { Text("保存") } }, dismissButton = { Row { TextButton(onBack) { Text("放弃修改") }; TextButton({ confirmDiscard = false }) { Text("继续编辑") } } })
+        if (confirmDiscard) AlertDialog(onDismissRequest = { confirmDiscard = false }, title = { Text("有未保存的修改") }, text = { Text("保存模型后仍需在服务页面保存配置。") }, confirmButton = { TextButton({ onSave(id.trim(), draft) }, enabled = id.isNotBlank() && !duplicateId && completeCost && completeThinking) { Text("保存") } }, dismissButton = { Row { TextButton(onBack) { Text("放弃修改") }; TextButton({ confirmDiscard = false }) { Text("继续编辑") } } })
         if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text(if (edit.override) "清除模型覆盖" else "删除模型") }, text = { Text("引用此模型的角色可能会跳过它；服务页面保存后生效。") }, confirmButton = { TextButton(onDelete) { Text("确认") } }, dismissButton = { TextButton({ delete = false }) { Text("取消") } })
         if (original) AgentSheet("原始值与覆盖", { original = false }) { Column(Modifier.verticalScroll(rememberScrollState())) { (base.keys + draft.keys).distinct().filter { base[it] != null || draft[it] != null }.forEach { key -> ManagementLayers(listOf(ManagementLayer(key, configurationDisplay(base[key]), "inventory_2"), ManagementLayer("本层覆盖", configurationDisplay(draft[key]), "edit", selected = key in draft))) } } }
         if (compat) NativeCompatSheet(configurationMap(field("compat")), field("api") as? String, { compat = false }, onSave = { change("compat", it); compat = false })

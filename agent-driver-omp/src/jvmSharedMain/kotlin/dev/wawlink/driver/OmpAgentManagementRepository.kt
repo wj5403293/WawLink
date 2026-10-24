@@ -298,6 +298,9 @@ internal class OmpAgentManagementRepository(
     override suspend fun modelDetails(provider: String, modelId: String): ManagedModel = withContext(Dispatchers.IO) {
         operations.withLock { decodeModel(request("modelDetails", mapOf("provider" to provider, "modelId" to modelId)).jsonObject) }
     }
+    override suspend fun modelDefaults(provider: String, modelId: String, api: String): Map<String, Any?> = withContext(Dispatchers.IO) {
+        operations.withLock { request("modelDefaults", mapOf("provider" to provider, "modelId" to modelId, "api" to api)).configMap() }
+    }
     override suspend fun fetchProviderModels(provider: String) = withContext(Dispatchers.IO) {
         operations.withLock { ompConfigMutex.withLock {
             request("fetchProviderModels", mapOf("provider" to provider))

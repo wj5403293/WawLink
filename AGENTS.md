@@ -16,6 +16,7 @@
 - Agent 配置首屏不等待模型/认证 SDK；模型目录按有界分页传输，仅在编辑时读取完整模型字段。模型配置无效或原生进程退出时结束加载并保留可重试、可修复的界面，不抛到主线程导致闪退。
 - 内置 Provider 的启用状态、OAuth 和操作能力以当前 OMP 原生发现、认证及禁用状态为准，不默认全开，也不对自定义 Provider 显示不支持的 OAuth 或协议功能。内置 Provider 使用稳定颜色与名称首字标识；用户项在前，内置项置底并用分隔线分组，禁用项灰显且在各组内下沉。
 - Provider 配置每次打开从顶部展示；模型获取按钮显示蓝色“获取模型”并执行实际获取，不用静态目录刷新冒充。删除“读取当前配置档的……”等无实际意义说明及图标；保留必要错误、空态与风险确认。保存失败展示可定位且已脱敏的实际原因，保留全部草稿供修复和重试。
+- 模型选项使用默认值时，在同一行及菜单的“使用默认值”后以灰字显示原生实际默认值；默认值只展示、不写入覆盖。依赖接口或会话而无确定值时明确显示未指定或跟随会话，不猜测。重复选择未设置的默认项不生成空对象；思考控制方式恢复默认时移除整段可选 `thinking`，放弃修改恢复全部字段并清除本次保存错误。
 - 用户消息和运行中追加消息先即时本地显示，不等待 OMP 启动或 RPC 回执；按稳定 ID 与回执对齐，发送失败撤回对应的未接收消息并显示原因，已接收消息不因后续模型执行失败而撤回。
 - 加载状态使用 Compose Material 3 标准进度组件，不使用旋转图标模拟；静态“运行中”筛选、部署等语义使用对应的 Material Symbols 图标，不把进度圆圈当图标。
 - 新会话默认开启免审批；应用设置提供“新会话默认免审批”并持久化，仅影响之后创建的会话。会话内仍可独立切换；开启时立即放行已等待及后续工具审批，不自动回答普通提问。
@@ -52,7 +53,7 @@
   - `src/commonMain/composeResources/files/code/` 保存精确版本来源与许可，`textmate/` 保存语法依赖、主题、索引与哈希；`CodeLanguageTest.kt` 覆盖语言别名、路径选择器和未知语言，`src/androidUnitTest/kotlin/dev/wawlink/ui/OfflineTextMateTokenizerTest.kt` 与 `src/desktopTest/kotlin/dev/wawlink/ui/NativeCodeHighlightTest.kt` 覆盖真实词法器的嵌入语言、多行及颜色边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/AgentManagementScreen.kt` 为新 Agent 设置入口，`ManagementComponents.kt` 提供原型一致的页面、作用域、候选模型链与配置编辑控件；`ManagementAgentsScreen.kt`、`ManagementAdvisorsScreen.kt` 管理定义、运行覆盖及顾问，`ManagementRolesScreen.kt`、`ManagementPoliciesScreen.kt`、`ManagementRuntimeScreen.kt` 分别管理角色、模型策略与原生运行设置，`ManagementNativeProviderScreen.kt` 编辑完整原生服务及模型覆盖。
   - 同目录的 `EditableCodeScreen.kt` 提供带保存与舍弃确认的全屏可编辑原文入口；`src/androidMain/kotlin/dev/wawlink/ui/EditableCodeScreen.android.kt` 接入可编辑 Sora 与既有离线 TextMate，`src/desktopMain/kotlin/dev/wawlink/ui/EditableCodeScreen.desktop.kt` 接入可编辑 RSyntaxTextArea。
-  - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除及无效输入和模型子表单的状态保存边界；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
+  - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除、无效输入和模型子表单状态保存，以及思考默认值的无操作、整段清除、继承与未知字段保留；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
   - `src/jvmSharedMain/resources/omp-management/diagnostics.mjs` 统一原生配置诊断与敏感值清理，保留字段路径和可得语法位置，不转发源文本片段、凭据或 HTTP 响应正文。
