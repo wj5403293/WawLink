@@ -95,6 +95,25 @@ class AgentPaletteTest {
         assertEquals(opaque.secondaryContainer, transparent.secondaryContainer)
     }
 
+    @Test fun containerContentRetainsColorFamilyAndReadableContrast() {
+        val backgrounds = listOf(Color(0xFFD3E3FD), Color(0xFFC4EED0), Color(0xFFFFF2CC), Color(0xFFFAD2CF), Color(0xFFEADDFF))
+        val contents = backgrounds.map(::agentContainerContentColor)
+        assertEquals(contents.size, contents.distinct().size)
+        assertTrue(contents[0].blue > contents[0].red)
+        assertTrue(contents[1].green > contents[1].red && contents[1].green > contents[1].blue)
+        assertTrue(contents[2].red > contents[2].blue && contents[2].green > contents[2].blue)
+        assertTrue(contents[3].red > contents[3].green && contents[3].red > contents[3].blue)
+        assertTrue(contents[4].red > contents[4].green && contents[4].blue > contents[4].green)
+        backgrounds.zip(contents).forEach { (background, content) ->
+            assertTrue(content.luminance() < .05f)
+            assertTrue(contrast(background, content) >= 4.5f)
+        }
+        for (red in 0..255 step 17) for (green in 0..255 step 17) for (blue in 0..255 step 17) {
+            val background = Color(red, green, blue)
+            assertTrue(contrast(background, agentContainerContentColor(background)) >= 4.5f, "RGB $red/$green/$blue")
+        }
+    }
+
     private fun contrast(first: Color, second: Color): Float {
         val a = first.luminance()
         val b = second.luminance()

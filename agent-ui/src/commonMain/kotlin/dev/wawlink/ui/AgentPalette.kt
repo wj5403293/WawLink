@@ -3,6 +3,9 @@ package dev.wawlink.ui
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import com.materialkolor.contrast.Contrast
 import com.materialkolor.dynamiccolor.DynamicColor
 import com.materialkolor.dynamiccolor.MaterialDynamicColors
 import com.materialkolor.hct.Hct
@@ -91,6 +94,17 @@ internal fun parseAgentSeedHex(draft: String): Long? {
 }
 
 internal fun agentSeedHex(seed: Long): String = "#" + (seed and 0xFFFFFFL).toString(16).uppercase().padStart(6, '0')
+
+/** Preserve the container hue, preferring a dark tone while keeping readable contrast. */
+fun agentContainerContentColor(background: Color): Color {
+    val source = Hct.fromInt(background.toArgb())
+    val tone = if (background.luminance() >= .175f) {
+        minOf(20.0, Contrast.darkerUnsafe(source.tone, 4.6))
+    } else {
+        maxOf(90.0, Contrast.lighterUnsafe(source.tone, 4.6))
+    }
+    return Color(source.withTone(tone).toInt())
+}
 
 @Composable
 internal expect fun agentSystemColorScheme(dark: Boolean): ColorScheme?

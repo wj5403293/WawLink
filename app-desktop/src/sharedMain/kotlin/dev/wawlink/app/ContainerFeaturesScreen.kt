@@ -17,7 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.LocalPinnableContainer
 import androidx.compose.ui.semantics.*
@@ -329,11 +329,7 @@ private fun Modifier.featureCardGestures(
                 if (!change.pressed) {
                     released = true
                     if (wasSelecting) change.consume()
-                    else if (!card.second) {
-                        // Let the native start/stop button handle its own tap before card-open.
-                        val final = awaitPointerEvent(PointerEventPass.Final).changes.firstOrNull { it.id == down.id }
-                        if (final == null || final.isConsumed) cancelled = true else final.consume()
-                    }
+                    else if (!card.second) change.consume()
                     break
                 }
             }
@@ -378,13 +374,18 @@ private fun FeatureCardTile(
             }
         }
     }
-    val background = color?.takeIf { FeatureCardPreferences.validColor(it) }?.let { Color(0xFF000000L or it.drop(1).toLong(16)) } ?: MaterialTheme.colorScheme.surfaceContainerLow
-    val foreground = if (color == null) MaterialTheme.colorScheme.onSurface else if (background.luminance() > .45f) Color(0xFF1F1F1F) else Color.White
+    val customBackground = remember(color) {
+        color?.takeIf { FeatureCardPreferences.validColor(it) }?.let { Color(0xFF000000L or it.drop(1).toLong(16)) }
+    }
+    val background = customBackground ?: MaterialTheme.colorScheme.surfaceContainerLow
+    val customForeground = remember(customBackground) { customBackground?.let(::agentContainerContentColor) }
+    val foreground = customForeground ?: MaterialTheme.colorScheme.onSurface
+    val selectionColor = customForeground ?: MaterialTheme.colorScheme.primary
     val shape = RoundedCornerShape(24.dp)
     val html = feature?.cardHtml
     val failure = htmlError ?: state.error
     Box(modifier.heightIn(min = (if (html != null) feature?.cardHeight ?: 120 else 120).dp).clip(shape).background(background)
-        .border(if (selected) 3.dp else 0.dp, if (selected) MaterialTheme.colorScheme.primary else Color.Transparent, shape)
+        .border(if (selected) 3.dp else 0.dp, if (selected) selectionColor else Color.Transparent, shape)
         .semantics(mergeDescendants = html == null || selectionMode) {
             contentDescription = entry.title
             if (selectionMode) this.selected = selected
@@ -396,9 +397,12 @@ private fun FeatureCardTile(
                 put("id", feature.id); put("status", state.status.name.lowercase()); put("containerRunning", containerRunning)
                 put("memoryBytes", memory?.let(::JsonPrimitive) ?: JsonNull)
             }.toString()
-            val cardColor = color ?: "var(--md-sys-color-surface)"
+            val cardCss = remember(css, background, foreground) {
+                fun Color.hex() = "#%06x".format(toArgb() and 0xffffff)
+                "$css\n:root{--wawlink-card-color:${background.hex()};--wawlink-card-foreground:${foreground.hex()};--md-sys-color-on-surface:var(--wawlink-card-foreground)}html,body{margin:0;background:var(--wawlink-card-color)!important;color:var(--wawlink-card-foreground);min-height:100%;}button,input,select,textarea{color:inherit}"
+            }
             CompositionLocalProvider(LocalFeatureCardNativeGestures provides nativeGestures) {
-                ContainerFeatureCardSurface(html, "$css\n:root{--wawlink-card-color:$cardColor}html,body{margin:0;background:var(--wawlink-card-color)!important;min-height:100%;}", data,
+                ContainerFeatureCardSurface(html, cardCss, data,
                     Modifier.fillMaxWidth().height(feature.cardHeight.dp), onAction, { message -> htmlError = message; onError(message) })
             }
             if (selectionMode) Box(Modifier.matchParentSize().pointerInput(Unit) {
@@ -406,38 +410,22 @@ private fun FeatureCardTile(
                 awaitEachGesture { awaitFirstDown(requireUnconsumed = false); do { val event = awaitPointerEvent() } while (event.changes.any { it.pressed }) }
             })
         } else {
-            Row(Modifier.fillMaxWidth().heightIn(min = 120.dp).padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(Modifier.size(44.dp).background(foreground.copy(alpha = .09f), RoundedCornerShape(15.dp)), contentAlignment = Alignment.Center) {
-                    Symbol(entry.icon, size = 28.dp, tint = foreground)
+            Column(Modifier.fillMaxWidth().heightIn(min = 120.dp).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.size(44.dp).background(foreground.copy(alpha = .09f), RoundedCornerShape(15.dp)), contentAlignment = Alignment.Center) {
+                        Symbol(entry.icon, size = 28.dp, tint = foreground)
+                    }
+                    Text(entry.title, Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = foreground, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(entry.title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = foreground, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(entry.description, fontSize = 18.sp, lineHeight = 25.sp, color = foreground.copy(alpha = .76f), maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    if (feature?.showStatus == true) FeatureCardStatus(state.status, foreground)
-                    if (feature?.showMemory == true) Text("内存 · ${memory?.let(::bytesLabel) ?: "不可用"}", fontSize = 16.sp, color = foreground.copy(alpha = .76f))
-                    if (feature != null && !selectionMode) {
-                        val running = state.status == ContainerFeatureStatus.RUNNING
-                        val transitioning = state.status == ContainerFeatureStatus.STARTING || state.status == ContainerFeatureStatus.STOPPING
-                        TextButton(
-                            onClick = { onAction(if (running) "stop" else "start") },
-                            enabled = containerId != null && !transitioning,
-                            modifier = Modifier.heightIn(min = 48.dp),
-                            contentPadding = PaddingValues(horizontal = 4.dp),
-                            colors = ButtonDefaults.textButtonColors(contentColor = foreground),
-                        ) {
-                            if (transitioning) CircularProgressIndicator(Modifier.size(20.dp), color = foreground, strokeWidth = 2.dp)
-                            else Symbol(if (running) "stop_circle" else "play_circle", size = 20.dp, tint = foreground)
-                            Spacer(Modifier.width(5.dp))
-                            Text(if (running) "停止" else if (transitioning) "处理中" else "启动", fontSize = 16.sp)
-                        }
-                    }
-                    if (failure != null) Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(10.dp)) {
-                        Text(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
-                    }
+                Text(entry.description, fontSize = 18.sp, lineHeight = 25.sp, color = foreground.copy(alpha = .76f), maxLines = 3, overflow = TextOverflow.Ellipsis)
+                if (feature?.showStatus == true) FeatureCardStatus(state.status, foreground)
+                if (feature?.showMemory == true) Text("内存 · ${memory?.let(::bytesLabel) ?: "不可用"}", fontSize = 16.sp, color = foreground.copy(alpha = .76f))
+                if (failure != null) Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(10.dp)) {
+                    Text(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
                 }
             }
         }
-        if (selected) Symbol("check_circle", Modifier.align(Alignment.TopEnd).padding(8.dp), size = 22.dp, tint = MaterialTheme.colorScheme.primary)
+        if (selected) Symbol("check_circle", Modifier.align(Alignment.TopEnd).padding(8.dp), size = 22.dp, tint = selectionColor)
         if (html != null && failure != null) Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), color = MaterialTheme.colorScheme.errorContainer) {
             Text(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
         }
