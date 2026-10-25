@@ -153,11 +153,41 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
   "icon": "dashboard",
   "title": "工作台",
   "description": "查看与处理当前项目",
-  "lifecycle": "page"
+  "lifecycle": "manual",
+  "color": "#D9EAFD",
+  "showStatus": true,
+  "showMemory": true
 }
 ```
 
 `icon`、`title`、`description` 必填；图标使用 Google Material Symbols 小写名称，标题和描述使用中文。`lifecycle` 省略为 `page`，离开该功能即停止；`manual` 离页继续运行，用户在功能页或卡片明确停止。两者在停止容器或关闭应用时回收，不承诺 Android 杀进程后继续运行。
+
+功能页默认将自定义卡片直接接在五个内置功能后，不再分区。原生卡片采用左侧图标、右侧文字的横向布局；长按进入多选，可统一调色或隐藏，仅自定义功能可确认卸载。多选后再次长按并拖动可排序，接近边缘时自动滚动，使用非线性位移动画。显示顺序、隐藏项和用户颜色覆盖按容器持久化；应用设置的“功能卡片”可逐项或全部恢复隐藏项。卸载会先停止真实服务，再通过容器文件服务删除该功能目录，不删除符号链接所指的外部内容。
+
+可选 `color` 为严格的 `#RRGGBB`，用户调色覆盖它，恢复默认颜色后重新跟随清单颜色或应用主题。`showStatus`、`showMemory` 默认为 `false`；内存值为被监管服务整个进程组的实际 RSS，不是手机或容器总内存，无法读取时显示“不可用”。页面及卡片均不展示生命周期说明；启动、停止过程只显示水平和垂直居中的标准圆形进度组件。
+
+#### HTML 卡片
+
+在功能目录放置可选 `card.html` 即可替换该功能的卡片区域；也可用 `card` 指定目录内的相对 HTML 文件，`cardHeight` 指定 80–480 dp 的卡片高度，默认 120 dp。HTML 须为不超过 256 KiB 的 UTF-8 自包含文档，使用内联 CSS/JS 和 data URL，不依赖服务已经启动或网络 CDN。目录扫描不执行 HTML、Lua 或脚本；仅显示卡片时运行卡片 JS，不为渲染卡片启动服务。
+
+卡片首个脚本执行前即可读取 `window.wawlink.card`，字段为 `id`、`status`、`memoryBytes`（整数或 `null`）、`containerRunning`。状态值为 `stopped`、`starting`、`running`、`stopping`、`failed`；监听 `wawlink-card-update` 并读取 `event.detail` 获取真实增量，更新数据不会重载 HTML。调用 `wawlink.action('open' | 'start' | 'stop')` 可放置自己的打开、启停按钮；错误仍由原生真实结果反馈。HTML 卡片和完整功能页面均注入主题变量及离线 Material Symbols，可使用 `material-symbols-rounded`；桌面自动将符号名称解析为打包索引中的字形。
+
+#### Android LuaJ 与系统调用
+
+卡片和完整功能页均提供 Promise API：`wawlink.lua(source)`、`wawlink.openBrowser(url)`、`wawlink.openUrl(url)`、`wawlink.share(text, title?)`、`wawlink.launchApp(packageName)`。Lua 使用真实 LuaJ 标准库及完整 `luajava` 互操作，不增加 WawLink 审批或 Android API 白名单；这是用户可信代码执行，仍受 Android 系统权限、应用 UID、系统版本和设备能力限制。
+
+Lua 提供 `context`、`activity` 和 `host`，并提供同名全局助手 `openBrowser`、`openUrl`、`share`、`launchApp`。需要 UI 线程的 Java 调用使用 `host.runOnUiThread(function)`；普通 Lua 在串行后台执行器运行。Lua 可返回 JSON 值或连续数组/字符串键表，多返回值变为数组；循环、非有限数字、函数和不可序列化 Java 对象会拒绝 Promise。导航和销毁取消旧文档任务，真实异常通过 Promise 拒绝返回，调用方应显示错误。例如：
+
+```javascript
+await wawlink.openBrowser('https://example.com');
+await wawlink.share('待分享的文字', '分享');
+const sdk = await wawlink.lua(`
+  local Build = luajava.bindClass('android.os.Build$VERSION')
+  return Build.SDK_INT
+`);
+```
+
+桌面支持 HTML、实时数据及卡片动作；Android Lua/系统助手明确拒绝，不伪造 Android API。旧系统 WebView 缺少来源限定消息桥或文档起始注入能力时显示可定位错误，不回退到无来源保护的桥。
 
 启动脚本由 `/bin/sh` 在功能目录运行，需以前台方式 `exec` 真实服务，不使用 `nohup`、守护化或脱离进程组。容器需有 `setsid`（util-linux）。服务读取以下环境：
 
@@ -168,7 +198,7 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 | `WAWLINK_FEATURE_ID` / `WAWLINK_FEATURE_DIR` | 当前功能身份与客体目录 |
 | `WAWLINK_THEME_CSS` | 当前 Material 3 配色；页面使用注入的 `--md-sys-color-*` CSS 变量 |
 
-服务须在 30 秒内对根路径的带令牌 GET 返回 2xx/3xx；实际 HTTP 就绪后才打开 WebUI。Android 使用 WebView，Desktop 使用 JavaFX WebView，均限制为该功能的确切随机 loopback 来源，不开放宿主文件或原生 JS 桥。支持同源资源、表单与 WebSocket；普通 HTTP 单次请求/响应上限 32 MiB，上传不接受 HTTP 分块传输。UI 使用纯白背景、中文大字号、Material 3、Google Material Symbols 与非线性动画，跟随主题色，不依赖外站 CDN。脚本以容器配置用户权限执行，这不是运行不可信脚本的安全沙箱。
+服务须在 30 秒内对根路径的带令牌 GET 返回 2xx/3xx；实际 HTTP 就绪后才打开 WebUI。Android 使用 WebView，Desktop 使用 JavaFX WebView，普通 Web 资源及导航均限制为该功能的确切随机 loopback 来源，关闭宿主 file/content 访问；Android 可信 Lua/系统助手是显式的宿主操作入口，不是 Web 跨域导航。支持同源资源、表单与 WebSocket；普通 HTTP 单次请求/响应上限 32 MiB，上传不接受 HTTP 分块传输。UI 使用纯白背景、中文大字号、Material 3、Google Material Symbols 与非线性动画，跟随主题色，不依赖外站 CDN。脚本及可信 Lua 不是运行不可信代码的安全沙箱。
 
 应用在原生 Agent 启动前或进入功能页时，仅在缺失时注入 `~/.omp/agent/skills/wawlink-functions/SKILL.md`，保留已有文件及用户修改。该 Skill 写明完整清单、服务、安全与 WebUI 设计契约，**仅在用户明确要求“添加 WawLink 功能页卡片”或等价新增请求时触发**，不会因普通网页开发、脚本、安装插件/技能或笼统功能请求自动创建卡片。不预装示例卡片，不复制开发机认证。
 
@@ -407,4 +437,15 @@ OMP 安装引导本轮通过 182 项 Kotlin 回归（容器 32、驱动 121、�
 本轮仅做静态排查、两份管理桥的 `node --check` 与 Android APK 构建；`./gradlew :app-android:assembleDebug --console=plain` 在 43 秒内成功，未运行测试、Desktop 应用或 Android 模拟器。APK 签名验证通过，两份变更后的管理桥与源码逐字节一致。`adb devices -l` 未发现已连接设备，加载耗时、流畅度与本次故障是否消除仍由用户真机验证，不能以构建成功替代。
 
 交付覆盖默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`，58,308,296 bytes；SHA-256：`048d72d7eb9780935fca41f6df27cdafd8548ad09136bed1f69fd02310b431c6`。未创建新命名 APK，更新现有应用即可保留容器与会话，无需重新导入 Rootfs。
+
+
+### 功能卡片与 Android LuaJ 桥接（2026-10-25）
+
+实现原生/HTML 卡片、按容器保存的颜色/隐藏/排序、多选与拖动、隐藏项恢复和停服卸载；生命周期文案移除，功能启动使用居中标准进度组件。Android 卡片及完整页接入 LuaJ 标准库、完整 Java 互操作、UI 线程调度及系统 Intent 助手；随 APK 打包 LuaJ 的 MIT 许可，不修改已有 Rootfs 或覆盖用户 Skill。
+
+通过 2 项卡片偏好回归，覆盖容器隔离、卡片暂时消失后的设置保留、恢复及磁盘失败不发布未保存状态。真实 PRoot 中完成声明扫描不启动脚本、带令牌 HTTP 服务启动、实际进程组 RSS、manual/page 离页行为、停服卸载及外部链接目标保留。真实 WebKit 完成首个脚本的数据可用性、事件更新不重载、原生动作、离线图标字形和桌面 Android API 明确拒绝；实际桌面操作了多选、拖动、隐藏、设置恢复、HTML 启停和原生弹层。桌面改用混合 ComposePanel，字体和映射只加载一次，实时更新不重复传输字体内容。
+
+实际 APK 编译字节码的 LuaJ 求值器通过 Java 反射、JSON 编解码、循环返回拒绝及文档代际取消烟测；此烟测不构造 Android Activity/Context，也不验证 WebMessage 或 Intent 投递。未启动 Android 模拟器，未执行真实模型推理；Android 浏览器、分享、启动其他应用及设备 WebView 的端到端行为仍需真机验收，不能用 JVM 结果或构建成功替代。
+
+最终 `:app-android:assembleDebug`、Desktop JAR 及针对性偏好回归构建通过；默认交付文件为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`a47a808826bfd3e52ebf8e416185f09530dabd5328f4f5f153a4ba09e6ca2d10`，APK v2 签名验证通过。真实界面确认调色保存及隐藏项恢复，加载区没有生命周期/加载说明文字；本轮桌面和隔离显示进程已关闭，临时诊断已移除。
 

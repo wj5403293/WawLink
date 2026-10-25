@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** A token-gated, single-upstream loopback origin. No filesystem routes or native JavaScript API. */
+/** A token-gated, single-upstream loopback origin. Native platform bridges are renderer-owned. */
 internal class ContainerFeatureGateway(val upstreamPort: Int, private val token: String, @Volatile var themeCss: String, private val iconFont: () -> ByteArray?) : AutoCloseable {
     private val server = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
     private val pool = Executors.newCachedThreadPool { task -> Thread(task, "wawlink-feature-web").apply { isDaemon = true } }

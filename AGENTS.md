@@ -24,7 +24,10 @@
 - 主页会话卡片展开与收起使用轻快的非线性动画，不叠加高度动画；展开后的分支按钮仅显示 Material Symbols 图标，保留中文无障碍说明和足够点击区域，减少操作栏换行与遮挡。
 - 全应用持久化单个当前容器；点击容器卡片选择，右侧开关独立启停，卡片不再放终端按钮。容器名称单行截断，选中卡片使用主题主色粗边框；新建会话直接使用当前选择容器且无预设名称，未发送消息的空会话离开后不进入持久化列表。
 - 底部“功能”页以双列卡片操作当前容器，内置终端、文件、用户规则、插件与技能。规则通过客体文件服务管理当前用户 `~/.omp/agent/rules/`，使用 Android Sora / Desktop 原生编辑器。功能入口的插件与技能为用户级；会话设置入口为当前工作区的项目级，不允许项目入口隐式修改用户级对象。
-- 自定义功能从当前容器用户 `~/.wawlink/features/<id>/card.json` 发现，必填 `icon`、`title`、`description`，`lifecycle` 可选 `page`（默认）或 `manual`。`start.sh` 前台启动真实同源 WebUI，可选 `stop.sh` 收尾；扫描不执行脚本，离页/手动停止、停止容器与关闭应用按生命周期回收进程组。WebUI 保留白底、中文大字号、Material 3、Google Material Symbols 与非线性动画，跟随主题色；不开放宿主文件、原生 JS 桥或外部来源。
+- 自定义功能从当前容器用户 `~/.wawlink/features/<id>/card.json` 发现，必填 `icon`、`title`、`description`，`lifecycle` 可选 `page`（默认）或 `manual`。`start.sh` 前台启动真实同源 WebUI，可选 `stop.sh` 收尾；扫描不执行脚本，离页/手动停止、停止容器与关闭应用按生命周期回收进程组。WebUI 保留白底、中文大字号、Material 3、离线 Google Material Symbols 与非线性动画，跟随主题色；普通 Web 资源与导航仍限当前来源，Android 通过显式可信 LuaJ/系统助手调用宿主，不以 WebView 外跳代替。
+- 功能页自定义卡片直接接在内置功能后，不分区；原生卡片使用左图标、右文字并排垂直居中。清单可选 `color`、`showStatus`、`showMemory`、`card` 与 `cardHeight`，默认发现可选 `card.html`；HTML 自包含且不为渲染卡片启动服务，实时状态和进程组 RSS 来自真实运行，不能读取时显示不可用。功能页及卡片不显示生命周期说明；进入功能启动时只显示水平垂直居中的标准圆形进度组件。
+- 功能页长按进入多选，可调色、隐藏以及确认卸载自定义功能；内置功能不可卸载。多选后再次长按拖动可排序并自动边缘滚动，使用非线性动画；顺序、隐藏及颜色覆盖按容器持久化，应用设置支持恢复隐藏项。卸载先停止真实服务，再通过客体文件服务删除验证后的功能目录，不跟随外部链接或删除受保护路径。
+- Android 功能卡片和完整功能页提供真实 LuaJ 标准库、完整 `luajava`、`context`、`activity`、`host.runOnUiThread` 及打开浏览器/链接、分享、启动应用助手，不添加 WawLink API 白名单或人工审批；系统权限、应用 UID 和系统版本限制仍然有效。Promise 返回真实结果或错误，桥只接收当前来源主框架，导航/销毁取消旧文档任务；不把此可信执行桥宣传为不可信代码沙箱。Desktop 的 Android 助手明确拒绝，不伪造能力。
 - 内置 `wawlink-functions` Skill 仅在用户明确要求新增或创建功能页卡片时触发，普通网页、脚本及笼统功能请求不触发；注入已有容器，不覆盖用户修改，不预装示例卡片，不要求重新导入 Rootfs。
 - Agent 配置首屏不等待模型/认证 SDK；模型目录按有界分页传输，仅在编辑时读取完整模型字段。模型配置无效或原生进程退出时结束加载并保留可重试、可修复的界面，不抛到主线程导致闪退。
 - 内置 Provider 的启用状态、OAuth 和操作能力以当前 OMP 原生发现、认证及禁用状态为准，不默认全开，也不对自定义 Provider 显示不支持的 OAuth 或协议功能。内置 Provider 使用稳定颜色与名称首字标识；用户项在前，内置项置底并用分隔线分组，禁用项灰显且在各组内下沉。
@@ -104,20 +107,22 @@
   - `src/androidUnitTest/kotlin/dev/wawlink/runtime/ContainerFileTextTest.kt` 覆盖文本保存的精确字节与权限、2 MiB 边界、外部修改冲突、链接及挂载根保护与暂存文件清理；运行于 Android JVM，不冒充设备端编辑器或引擎验收。
   - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID 与账户环境。
   - 同目录的 `PtyTransport.kt` 及 `src/androidMain/kotlin/dev/wawlink/runtime/PtyTransport.android.kt`、`src/desktopMain/kotlin/dev/wawlink/runtime/PtyTransport.desktop.kt` 提供两端真实 PTY，`ContainerContract.kt` 定义原始字节读写、调整尺寸与会话回收契约。
-  - 同目录的 `ContainerFeatures.kt` 扫描容器功能声明并监管真实服务及进程组，`ContainerFeatureGateway.kt`、`ContainerFeatureHttpConnection.kt` 提供随机 loopback、每次启动令牌门控的 HTTP/WebSocket 网关与主题/图标注入；`ContainerFeatureSkill.kt` 保存仅明确请求时触发的原生 Skill 与完整扩展契约。
-- `app-desktop/`：460 × 920 桌面宿主；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
+  - 同目录的 `ContainerFeatures.kt` 扫描容器功能及原生/HTML 卡片声明，`ContainerFeatureRuntime.kt` 监管真实服务进程组、RSS、生命周期与停服卸载，`ContainerFeatureGateway.kt`、`ContainerFeatureHttpConnection.kt` 提供随机 loopback、每次启动令牌门控的 HTTP/WebSocket 网关与主题/图标注入；`ContainerFeatureSkill.kt` 保存仅明确请求时触发的原生 Skill 与完整卡片/LuaJ 契约。
+- `app-desktop/`：460 × 920 桌面宿主；`src/desktopMain/kotlin/dev/wawlink/app/Main.kt` 使用 JFrame/ComposePanel 的混合画布，保证嵌入 HTML 卡片的裁剪、拖动和原生弹层层级；`src/sharedMain/kotlin/` 为双端共用主页与应用协调层。
   - `src/sharedMain/kotlin/dev/wawlink/app/TerminalScreen.kt` 为独立终端导航页，支持一次性授权的 OMP 安装初始命令及离开后的自检刷新；`src/desktopMain/kotlin/dev/wawlink/app/TerminalSurface.desktop.kt` 提供 JediTerm 终端，`src/desktopMain/resources/licenses/` 随桌面分发保留 JediTerm 与 pty4j 许可。`container-runtime/src/jvmSharedTest/kotlin/dev/wawlink/runtime/TerminalInitialCommandTest.kt` 覆盖初始命令与失败后交互式终端保留。
   - `src/sharedMain/kotlin/dev/wawlink/app/ContainerFilesScreen.kt` 移植 WawSSH 独立文件浏览器并提供工作区与附件选择模式；`src/desktopTest/kotlin/dev/wawlink/app/ContainerFileServiceTest.kt` 覆盖文件名、路径、流式字节、覆写与链接边界，不冒充真实引擎验收。
   - `src/sharedMain/kotlin/dev/wawlink/app/HostMounts.kt` 负责主机挂载源访问校验及本机储存卷文档 ID 的边界安全解析；`src/desktopTest/kotlin/dev/wawlink/app/HostMountsTest.kt` 覆盖主储存与可移除卷、路径原名、未知卷、目录越界及已有文件挂载。
   - 同目录的 `ContainerFileActions.kt` 为文件浏览器与模型路径链接共用 MIME、宿主文件名和流式打开/下载操作；`WawLinkApp.kt` 提供当前会话的文件路径处理。
-  - 同目录的 `ContainerFeaturesScreen.kt` 提供双列内置/扩展卡片，`ContainerRulesScreen.kt` 提供真实规则文件管理和原生编辑，`ContainerExtensionScreen.kt` 提供服务启停与生命周期导航；`src/desktopMain/kotlin/dev/wawlink/app/ContainerWebSurface.desktop.kt` 使用 JavaFX WebView，Android 对应实现在 `app-android/src/main/kotlin/dev/wawlink/app/ContainerWebSurface.android.kt`，仅允许当前功能的确切 loopback 来源。
+  - 同目录的 `ContainerFeaturesScreen.kt` 提供不分区的双列内置/扩展卡片、多选、调色、隐藏、卸载与长按拖动；`FeatureCardPreferences.kt` 持久化按容器的布局，`FeatureCardsSettings.kt` 提供隐藏项恢复，`FeatureCardNativeGestures.kt` 统一 HTML 与原生卡片手势，`FeatureCardDocument.kt` 提供自包含文档、实时数据事件、桥接脚本及缓存的离线图标字体/字形映射。`src/desktopTest/kotlin/dev/wawlink/app/FeatureCardPreferencesTest.kt` 覆盖布局持久化、隐藏恢复、排序及颜色边界。
+  - 同目录的 `ContainerRulesScreen.kt` 提供真实规则文件管理和原生编辑，`ContainerExtensionScreen.kt` 提供服务启停与无生命周期说明的居中加载；`src/desktopMain/kotlin/dev/wawlink/app/ContainerFeatureCardSurface.desktop.kt` 与 `ContainerWebSurface.desktop.kt` 使用 JavaFX WebView，Android 对应实现在 `app-android/src/main/kotlin/dev/wawlink/app/ContainerFeatureCardSurface.android.kt` 与 `ContainerWebSurface.android.kt`，Web 资源仅允许精确卡片来源或当前功能 loopback 来源。
   - 同目录的 `PluginManagementScreen.kt`、`PluginComponents.kt`、`PluginEditors.kt` 实现插件原型与真实管理；`SkillManagementScreen.kt`、`SkillComponents.kt`、`SkillUiState.kt`、`SkillDraft.kt`、`SkillEditorPage.kt`、`SkillPackagePages.kt`、`SkillAuthorPages.kt` 实现技能原型、原文编辑、市场及发布维护，`SkillClawHubPages.kt` 提供 ClawHub/官方来源切换、完整资源安全预览、精确版本风险确认与来源展示。两页按入口固定用户/项目上下文，配置变更明确提示新会话生效，不伪造已加载状态。
   - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、当前单容器持久化、直接新建与空会话清理、持久化整体缩放与配色，以及 OMP 安装修复提示去重和一次性授权，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。
   - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载、APK 安装及主机挂载目录选择，按 Android 版本处理共享储存授权与本机储存卷路径；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。
+  - `src/main/kotlin/dev/wawlink/app/FeatureAndroidLuaBridge.kt` 为功能卡片及完整页面提供来源限定的 LuaJ/Java、Android UI 线程调度、Intent 助手和 Promise JSON 编解码；文档导航/销毁取消旧任务，LuaJ 及 AndroidX WebKit 依赖由模块显式管理，不开放无来源限制的 `addJavascriptInterface`。
 - `terminal-emulator/`、`terminal-view/`：从 Love2Droid 固定提交移植的 Android Termux 终端解析器、JNI PTY 与视图，仅构建 arm64-v8a；`terminal-emulator/NOTICE` 记录上游来源及修改，许可同时保存在模块 assets 与 `licenses/`。
-- `licenses/`：Termux 终端、JediTerm、pty4j、Love2Droid/r2droid 与 Maple Mono 的完整上游许可及来源。
+- `licenses/`：Termux 终端、JediTerm、pty4j、Love2Droid/r2droid、Maple Mono 及 LuaJ 的完整上游许可及来源；`LUAJ-LICENSE.txt` 同时随 `app-android/src/main/assets/licenses/` 打包。
 - `scripts/`：免 Docker Rootfs、Android 原生二进制与验证脚本。
 - `ref-plan/`：用户提供的需求和视觉原型；不修改原型。
   - `ref-plan/agent-settings-capabilities.md`：以 OMP 18.12.6 为基准的 Agent 与 Models 设置原型能力清单，涵盖作用域、定义、角色、模型服务及高级配置；仅作设计能力说明，不代表已实现。

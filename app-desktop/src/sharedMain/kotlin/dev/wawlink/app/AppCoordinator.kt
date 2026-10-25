@@ -60,6 +60,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     private val provisionalSessions = ConcurrentHashMap.newKeySet<String>()
     private val backgroundDrafts = ConcurrentHashMap.newKeySet<String>()
     val features = ContainerFeatureService(runtime)
+    val featureCards = FeatureCardPreferences(File(dataDir, "feature-cards.json"))
     val selectedContainerId: StateFlow<String?> = runtime.containers.map { items ->
         (items.firstOrNull { it.config.isDefault } ?: items.firstOrNull())?.config?.id
     }.stateIn(scope, SharingStarted.Eagerly, currentContainerId())

@@ -20,6 +20,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal fun ContainerWebSurface(session: ContainerFeatureSession, css: String, modifier: Modifier, onError: (String) -> Unit) {
     val report by rememberUpdatedState(onError)
     val currentCss by rememberUpdatedState(css)
+    var symbols by remember { mutableStateOf<String?>(null) }
+    var font by remember { mutableStateOf<FeatureWebFont?>(null) }
+    LaunchedEffect(Unit) {
+        try { font = featureWebFont(); symbols = featureSymbolScript() }
+        catch (failure: Exception) { report("图标索引加载失败：${failure.message}") }
+    }
+    val symbolScript = symbols ?: return
+    val loadedFont = font ?: return
     val holder = remember(session) { FeatureDesktopWeb() }
     val appDensity = LocalDensity.current
     val appearance = LocalAgentAppearance.current
@@ -48,6 +56,7 @@ internal fun ContainerWebSurface(session: ContainerFeatureSession, css: String, 
             Platform.runLater {
                 try {
                     if (!holder.disposed.get()) {
+                        registerDesktopFeatureFont(loadedFont)
                         val web = WebView()
                         holder.view = web
                         web.isContextMenuEnabled = false
@@ -68,6 +77,9 @@ internal fun ContainerWebSurface(session: ContainerFeatureSession, css: String, 
                         engine.loadWorker.stateProperty().addListener { _, _, state ->
                             when (state) {
                                 Worker.State.SUCCEEDED -> if (containerFeatureAllows(engine.location, session)) {
+                                    runCatching { engine.executeScript(featureDesktopUnavailableScript()) }
+                                    runCatching { engine.executeScript(symbolScript) }
+                                        .onFailure { report("图标渲染失败：${it.message}") }
                                     runCatching { engine.executeScript(containerFeatureThemeScript(currentCss)) }
                                         .onFailure { report("主题注入失败：${it.message}") }
                                 }

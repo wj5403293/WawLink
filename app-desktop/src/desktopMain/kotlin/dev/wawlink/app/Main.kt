@@ -1,22 +1,30 @@
 package dev.wawlink.app
 
 import androidx.compose.runtime.*
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Window
+import androidx.compose.ui.awt.ComposePanel
+import androidx.compose.ui.window.AwtWindow
 import androidx.compose.ui.window.application
-import androidx.compose.ui.window.rememberWindowState
 import dev.wawlink.driver.OmpProcessPool
 import dev.wawlink.protocol.AttachmentFile
 import dev.wawlink.runtime.*
 import java.io.File
 import java.util.UUID
+import java.awt.Dimension
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
+import javax.swing.JFrame
 import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.swing.Swing
 import kotlinx.coroutines.withContext
 
-fun main() = application {
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+fun main() {
+    // ComposeWindow blending is unavailable on Linux; SwingGraphics supports clipped WebKit interop.
+    System.setProperty("compose.interop.blending", "true")
+    System.setProperty("compose.swing.render.on.graphics", "true")
+    application {
     val app = remember {
         fun override(property: String, environment: String): String? = System.getProperty(property)?.takeIf { it.isNotBlank() } ?: System.getenv(environment)?.takeIf { it.isNotBlank() }
         val project = File(System.getProperty("wawlink.projectDir", System.getProperty("user.dir")))
@@ -29,7 +37,25 @@ fun main() = application {
         AppCoordinator(runtime, OmpProcessPool(runtime, data), data)
     }
     val files = remember { DesktopHostFiles() }
-    Window(onCloseRequest = { app.close(); exitApplication() }, title = "WawLink", state = rememberWindowState(width = 460.dp, height = 920.dp)) { WawLinkApp(app, files) }
+    AwtWindow(create = {
+        JFrame("WawLink").apply {
+            defaultCloseOperation = JFrame.DO_NOTHING_ON_CLOSE
+            contentPane = ComposePanel().apply {
+                preferredSize = Dimension(460, 920)
+                setContent { WawLinkApp(app, files) }
+            }
+            addWindowListener(object : WindowAdapter() {
+                override fun windowClosing(event: WindowEvent) { exitApplication() }
+            })
+            pack()
+            setLocationRelativeTo(null)
+        }
+    }, dispose = { window ->
+        app.close()
+        (window.contentPane as ComposePanel).dispose()
+        window.dispose()
+    })
+    }
 }
 
 private class DesktopHostFiles : HostFiles {

@@ -11,6 +11,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -29,6 +30,7 @@ internal fun ContainerExtensionScreen(service: ContainerFeatureService, containe
     var attempt by remember(containerId, feature.id) { mutableStateOf(0) }
     var showOutput by remember(containerId, feature.id) { mutableStateOf(false) }
     var surfaceError by remember(containerId, feature.id, attempt) { mutableStateOf<String?>(null) }
+    var startupPending by remember(containerId, feature.id, attempt) { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
     val css = containerFeatureThemeCss()
     SideEffect { service.setTheme(css) }
@@ -37,6 +39,7 @@ internal fun ContainerExtensionScreen(service: ContainerFeatureService, containe
         try { service.start(containerId, feature) }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { showOutput = true /* The service retains the actual failure and output. */ }
+        finally { startupPending = false }
     }
     DisposableEffect(containerId, feature.id) { onDispose { service.leavePage(containerId, feature.id) } }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
@@ -52,26 +55,24 @@ internal fun ContainerExtensionScreen(service: ContainerFeatureService, containe
             })
             if (state.status == ContainerFeatureStatus.FAILED || state.status == ContainerFeatureStatus.STOPPED) AgentIconButton("refresh", "重新启动", { attempt++ })
         })
-        Text(if (feature.lifecycle == ContainerFeatureLifecycle.MANUAL) "手动生命周期 · 离页继续运行，可在此页或功能卡片停止" else "页面生命周期 · 离开此页自动停止服务", Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        AnimatedVisibility(showOutput, enter = expandVertically(tween(420, easing = EmphEasing)), exit = shrinkVertically(tween(360, easing = EmphEasing))) {
+        AnimatedVisibility(showOutput && !startupPending, enter = expandVertically(tween(420, easing = EmphEasing)), exit = shrinkVertically(tween(360, easing = EmphEasing))) {
             SelectionContainer {
                 Text(state.output.ifEmpty { "暂无进程输出" }, Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(16.dp), fontFamily = LocalAgentMono.current, fontSize = 14.sp)
             }
         }
-        val error = surfaceError ?: state.error
+        val error = if (startupPending) null else surfaceError ?: state.error
         if (error != null) {
             Surface(color = MaterialTheme.colorScheme.errorContainer) {
                 Text(error, Modifier.fillMaxWidth().padding(16.dp), fontSize = 18.sp, color = MaterialTheme.colorScheme.onErrorContainer)
             }
         }
-        when (state.status) {
+        val displayStatus = if (startupPending && state.status != ContainerFeatureStatus.RUNNING && state.status != ContainerFeatureStatus.STOPPING) ContainerFeatureStatus.STARTING else state.status
+        when (displayStatus) {
             ContainerFeatureStatus.RUNNING -> state.session?.let { session ->
                 ContainerWebSurface(session, css, Modifier.fillMaxSize(), onError = { surfaceError = it })
             }
-            ContainerFeatureStatus.STARTING, ContainerFeatureStatus.STOPPING -> Column(Modifier.padding(28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            ContainerFeatureStatus.STARTING, ContainerFeatureStatus.STOPPING -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
-                Text(if (state.status == ContainerFeatureStatus.STARTING) "正在启动并等待本地服务就绪…" else "正在停止并回收服务进程…", fontSize = 20.sp)
-                Text("仅运行当前容器内的脚本，不访问宿主文件或开放原生 JS 桥。", fontSize = 17.sp)
             }
             ContainerFeatureStatus.STOPPED, ContainerFeatureStatus.FAILED -> Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Symbol(if (state.status == ContainerFeatureStatus.FAILED) "error" else "stop_circle", size = 40.dp, tint = MaterialTheme.colorScheme.primary)
@@ -97,7 +98,7 @@ internal fun containerFeatureThemeCss(): String {
 @Composable
 internal fun ContainerFeatureIcons(service: ContainerFeatureService) {
     LaunchedEffect(service) {
-        service.setIconFont(dev.wawlink.ui.resources.Res.readBytes("font/material_symbols_rounded.ttf"))
+        service.setIconFont(featureWebFont().bytes)
     }
 }
 

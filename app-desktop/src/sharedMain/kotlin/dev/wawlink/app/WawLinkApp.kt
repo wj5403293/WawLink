@@ -96,6 +96,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val settingsNavigation = remember { HostNavigation() }
     val hubNavigation = remember { HostNavigation() }
     val chatNavigations = remember { mutableMapOf<String, AgentChatNavigation>() }
+    val homeNavigation = remember { HostNavigation() }
     var definitionName by rememberSaveable { mutableStateOf<String?>(null) }
     var containerAttachmentPick by remember { mutableStateOf<ContainerAttachmentPick?>(null) }
     val attachmentNavigation = remember { HostNavigation() }
@@ -139,6 +140,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         linkedDirectory != null -> { if (linkedDirectoryNavigation.onBack?.invoke() != true) linkedDirectory = null; true }
         fileOpenRequest != null -> { fileOpenRequest = null; true }
         containerAttachmentPick != null -> { if (attachmentNavigation.onBack?.invoke() != true) finishAttachmentPick(emptyList()); true }
+        page == "home" && homeNavigation.onBack?.invoke() == true -> true
         page == "terminal" -> { page = terminalReturn; true }
         page == "files" && fileNavigation.onBack?.invoke() == true -> true
         page == "files" -> { page = filesReturn; true }
@@ -229,7 +231,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                 onEnterSession = { selectedSession = it; page = "chat" },
                                 onContainer = { selectedContainer = it; page = "container" },
                                 onInstall = { installRootfs = it; page = "install" }, onFeature = ::openFeature,
-                                onExtension = { feature -> selectedContainer = app.currentContainerId(); activeFeature = feature; page = "extension" })
+                                onExtension = { feature -> selectedContainer = app.currentContainerId(); activeFeature = feature; page = "extension" }, navigation = homeNavigation)
                             "chat" -> {
                                 DisposableEffect(current.sessionId) {
                                     onDispose { if (page == "home" || selectedSession != current.sessionId) current.sessionId?.let(app::leaveSession) }
@@ -444,6 +446,7 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
             HostRow("常驻显示词元用量", icon = "token") { Switch(appearance.alwaysShowUsage, { app.updateAppearance(appearance.copy(alwaysShowUsage = it)) }) }
             HostRow("隐藏工具调用过程", icon = "construction") { Switch(appearance.hideToolCalls, { app.updateAppearance(appearance.copy(hideToolCalls = it)) }) }
             HostRow("自动折叠已压缩记录", icon = "unfold_less") { Switch(appearance.collapseCompacted, { app.updateAppearance(appearance.copy(collapseCompacted = it)) }) }
+            FeatureCardsSettings(app)
             SectionLabel("会话", "forum")
             HostRow("新会话默认免审批", icon = "bolt") { Switch(defaultAutoApprove, app::updateDefaultAutoApprove) }
             SectionLabel("当前容器 Agent", "smart_toy")

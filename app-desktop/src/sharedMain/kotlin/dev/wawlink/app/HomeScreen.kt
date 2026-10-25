@@ -26,7 +26,7 @@ import dev.wawlink.runtime.*
 import dev.wawlink.ui.*
 
 @Composable
-internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () -> Unit, onNewSession: () -> Unit, onEnterSession: (String) -> Unit, onContainer: (String) -> Unit, onInstall: (Boolean) -> Unit, onFeature: (String) -> Unit, onExtension: (ContainerFeature) -> Unit) {
+internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () -> Unit, onNewSession: () -> Unit, onEnterSession: (String) -> Unit, onContainer: (String) -> Unit, onInstall: (Boolean) -> Unit, onFeature: (String) -> Unit, onExtension: (ContainerFeature) -> Unit, navigation: HostNavigation? = null) {
     var tab by rememberSaveable { mutableStateOf(0) }
     var batch by rememberSaveable { mutableStateOf(false) }
     var selected by rememberSaveable { mutableStateOf(emptySet<String>()) }
@@ -42,6 +42,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
     val containers by app.runtime.containers.collectAsState()
     val currentContainerId by app.selectedContainerId.collectAsState()
     val tabStates = rememberSaveableStateHolder()
+    val featureNavigation = remember { HostNavigation() }
     val visible = sessions.filter { session ->
         if (app.isEmptyDraft(session)) return@filter false
         val r = session.record; val c = containers.firstOrNull { it.config.id == r.containerId }?.config
@@ -52,6 +53,16 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
             (query.isBlank() || "${r.title} ${r.workspace} ${c?.name.orEmpty()} ${c?.distro.orEmpty()}".contains(query.trim(), true))
     }
     fun exitBatch() { batch = false; selected = emptySet() }
+    SideEffect {
+        navigation?.onBack = {
+            when {
+                tab == 1 -> featureNavigation.onBack?.invoke() == true
+                batch -> { exitBatch(); true }
+                else -> false
+            }
+        }
+    }
+    DisposableEffect(navigation) { onDispose { navigation?.onBack = null } }
     Scaffold(topBar = {
         AgentTopBar(if (batch) "已选 ${selected.size} 项" else listOf("会话", "功能", "容器")[tab], actions = {
             if (batch) {
@@ -128,7 +139,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                     }
                 }
             } else if (current == 2) ContainersHome(app, onContainer)
-            else ContainerFeaturesScreen(app, app.features, currentContainerId, onFeature, onExtension)
+            else ContainerFeaturesScreen(app, app.features, currentContainerId, onFeature, onExtension, navigation = featureNavigation)
             }
         }
     }
