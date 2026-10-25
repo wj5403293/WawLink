@@ -79,8 +79,8 @@
   - 同目录的 `ImageDetailScreen.kt` 提供原生全屏图像、缩放拖动与保存；`RichGraphic.kt` 的 `LocalAgentImageSaveHandler` 由宿主接入系统文档保存，`RichGraphicDocument.kt` 保留校验后的图像字节、MIME 与安全文件名。
   - `src/commonMain/composeResources/files/rich/` 保存 Mermaid 离线引擎、来源与许可证；`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ComposerSlashCommandsTest.kt`、`AskDraftStateTest.kt`、`MarkdownPartsTest.kt` 覆盖命令覆盖优先级、分组作答和富媒体解析边界，`src/desktopTest/kotlin/dev/wawlink/ui/RichGraphicSafetyTest.kt` 覆盖 SVG 主动内容、图像 URI 与重定向边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/FeedPresentation.kt`、`src/jvmSharedMain/kotlin/dev/wawlink/ui/FeedClock.kt` 统一运行耗时、思考稳定展示与详情；`FeedPresentationTest.kt` 覆盖耗时边界，`MarkdownPartsTest.kt` 覆盖稳定 Markdown 段落与代码围栏边界。
-  - 同目录的 `FeedRenderIndex.kt` 按未变对象复用节点索引、根列表投影及吸顶拓扑，滚动时只查询实际测量的候选；`AgentChatScreen.kt` 按可见尾项与底部留白计算有限追尾距离。`src/commonTest/kotlin/dev/wawlink/ui/FeedRenderIndexTest.kt` 覆盖压缩/隐藏、嵌套归属、快照替换、层级变更及吸顶边界。
-  - `Markdown.kt`、`MarkdownParts.kt` 复用流式文本的已完成行、围栏状态与段落，重写/缩短时重新解析；平滑输出只在有待显示文本时唤醒。`MarkdownTest.kt`、`MarkdownPartsTest.kt` 覆盖表格续写、CRLF、围栏、SVG/图片边界及 Unicode 增量。
+  - `src/commonMain/kotlin/dev/wawlink/ui/AgentChatScreen.kt` 使用原有快照位置表与原生 `SnapshotStateMap` 维护吸顶几何，按可见尾项与底部留白计算有限追尾距离；不通过结构相等的自定义 Map 包装几何状态。
+  - `Markdown.kt`、`MarkdownParts.kt` 恢复无长期增量解析器的正文渲染，思考只由 `StableMarkdownBuffer` 保留已完成段落；不在每个段落中长期持有整段 `StringBuilder`、行位置表及重复解析状态。保留展开冻结、原文选择复制和原有富媒体安全边界。
   - 同目录的 `CodeLanguage.kt`、`HighlightedCode.kt`、`CodeDetailScreen.kt` 提供语言识别、原生高亮与全屏入口；`src/androidMain/kotlin/dev/wawlink/ui/OfflineTextMate.android.kt` 为行内与 Sora 共用离线 TextMate 语法，`CodeDetailScreen.android.kt` 接入只读 Sora；`src/desktopMain/kotlin/dev/wawlink/ui/HighlightedCode.desktop.kt` 与 `CodeDetailScreen.desktop.kt` 接入 RSyntaxTextArea。
   - `src/commonMain/composeResources/files/code/` 保存精确版本来源与许可，`textmate/` 保存语法依赖、主题、索引与哈希；`CodeLanguageTest.kt` 覆盖语言别名、路径选择器和未知语言，`src/androidUnitTest/kotlin/dev/wawlink/ui/OfflineTextMateTokenizerTest.kt` 与 `src/desktopTest/kotlin/dev/wawlink/ui/NativeCodeHighlightTest.kt` 覆盖真实词法器的嵌入语言、多行及颜色边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/AgentManagementScreen.kt` 为新 Agent 设置入口，`ManagementComponents.kt` 提供原型一致的页面、作用域、候选模型链与配置编辑控件；`ManagementAgentsScreen.kt`、`ManagementAdvisorsScreen.kt` 管理定义、运行覆盖及顾问，`ManagementRolesScreen.kt`、`ManagementPoliciesScreen.kt`、`ManagementRuntimeScreen.kt` 分别管理角色、模型策略与原生运行设置，`ManagementNativeProviderScreen.kt` 编辑完整原生服务及模型覆盖。
@@ -132,6 +132,7 @@
 
 - 除非明确要求，禁止启动或使用 Android 模拟器进行 Debug 调试、测试或功能验收。
 - Debug Gradle 任务仅用于本地测试与编译，不允许据此启动模拟器。
+- 聊天性能回归修复按用户当前要求不运行桌面端或移动端测试、性能基准及界面验收，只做静态排查与 APK 构建，由用户真机复测；未获重新授权前不得用桌面测试代替手机表现，也不得把构建通过写成卡顿或闪退已验证修复。
 - 每次修改完成并通过必要验证后，必须为本次修改创建 Git commit，提交仅包含本次任务的变更。
 - 已确认：Rootfs 完整预装功能优先，不将 150–220 MB 作为硬上限；必须报告实际解压体积和归档体积。
 - 已确认：依上游真实能力提供引擎；Proroot 仅 Android arm64，桌面使用 PRoot/QEMU 或 chroot；强制只读绑定仅 chroot 支持，其他引擎必须明确拒绝，禁止静默变为可写。

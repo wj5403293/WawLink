@@ -61,6 +61,16 @@ internal fun ThinkingMarkdown(id: String, text: String) {
         chunks.forEachIndexed { index, chunk -> key(id, index) { Markdown(chunk) } }
     }
 }
+internal fun flattenedFeed(feed: List<FeedItem>): List<FeedItem> = buildList {
+    fun visit(items: List<FeedItem>) {
+        for (item in items) {
+            add(item)
+            if (item is StepGroupNodeItem) visit(item.children)
+        }
+    }
+    visit(feed)
+}
+
 
 internal fun FeedItem.isExpanded(expanded: Map<String, Boolean>): Boolean = expanded[id] ?: when (this) {
     is ThinkingNodeItem -> isExpanded
@@ -69,6 +79,17 @@ internal fun FeedItem.isExpanded(expanded: Map<String, Boolean>): Boolean = expa
     is PlanNodeItem -> isExpanded
     else -> false
 }
+internal fun visibleFeedNodes(feed: List<FeedItem>, expanded: Map<String, Boolean>, hideTools: Boolean): List<FeedItem> = buildList {
+    fun visit(items: List<FeedItem>) {
+        for (item in items) {
+            if (hideTools && item is ToolNodeItem) continue
+            add(item)
+            if (item is StepGroupNodeItem && item.isExpanded(expanded)) visit(item.children)
+        }
+    }
+    visit(feed)
+}
+
 
 
 @Composable

@@ -63,6 +63,23 @@ internal fun PlanNodeItem.progressLabel(): String {
         else -> "共 ${steps.size} 项"
     }
 }
+/** Observe the whole feed, not recycled rows, so completion is consumed exactly once. */
+internal fun updateGroupExpansion(
+    feed: List<FeedItem>,
+    expanded: MutableMap<String, Boolean>,
+    previouslyRunning: MutableMap<String, Boolean>,
+) {
+    for (item in feed) if (item is StepGroupNodeItem) {
+        val running = item.state == NodeStatus.RUNNING
+        val previous = previouslyRunning[item.id]
+        if (previous != running) {
+            previouslyRunning[item.id] = running
+            if (previous == true && !running) expanded[item.id] = false
+        }
+        updateGroupExpansion(item.children, expanded, previouslyRunning)
+    }
+}
+
 
 
 @Composable
