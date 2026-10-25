@@ -4,8 +4,55 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.Base64
+import kotlinx.serialization.json.*
 
 private const val MAX_CARD_HTML_BYTES = 256 * 1024
+
+internal fun parseFeatureCardSpan(manifest: JsonObject): Int = manifest["cardSpan"]?.let {
+    require(it is JsonPrimitive && !it.isString && it.intOrNull?.let { span -> span in 1..2 } == true) { "cardSpan 必须为整数 1 或 2" }
+    it.int
+} ?: 1
+
+internal fun validateFeatureRelativeScript(script: String) {
+    require(script.isNotBlank() && !script.startsWith('/') && '\u0000' !in script &&
+        script.split('/').all { it.isNotEmpty() && it != "." && it != ".." }) { "script 必须为功能目录内的相对文件路径" }
+}
+
+/** Parsing and discovery are data-only; neither shell nor Lua source is evaluated here. */
+internal fun parseFeatureActions(manifest: JsonObject): List<ContainerFeatureAction> {
+    val entries = manifest["actions"] ?: return emptyList()
+    require(entries is JsonArray && entries.size <= 3) { "actions 必须为最多三个动作的数组" }
+    val ids = HashSet<String>()
+    return entries.map { entry ->
+        require(entry is JsonObject) { "action 必须为对象" }
+        fun string(name: String): String? = entry[name]?.let {
+            require(it is JsonPrimitive && it.isString && it.content.isNotBlank()) { "action.$name 必须为非空字符串" }
+            it.content
+        }
+        fun required(name: String): String = requireNotNull(string(name)) { "缺少 action.$name 字符串字段" }
+        val id = required("id")
+        require(id.matches(Regex("[a-z0-9][a-z0-9_-]{0,63}"))) { "action.id 必须为 1–64 位小写字母、数字、下划线或短横线，首位为字母或数字" }
+        require(ids.add(id)) { "action.id 重复：$id" }
+        val title = required("title")
+        val icon = required("icon")
+        require(icon.matches(Regex("[a-z][a-z0-9_]{0,79}"))) { "action.icon 必须是 Material Symbols 名称" }
+        val type = when (required("type")) {
+            "open" -> ContainerFeatureActionType.OPEN
+            "start" -> ContainerFeatureActionType.START
+            "stop" -> ContainerFeatureActionType.STOP
+            "toggle" -> ContainerFeatureActionType.TOGGLE
+            "logs" -> ContainerFeatureActionType.LOGS
+            "script" -> ContainerFeatureActionType.SCRIPT
+            "lua" -> ContainerFeatureActionType.LUA
+            else -> throw IllegalArgumentException("action.type 只能为小写 open、start、stop、toggle、logs、script 或 lua")
+        }
+        val script = string("script")?.also(::validateFeatureRelativeScript)
+        val lua = string("lua")
+        require(type != ContainerFeatureActionType.SCRIPT || script != null) { "script 动作缺少相对 script 文件路径" }
+        require(type != ContainerFeatureActionType.LUA || lua != null) { "lua 动作缺少非空内联 lua 源码" }
+        ContainerFeatureAction(id, title, icon, type, script, lua)
+    }
+}
 
 /** Reads data only, using the configured guest identity and never a host/rootfs pathname. */
 internal suspend fun readFeatureCardHtml(runtime: ContainerRuntime, containerId: String, directory: String, requestedFile: String?): String? {

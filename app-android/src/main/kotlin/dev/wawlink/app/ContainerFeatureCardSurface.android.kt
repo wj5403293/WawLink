@@ -3,10 +3,14 @@ package dev.wawlink.app
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.net.Uri
+import android.graphics.Outline
+import android.view.View
+import android.view.ViewOutlineProvider
 import android.webkit.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayInputStream
 import java.net.URI
@@ -35,6 +39,7 @@ internal fun AndroidFeatureSurface(
     val action by rememberUpdatedState(onAction)
     val currentCss by rememberUpdatedState(css)
     val currentData by rememberUpdatedState(data)
+    val density = LocalDensity.current.density
     val holder = remember(origin, url, html) {
         val web = WebView(context)
         val bridge = FeatureAndroidLuaBridge(web, origin, if (onAction == null) null else { value -> action?.invoke(value) })
@@ -48,6 +53,12 @@ internal fun AndroidFeatureSurface(
             actual.scheme == expected.scheme && actual.host == expected.host && actual.port == expected.port && actual.rawUserInfo == null
         } catch (_: Exception) { false }
         web.apply {
+            if (html != null) {
+                outlineProvider = object : ViewOutlineProvider() {
+                    override fun getOutline(view: View, outline: Outline) { outline.setRoundRect(0, 0, view.width, view.height, 28 * density) }
+                }
+                clipToOutline = true
+            }
             setBackgroundColor(android.graphics.Color.WHITE)
             settings.apply {
                 javaScriptEnabled = true; domStorageEnabled = html == null

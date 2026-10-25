@@ -2,6 +2,9 @@ package dev.wawlink.runtime
 
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -96,5 +99,107 @@ class RuntimeEnginesTest {
         assertFailsWith<IllegalArgumentException> {
             RuntimeEngines(RuntimePaths(data)).validate(config)
         }
+    }
+
+    @Test fun featureActionsRemainOptInAndSpanIsStrict() {
+        val old = Json.parseToJsonElement("{}").jsonObject
+        assertEquals(1, parseFeatureCardSpan(old))
+        assertTrue(parseFeatureActions(old).isEmpty())
+        for (span in listOf(1, 2)) {
+            assertEquals(span, parseFeatureCardSpan(Json.parseToJsonElement("{\"cardSpan\":$span}").jsonObject))
+        }
+        for (span in listOf("0", "3", "1.5", "\"2\"", "true", "null")) {
+            assertFailsWith<IllegalArgumentException> {
+                parseFeatureCardSpan(Json.parseToJsonElement("{\"cardSpan\":$span}").jsonObject)
+            }
+        }
+    }
+
+    @Test fun featureActionSchemaRejectsDuplicatesOverflowAndInvalidPayloads() {
+        fun parse(actions: String) = parseFeatureActions(Json.parseToJsonElement("{\"actions\":$actions}").jsonObject)
+        val open = """{"id":"open","title":"打开","icon":"open_in_new","type":"open"}"""
+        assertEquals(ContainerFeatureActionType.OPEN, parse("[$open]").single().type)
+        val script = """{"id":"run","title":"运行","icon":"terminal","type":"script","script":"tasks/run.sh"}"""
+        assertEquals("tasks/run.sh", parse("[$script]").single().script)
+        val lua = """{"id":"native","title":"原生操作","icon":"android","type":"lua","lua":"return 1"}"""
+        assertEquals("return 1", parse("[$lua]").single().lua)
+        for (invalid in listOf(
+            "[$open,$open]", "[$open,$script,$lua,$open]", "{}",
+            "[$open]".replace("open_in_new", "Bad-Icon"),
+            "[$open]".replace("\"id\":\"open\"", "\"id\":\"Bad\""),
+            "[$open]".replace("\"type\":\"open\"", "\"type\":\"OPEN\""),
+            "[$open]".replace("\"title\":\"打开\"", "\"title\":false"),
+            "[$open]".replace("\"type\":\"open\"", "\"type\":\"script\""),
+            "[$script]".replace("tasks/run.sh", "../run.sh"),
+            "[$script]".replace("tasks/run.sh", "/run.sh"),
+            "[$lua]".replace("return 1", "   "),
+        )) assertFailsWith<IllegalArgumentException>(invalid) { parse(invalid) }
+    }
+
+    @Test fun featureScriptActionsEnforceCurrentHomeExactDirectoryAndLinkBoundary() {
+        val root = Files.createTempDirectory("wawlink-feature-action-test").toFile()
+        try {
+            val home = File(root, "home").apply { mkdirs() }
+            val directory = File(home, ".wawlink/features/demo").apply { mkdirs() }
+            val feature = ContainerFeature("demo", "功能", "描述", "terminal", directory.canonicalPath)
+            val outside = File(root, "outside.sh").apply { writeText("printf 'ESCAPED'\n") }
+            val script = File(directory, "run.sh").apply { writeText("printf '%s|%s' \"${'$'}PWD\" \"${'$'}WAWLINK_ACTION_ID\"\n") }
+            fun run(selected: ContainerFeature = feature, selectedHome: File = home): Pair<Int, String> {
+                val process = ProcessBuilder("/bin/sh", "-c", featureScriptActionSupervisor(selected, "run.sh"))
+                    .redirectErrorStream(true).apply {
+                        environment()["HOME"] = selectedHome.path
+                        environment()["WAWLINK_ACTION_ID"] = "run"
+                    }.start()
+                try {
+                    assertTrue(process.waitFor(10, TimeUnit.SECONDS), "动作监管进程未退出")
+                    return process.exitValue() to process.inputStream.bufferedReader().use { it.readText() }
+                } finally {
+                    process.outputStream.close()
+                    if (process.isAlive) process.destroyForcibly()
+                }
+            }
+            val success = run()
+            assertEquals(0, success.first)
+            assertEquals("${directory.canonicalPath}|run", success.second)
+            assertTrue(run(selectedHome = File(root, "other-home").apply { mkdirs() }).first != 0)
+            val alias = File(home, ".wawlink/features/alias")
+            Files.createSymbolicLink(alias.toPath(), directory.toPath())
+            assertTrue(run(feature.copy(id = "alias", directory = alias.path)).first != 0)
+            assertTrue(script.delete())
+            Files.createSymbolicLink(script.toPath(), outside.toPath())
+            val escaped = run()
+            assertTrue(escaped.first != 0)
+            assertFalse("ESCAPED" in escaped.second)
+        } finally { RootfsArchives.deleteTree(root) }
+    }
+
+    @Test fun featureScriptSupervisorRecyclesItsProcessGroupOnCancellation() {
+        val home = Files.createTempDirectory("wawlink-feature-cancel-test").toFile()
+        try {
+            val directory = File(home, ".wawlink/features/demo").apply { mkdirs() }
+            File(directory, "run.sh").writeText("""
+                trap 'exit 0' TERM
+                (
+                    trap 'printf stopped > ./child-stopped; exit 0' TERM
+                    printf ready > ./child-ready
+                    while :; do sleep 1; done
+                ) &
+                wait
+            """.trimIndent())
+            val feature = ContainerFeature("demo", "功能", "描述", "terminal", directory.canonicalPath)
+            val process = ProcessBuilder("/bin/sh", "-c", featureScriptActionSupervisor(feature, "run.sh"))
+                .redirectErrorStream(true).apply { environment()["HOME"] = home.path }.start()
+            try {
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                while (!File(directory, "child-ready").isFile && process.isAlive && System.nanoTime() < deadline) Thread.sleep(20)
+                assertTrue(File(directory, "child-ready").isFile)
+                process.outputStream.close()
+                assertTrue(process.waitFor(10, TimeUnit.SECONDS), "取消后监管进程未退出")
+                assertTrue(File(directory, "child-stopped").isFile, "取消必须终止脚本子进程，而非仅关闭宿主 Process")
+            } finally {
+                process.outputStream.close()
+                if (process.isAlive) process.destroyForcibly()
+            }
+        } finally { RootfsArchives.deleteTree(home) }
     }
 }

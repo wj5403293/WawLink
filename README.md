@@ -162,15 +162,74 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 
 `icon`、`title`、`description` 必填；图标使用 Google Material Symbols 小写名称，标题和描述使用中文。`lifecycle` 省略为 `page`，离开该功能即停止；`manual` 离页继续运行，用户在功能页或卡片明确停止。两者在停止容器或关闭应用时回收，不承诺 Android 杀进程后继续运行。
 
-功能页默认将自定义卡片直接接在五个内置功能后，不再分区。原生卡片顶部为同一行的图标和标题，下方显示描述；不默认附加启动、停止等操作按钮，按钮内容和具体动作由卡片设计自行定义，HTML 卡片使用已有原生动作或 LuaJ/系统桥接。长按进入多选，可统一调色或隐藏，仅自定义功能可确认卸载。多选后再次长按并拖动可排序，接近边缘时自动滚动，使用非线性位移动画。显示顺序、隐藏项和用户颜色覆盖按容器持久化；应用设置的“功能卡片”可逐项或全部恢复隐藏项。卸载会先停止真实服务，再通过容器文件服务删除该功能目录，不删除符号链接所指的外部内容。
+功能页以 `ref-plan/feature-cards.html` 为视觉基准，自定义卡片紧随五个内置功能。半宽原生卡片图标位于标题上方，整行卡片图标与标题/状态并排；不默认附加任何按钮。`cardSpan` 为整数 `1`（默认，半宽）或 `2`（占满两列，原生和 HTML 均支持）。长按进入顶部编辑栏，零选择仍保持编辑；可隐藏/显示、调色和卸载，只有全部选中自定义功能时才允许卸载。隐藏项在编辑模式底部和应用设置均可恢复。拖动保留原有抬起、跟手、边缘滚动和非线性换位，顺序、隐藏与原生颜色按容器持久化。顶部胶囊切换全局当前容器，功能清单沿用既有客体进程读取和按需启动语义，状态来自真实运行时。
 
-可选 `color` 为严格的 `#RRGGBB`，用户调色覆盖它，恢复默认颜色后重新跟随清单颜色或应用主题。自定义底色同时生成同色系深色文字和图标，不再统一使用黑色；极深底色使用同色系浅色保证对比，未自定义配色时保留主题前景。HTML 卡片获得 `--wawlink-card-color` 与 `--wawlink-card-foreground`，正文、图标及按钮默认继承前景色，设计者仍可显式定义样式。`showStatus`、`showMemory` 默认为 `false`；内存值为被监管服务整个进程组的实际 RSS，不是手机或容器总内存，无法读取时显示“不可用”。页面及卡片均不展示生命周期说明；功能页面的启动、停止过程只显示水平和垂直居中的标准圆形进度组件。
+原生卡片可选 `color` 为严格 `#RRGGBB`，用户调色覆盖它；默认色恢复清单颜色或应用主题。自定义底色生成同色系深色文字和图标，极深底色使用可读浅色。调色 bottom sheet 提供默认/七色、HEX 输入和实时预览，取消或保存失败不丢草稿。HTML 卡片自行决定完整布局和配色，不参与原生调色；仍提供 `--wawlink-card-color` 与 `--wawlink-card-foreground` 供作者主动使用，不覆盖显式背景/渐变/前景。`showStatus`、`showMemory` 默认为 `false`，内存为真实服务进程组 RSS，不可读时显示不可用。页面与卡片不展示生命周期说明，功能启动只显示水平垂直居中的标准圆形进度组件。
+
+Desktop 的编辑和模态弹层期间使用当前 WebView 的固定合成快照，避免原生网页盖住选择标记、拖动层和 bottom sheet；保留同一网页实例与脚本状态，退出编辑/弹层后恢复原视图，不重载文档。Android 直接使用原生 WebView 并按卡片圆角裁剪。
+
+#### 原生按钮
+
+`actions` 是可选数组，最多三个，缺省不显示按钮；每项必须包含唯一小写 `id`、中文 `title`、Material Symbols `icon` 和 `type`。每张卡片只有一行按钮，等宽、44 dp 等高；半宽三个按钮隐藏全部文字但保留无障碍名称，整行保留图标/文字。启停过渡与脚本/Lua 执行显示标准进度组件并禁止重复触发，不使用假进度或模拟成功。
+
+```json
+{
+  "icon": "dns", "title": "开发服务器", "description": "管理项目服务",
+  "lifecycle": "manual", "cardSpan": 2, "showStatus": true,
+  "actions": [
+    {"id": "power", "title": "启动", "icon": "play_arrow", "type": "toggle"},
+    {"id": "open", "title": "打开", "icon": "open_in_new", "type": "open"},
+    {"id": "logs", "title": "日志", "icon": "receipt_long", "type": "logs"}
+  ]
+}
+```
+
+`open` 打开真实功能页，`start`/`stop`/`toggle` 使用既有服务生命周期，`logs` 查看实际服务和最近动作输出。`script` 需要功能目录内的相对 `script` 路径（例如 `tasks/backup.sh`），使用当前容器身份、实际功能目录和 `/bin/sh` 执行；`WAWLINK_FEATURE_ID`、`WAWLINK_FEATURE_DIR`、`WAWLINK_ACTION_ID` 提供执行上下文。脚本不脱离进程组，返回真实输出与退出错误，取消、停容器或关闭应用回收进程组。`lua` 需要非空内联 `lua`，例如 `{"id":"share","title":"分享","icon":"share","type":"lua","lua":"host.share('分享内容', '分享')"}`；直接复用下述 Android LuaJ 引擎，不创建隐藏 WebView，每次调用独立 globals。离开功能页或切容器取消仍在执行的按钮任务；任意不可中断 Java API 不保证立即终止。清单扫描不执行按钮。
 
 #### HTML 卡片
 
-在功能目录放置可选 `card.html` 即可替换该功能的卡片区域；也可用 `card` 指定目录内的相对 HTML 文件，`cardHeight` 指定 80–480 dp 的卡片高度，默认 120 dp。HTML 须为不超过 256 KiB 的 UTF-8 自包含文档，使用内联 CSS/JS 和 data URL，不依赖服务已经启动或网络 CDN。目录扫描不执行 HTML、Lua 或脚本；仅显示卡片时运行卡片 JS，不为渲染卡片启动服务。
+在功能目录放置可选 `card.html` 即完整替换卡片区域，亦可用 `card` 指定目录内的相对 HTML 文件。`cardHeight` 为 80–480 dp，默认 172 dp，半宽 HTML 会至少填满同一行相邻卡片的高度。HTML 是不超过 256 KiB 的 UTF-8 自包含文档，使用内联 CSS/JS 和 data URL，不依赖已启动服务或网络 CDN；宿主不增加图标、标题、描述、按钮或内边距，仅裁剪 28 dp 圆角并提供选择遮罩。目录扫描不执行 HTML、Lua 或脚本，显示卡片才执行 JS，不为渲染卡片启动服务。
 
 卡片首个脚本执行前即可读取 `window.wawlink.card`，字段为 `id`、`status`、`memoryBytes`（整数或 `null`）、`containerRunning`。状态值为 `stopped`、`starting`、`running`、`stopping`、`failed`；监听 `wawlink-card-update` 并读取 `event.detail` 获取真实增量，更新数据不会重载 HTML。调用 `wawlink.action('open' | 'start' | 'stop')` 可放置自己的打开、启停按钮；错误仍由原生真实结果反馈。HTML 卡片和完整功能页面均注入主题变量及离线 Material Symbols，可使用 `material-symbols-rounded`；桌面自动将符号名称解析为打包索引中的字形。
+
+推荐天气类使用 `cardSpan: 2`、`cardHeight: 176`，由 HTML 自行绘制整幅渐变、前景及天气图形；专注类使用半宽卡片，在完整视口中居中计时器。`html, body` 使用 `width:100%; height:100%; margin:0; overflow:hidden`，不要再嵌套一张有边距的卡片。需要主题配色时主动使用上述 CSS 变量，明确设置的颜色、渐变和非线性动画不会被宿主重写。天气信息须从真实来源读取，不能把原型温度、位置或模拟状态当实测数据；卡片普通网络请求仍受自包含策略限制，Android 可显式通过可信 LuaJ 获取所需数据并处理错误。
+
+以下是可独立运行的专注卡片正文（放入 `card.html`，`cardSpan` 省略或设 `1`），计时使用实际截止时间，不因回调延迟漂移；不预装到用户容器：
+
+```html
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><style>
+*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden}
+body{background:radial-gradient(circle at 30% 20%,#ff8a65,#e5484d 70%);color:white;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  font-family:system-ui,sans-serif;user-select:none}
+button{position:relative;width:112px;height:112px;border:0;background:none;color:inherit;padding:0}
+svg{position:absolute;inset:0;transform:rotate(-90deg)}circle{fill:none;stroke-width:9}
+.track{stroke:rgba(255,255,255,.25)}.progress{stroke:white;stroke-linecap:round;stroke-dasharray:314}
+time{position:absolute;inset:0;display:grid;place-items:center;font-size:26px}
+p{margin:0;font-size:16px}
+</style></head><body>
+<button id="toggle" aria-label="开始或暂停专注"><svg viewBox="0 0 112 112" aria-hidden="true">
+<circle class="track" cx="56" cy="56" r="50"/><circle id="ring" class="progress" cx="56" cy="56" r="50"/>
+</svg><time id="clock">25:00</time></button><p id="label">点按开始专注</p>
+<script>
+const duration=25*60*1000;let remaining=duration,deadline=0,running=false;
+const clock=document.getElementById('clock'),ring=document.getElementById('ring'),label=document.getElementById('label');
+function draw(){
+  if(running)remaining=Math.max(0,deadline-Date.now());
+  const s=Math.ceil(remaining/1000);
+  clock.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+  ring.style.strokeDashoffset=314*(1-remaining/duration);
+  if(running&&!remaining){running=false;label.textContent='完成';}
+}
+document.getElementById('toggle').onclick=()=>{
+  draw();if(!remaining)remaining=duration;
+  running=!running;if(running)deadline=Date.now()+remaining;
+  label.textContent=running?'专注中':'已暂停';draw();
+};
+const timer=setInterval(draw,250);addEventListener('pagehide',()=>clearInterval(timer),{once:true});draw();
+</script></body></html>
+```
+
 
 #### Android LuaJ 与系统调用
 
@@ -456,3 +515,15 @@ OMP 安装引导本轮通过 182 项 Kotlin 回归（容器 32、驱动 121、�
 
 默认 APK 为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`264e489b19933708bc8d8be6e10e2a82da8c26e00adfc2333e50b236ac91ba1d`，v2 签名验证通过；不新增命名 APK，不改已有 Rootfs。
 
+
+### 功能页原型与可配置原生按钮（2026-10-25）
+
+功能页按 `ref-plan/feature-cards.html` 重构，保留既有拖动的抬起、跟手、边缘滚动和非线性换位。原生及 HTML 卡片均支持 `cardSpan: 1/2`；原生按钮只按清单显式声明，一行最多三个且等宽等高，半宽三个按钮仅显示图标并保留无障碍名称。调色、编辑操作栏与容器选择使用原型布局，HTML 自行绘制完整卡片，不额外叠加原生标题、内边距或配色。
+
+原生按钮接入真实打开、启停、日志、容器脚本及 Android LuaJ。脚本按当前身份执行并在取消时回收进程组；原生 Lua 与网页复用宿主引擎，不创建隐藏 WebView，每次原生执行隔离 globals，保留完整标准库、`luajava` 和 Android 助手。内置 Skill 及本文补充单双列配置、按钮契约、天气式整行和专注式半宽 HTML 推荐写法，不预装演示卡片或覆盖用户修改。
+
+9 项定向回归通过：7 项运行时/动作边界和 2 项偏好持久化。真实桌面操作确认单按钮脚本生成归档、单双列混排、原生/HTML 整行跨行拖动及排序落盘、调色与持久化、容器选择和真实运行状态。修复了原生 WebKit 盖住调色弹层的问题；编辑/弹层使用同一 WebView 的合成快照，恢复后时钟和专注倒计时继续运行，未重载文档。
+
+对 APK 编译产生的真实原生 LuaJ 执行器完成 JVM 烟测，验证算术、Java 对象方法、JSON 返回、实际 Lua 错误、globals 隔离、`pcall` 循环取消及取消后的后续执行。仅 Android 类型使用 JVM 替身；未验证设备 Context/Activity、UI 线程调度、WebMessage 或 Intent 投递。未启动 Android 模拟器、未执行模型推理；Android 浏览器、分享及其他应用调用仍需真机验收。本轮桌面应用、原型浏览器和隔离显示进程已关闭，临时验证程序已移除。
+
+`:app-android:assembleDebug` 与 Desktop JAR 构建通过，默认 APK 为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`6762cec402c77d87b5389075d08fd0c1d4bedf57e7534d61df712ad84fc10fef`，v2 签名验证通过。不新增命名 APK，不改交付 Rootfs，更新应用无需重新导入容器。

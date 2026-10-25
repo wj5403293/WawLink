@@ -64,7 +64,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
     }
     DisposableEffect(navigation) { onDispose { navigation?.onBack = null } }
     Scaffold(topBar = {
-        AgentTopBar(if (batch) "已选 ${selected.size} 项" else listOf("会话", "功能", "容器")[tab], actions = {
+        if (tab != 1) AgentTopBar(if (batch) "已选 ${selected.size} 项" else listOf("会话", "功能", "容器")[tab], actions = {
             if (batch) {
                 AgentIconButton("select_all", "全选", { selected = if (visible.all { it.record.id in selected }) selected - visible.map { it.record.id }.toSet() else selected + visible.map { it.record.id } })
                 AgentIconButton("push_pin", "批量置顶", { val ids = selected; app.launch { app.togglePin(ids) }; exitBatch() })
@@ -139,7 +139,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                     }
                 }
             } else if (current == 2) ContainersHome(app, onContainer)
-            else ContainerFeaturesScreen(app, app.features, currentContainerId, onFeature, onExtension, navigation = featureNavigation)
+            else key(currentContainerId) { ContainerFeaturesScreen(app, app.features, currentContainerId, onFeature, onExtension, onSettings, navigation = featureNavigation) }
             }
         }
     }

@@ -1,14 +1,18 @@
 @file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package dev.wawlink.app
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +36,7 @@ import dev.wawlink.ui.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.*
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.pow
 
@@ -60,6 +65,7 @@ internal fun ContainerFeaturesScreen(
     containerId: String?,
     onBuiltin: (String) -> Unit,
     onExtension: (ContainerFeature) -> Unit,
+    onSettings: () -> Unit,
     navigation: HostNavigation? = null,
 ) {
     val containers by app.runtime.containers.collectAsState()
@@ -72,6 +78,13 @@ internal fun ContainerFeaturesScreen(
     var refresh by remember(containerId) { mutableStateOf(0) }
     var loading by remember(containerId) { mutableStateOf(false) }
     var selected by remember(containerId) { mutableStateOf(emptySet<String>()) }
+    var editing by remember(containerId) { mutableStateOf(false) }
+    var choosingContainer by remember { mutableStateOf(false) }
+    var logFeature by remember(containerId) { mutableStateOf<ContainerFeature?>(null) }
+    val actionScope = rememberCoroutineScope()
+    val lua = rememberFeatureNativeLuaExecutor(containerId)
+    var busyActions by remember(containerId) { mutableStateOf(emptySet<String>()) }
+    val actionOutput = remember(containerId) { mutableStateMapOf<String, String>() }
     var colorDialog by remember(containerId) { mutableStateOf(false) }
     var uninstallDialog by remember(containerId) { mutableStateOf(false) }
     var working by remember(containerId) { mutableStateOf(false) }
@@ -81,6 +94,7 @@ internal fun ContainerFeaturesScreen(
     val css = containerFeatureThemeCss()
     SideEffect { service.setTheme(css) }
     ContainerFeatureIcons(service)
+    val cardThemeCss = containerFeatureThemeCss(forCard = true)
     val entries = remember(catalog) {
         featureBuiltins.map { CardEntry("builtin/${it.id}", builtin = it) } + catalog?.features.orEmpty().map { CardEntry("extension/${it.id}", feature = it) }
     }
@@ -88,6 +102,9 @@ internal fun ContainerFeaturesScreen(
     val layout = preferences[containerId] ?: FeatureCardLayout()
     val order = (localOrder ?: layout.order).filter { it in byKey } + entries.map { it.key }.filterNot { it in (localOrder ?: layout.order) }
     val visible = order.filterNot { it in layout.hidden }
+    val hidden = order.filter { it in layout.hidden }
+    val displayed = if (editing) visible + hidden else visible
+    val gridKeys = if (editing && hidden.isNotEmpty()) visible + "hidden-divider" + hidden else visible
     val customSelection = selected.mapNotNull { byKey[it]?.feature }
     fun report(failure: Exception) { error = failure.message ?: "功能操作失败" }
     fun persist(action: suspend () -> Unit) {
@@ -107,8 +124,8 @@ internal fun ContainerFeaturesScreen(
         }
     }
     fun clearSelection(): Boolean {
-        if (selected.isEmpty()) return false
-        finishDrag(); selected = emptySet(); colorDialog = false; uninstallDialog = false
+        if (!editing) return false
+        finishDrag(); editing = false; selected = emptySet(); colorDialog = false; uninstallDialog = false
         return true
     }
     SideEffect { navigation?.onBack = ::clearSelection }
@@ -149,21 +166,22 @@ internal fun ContainerFeaturesScreen(
     // The same grid-level gesture owner survives item moves and consumes HTML input before WebView.
     val onHit by rememberUpdatedState<(Offset) -> Pair<String, Boolean>?> { point ->
         grid.layoutInfo.visibleItemsInfo.firstOrNull { item ->
-            item.key in visible && point.x >= item.offset.x && point.x <= item.offset.x + item.size.width &&
+            item.key in displayed && point.x >= item.offset.x && point.x <= item.offset.x + item.size.width &&
                 point.y >= item.offset.y && point.y <= item.offset.y + item.size.height
-        }?.let { (it.key as String) to (byKey[it.key]?.feature?.cardHtml != null) }
+        }?.let { (it.key as String) to (byKey[it.key]?.feature?.let { feature -> feature.cardHtml != null || feature.actions.isNotEmpty() } == true) }
     }
-    val selectionMode by rememberUpdatedState(selected.isNotEmpty())
+    val selectionMode by rememberUpdatedState(editing)
     val onTap by rememberUpdatedState<(String) -> Unit> { key ->
         if (!working && container != null) {
-            if (selected.isNotEmpty()) selected = if (key in selected) selected - key else selected + key
+            if (editing) selected = if (key in selected) selected - key else selected + key
             else byKey[key]?.let { entry -> entry.builtin?.let { onBuiltin(it.id) } ?: entry.feature?.let(onExtension) }
         }
     }
     val onHold by rememberUpdatedState<(String, Offset, Boolean) -> Unit> { key, point, wasSelecting ->
         if (!working && container != null) {
+            editing = true
             selected = selected + key
-            if (wasSelecting) grid.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.let {
+            if (wasSelecting && key !in layout.hidden) grid.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.let {
                 val origin = Offset(it.offset.x.toFloat(), it.offset.y.toFloat())
                 localOrder = order
                 drag = CardDrag(key, point, point - origin, origin, it.size)
@@ -196,35 +214,87 @@ internal fun ContainerFeaturesScreen(
             }
         }
     }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-        if (selected.isNotEmpty()) {
-            Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("已选择 ${selected.size} 项", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                        TextButton({ clearSelection() }, enabled = !working) { Text("完成") }
+    fun runAction(feature: ContainerFeature, action: ContainerFeatureAction) {
+        val id = containerId ?: return
+        val key = "${feature.id}/${action.id}"
+        if (editing || key in busyActions) return
+        if (action.type == ContainerFeatureActionType.LOGS) { logFeature = feature; return }
+        busyActions = busyActions + key
+        actionScope.launch {
+            try {
+                when (action.type) {
+                    ContainerFeatureActionType.OPEN -> onExtension(feature)
+                    ContainerFeatureActionType.START -> service.start(id, feature)
+                    ContainerFeatureActionType.STOP -> service.stop(id, feature.id)
+                    ContainerFeatureActionType.TOGGLE -> {
+                        if (service.states.value[service.stateKey(id, feature.id)]?.status == ContainerFeatureStatus.RUNNING) service.stop(id, feature.id)
+                        else service.start(id, feature)
                     }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        TextButton({ val keys = selected; persist { app.featureCards.hide(requireNotNull(containerId), keys); selected = emptySet() } }, enabled = !working) { Symbol("visibility_off", size = 20.dp); Text("隐藏") }
-                        TextButton({ colorDialog = true }, enabled = !working) { Symbol("palette", size = 20.dp); Text("颜色") }
-                        TextButton({ uninstallDialog = true }, enabled = !working && customSelection.isNotEmpty()) { Symbol("delete", size = 20.dp); Text("卸载") }
-                    }
-                    if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    ContainerFeatureActionType.SCRIPT -> actionOutput[feature.id] = service.runScriptAction(id, feature, action)
+                    ContainerFeatureActionType.LUA -> actionOutput[feature.id] = lua.execute(requireNotNull(action.lua)).let { if (it == JsonNull) "" else it.toString() }
+                    ContainerFeatureActionType.LOGS -> Unit
                 }
-            }
-        } else {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(container?.config?.name ?: "尚未选择容器", Modifier.weight(1f), fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (loading) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                AgentIconButton("refresh", "刷新功能", { refresh++ }, enabled = !loading && container != null)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                actionOutput[feature.id] = failure.message ?: "操作失败"
+                report(failure)
+            } finally { busyActions = busyActions - key }
+        }
+    }
+    CompositionLocalProvider(LocalFeatureCardCovered provides (editing || choosingContainer || colorDialog || uninstallDialog || logFeature != null)) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+        val barColor by animateColorAsState(if (editing) MaterialTheme.colorScheme.surfaceContainerHigh else if (grid.canScrollBackward) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surface, tween(300, easing = EmphEasing))
+        Row(Modifier.fillMaxWidth().height(64.dp).background(barColor).padding(horizontal = if (editing) 4.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (editing) {
+                AgentIconButton("close", "退出编辑", { clearSelection() }, enabled = !working)
+                Text(if (selected.isEmpty()) "编辑" else "已选择 ${selected.size} 项", Modifier.weight(1f), fontSize = 20.sp, maxLines = 1)
+                val allHidden = selected.isNotEmpty() && selected.all { it in layout.hidden }
+                AgentIconButton(if (allHidden) "visibility" else "visibility_off", if (allHidden) "显示所选功能" else "隐藏所选功能", {
+                    val keys = selected
+                    persist {
+                        if (allHidden) app.featureCards.restore(requireNotNull(containerId), keys) else app.featureCards.hide(requireNotNull(containerId), keys)
+                        selected = emptySet()
+                    }
+                }, enabled = !working && selected.isNotEmpty())
+                AgentIconButton("palette", "卡片颜色", { colorDialog = true }, enabled = !working && selected.isNotEmpty() && selected.none { byKey[it]?.feature?.cardHtml != null })
+                AgentIconButton("delete", "卸载所选功能", { uninstallDialog = true }, enabled = !working && selected.isNotEmpty() && customSelection.size == selected.size)
+                IconButton({ clearSelection() }, enabled = !working, modifier = Modifier.size(48.dp)) { Symbol("check", tint = MaterialTheme.colorScheme.primary, contentDescription = "完成编辑") }
+            } else {
+                Text("功能", Modifier.weight(1f), fontSize = 24.sp, fontWeight = FontWeight.Medium)
+                AgentIconButton("edit", "编辑功能卡片", { editing = true }, enabled = container != null)
+                AgentIconButton("settings", "应用设置", onSettings)
             }
         }
+        if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyVerticalGrid(
             columns = GridCells.Fixed(2), state = grid,
             modifier = Modifier.fillMaxSize().featureCardGestures(containerId, { onHit(it) }, { selectionMode }, { onTap(it) }, { key, point, selecting -> onHold(key, point, selecting) }, { onMove(it) }, { onFinish() }),
-            contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 28.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(16.dp, 4.dp, 16.dp, 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(visible, key = { it }) { key ->
+            item(key = "container-selector", span = { GridItemSpan(2) }) {
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.weight(1f).height(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainer).clickable(enabled = !working && !editing) { choosingContainer = true }.padding(start = 10.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.surface, CircleShape), contentAlignment = Alignment.Center) {
+                            Symbol("deployed_code")
+                            Box(Modifier.align(Alignment.BottomEnd).size(12.dp).background(if (container?.running == true) LocalAgentColors.current.tertiary else MaterialTheme.colorScheme.outline, CircleShape).border(2.dp, MaterialTheme.colorScheme.surface, CircleShape))
+                        }
+                        Text(container?.config?.name ?: "选择容器", Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Symbol("unfold_more")
+                    }
+                    Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceContainer, CircleShape), contentAlignment = Alignment.Center) {
+                        if (loading) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                        else AgentIconButton("refresh", "刷新功能", { refresh++ }, enabled = container != null && !editing)
+                    }
+                }
+            }
+            items(gridKeys, key = { it }, span = { GridItemSpan(if (it == "hidden-divider") 2 else byKey.getValue(it).feature?.cardSpan ?: 1) }) { key ->
+                if (key == "hidden-divider") {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Symbol("visibility_off", size = 20.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("已隐藏", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        HorizontalDivider(Modifier.weight(1f))
+                    }
+                } else {
                 val entry = byKey.getValue(key)
                 val feature = entry.feature
                 val state = feature?.let { states[service.stateKey(containerId.orEmpty(), it.id)] } ?: ContainerFeatureState()
@@ -242,8 +312,17 @@ internal fun ContainerFeaturesScreen(
                     onDispose { handle?.release() }
                 }
                 val color = layout.colors[key] ?: feature?.color
+                val htmlHeight = if (feature?.cardHtml != null) {
+                    val cells = grid.layoutInfo.visibleItemsInfo
+                    val cell = cells.firstOrNull { it.key == key }
+                    val peer = cell?.let { current -> cells.firstOrNull { it.key != key && it.row == current.row && it.key in byKey } }
+                    val peerFeature = byKey[peer?.key]?.feature
+                    maxOf(feature.cardHeight, if (peerFeature?.cardHtml != null) peerFeature.cardHeight else peer?.size?.height?.let { (it / density).toInt() } ?: 0)
+                } else 0
+                val itemScale by animateFloatAsState(if (editing && key !in selected) .97f else 1f, tween(350, easing = EmphEasing))
+                val itemAlpha by animateFloatAsState(if (key in layout.hidden) { if (key in selected) .75f else .45f } else 1f, tween(300, easing = EmphEasing))
                 FeatureCardTile(
-                    entry, state, service, containerId, container?.running == true, selected.isNotEmpty(), key in selected, color, css,
+                    entry, state, service, containerId, container?.running == true, editing, key in selected, color, cardThemeCss,
                     Modifier.fillMaxWidth().zIndex(if (currentDrag != null) 2f else 0f)
                         .animateItem(placementSpec = if (currentDrag != null) null else tween(420, easing = EmphEasing))
                         .graphicsLayer {
@@ -251,22 +330,26 @@ internal fun ContainerFeaturesScreen(
                                 val origin = itemOffset?.let { Offset(it.x.toFloat(), it.y.toFloat()) } ?: currentDrag.itemOffset
                                 val delta = currentDrag.pointer - currentDrag.grab - origin
                                 translationX = delta.x; translationY = delta.y; scaleX = 1.035f; scaleY = 1.035f; shadowElevation = 12.dp.toPx()
-                            }
+                            } else { scaleX = itemScale; scaleY = itemScale }
+                            alpha = itemAlpha
                         },
                     onAction = { action ->
-                        if (feature != null && containerId != null && selected.isEmpty()) when (action) {
+                        if (feature != null && containerId != null && !editing) when (action) {
                             "open" -> onExtension(feature)
                             "start" -> persist { service.start(containerId, feature) }
                             "stop" -> persist { service.stop(containerId, feature.id) }
                             else -> error = "未知卡片操作：$action"
                         }
-                    }, onError = { message -> error = "${entry.title}：$message" }, onClick = { onTap(key) }, onSelect = { if (container != null && !working) selected = selected + key },
+                    }, onError = { message -> error = "${entry.title}：$message" }, onClick = { onTap(key) }, onSelect = { if (container != null && !working) { editing = true; selected = selected + key } },
+                    busyActions = busyActions.filter { it.startsWith("${feature?.id}/") }.map { it.substringAfter('/') }.toSet(),
+                    onNativeAction = { action -> feature?.let { runAction(it, action) } },
+                    htmlHeight = htmlHeight,
                     nativeGestures = FeatureCardNativeGestures(
-                        selectionMode = selected.isNotEmpty(),
-                        onTap = { if (selected.isNotEmpty()) onTap(key) },
+                        selectionMode = editing,
+                        onTap = { if (editing) onTap(key) },
                         onHold = { normalized ->
                             grid.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.let { item ->
-                                onHold(key, Offset(item.offset.x + normalized.x * item.size.width, item.offset.y + normalized.y * item.size.height), selected.isNotEmpty())
+                                onHold(key, Offset(item.offset.x + normalized.x * item.size.width, item.offset.y + normalized.y * item.size.height), editing)
                             }
                         },
                         onDrag = { normalized ->
@@ -275,16 +358,32 @@ internal fun ContainerFeaturesScreen(
                         onEnd = { onFinish() },
                     ),
                 )
+                }
             }
             (listOfNotNull(error, preferenceError) + catalog?.errors.orEmpty()).distinct().forEachIndexed { index, message ->
                 item(key = "error/$index", span = { GridItemSpan(2) }) { FeatureCardError(message) }
             }
         }
     }
-    if (colorDialog) FeatureCardColorDialog(
+    }
+    if (choosingContainer) FeatureContainerSheet(containers, containerId, { choosingContainer = false }) { id ->
+        persist { app.selectContainer(id); choosingContainer = false }
+    }
+    val colorEntries = selected.mapNotNull(byKey::get)
+    if (colorDialog && colorEntries.isNotEmpty()) FeatureCardColorSheet(
+        title = colorEntries.first().title, icon = colorEntries.first().icon, count = colorEntries.size,
+        initialColor = layout.colors[colorEntries.first().key] ?: colorEntries.first().feature?.color,
+        mixed = colorEntries.map { layout.colors[it.key] ?: it.feature?.color }.distinct().size > 1,
+        defaultColor = colorEntries.first().feature?.color,
         onDismiss = { colorDialog = false },
         onColor = { color -> val keys = selected; persist { app.featureCards.setColor(requireNotNull(containerId), keys, color); colorDialog = false } },
     )
+    logFeature?.let { feature ->
+        AgentSheet("${feature.title}日志", { logFeature = null }) {
+            val output = listOf(states[service.stateKey(containerId.orEmpty(), feature.id)]?.output.orEmpty(), actionOutput[feature.id].orEmpty()).filter { it.isNotBlank() }.joinToString("\n")
+            SelectionContainer(Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())) { Text(output.ifBlank { "暂无日志" }, fontFamily = LocalAgentMono.current) }
+        }
+    }
     if (uninstallDialog) AlertDialog(
         onDismissRequest = { if (!working) uninstallDialog = false },
         title = { Text("卸载 ${customSelection.size} 个自定义功能？") },
@@ -359,6 +458,8 @@ private fun FeatureCardTile(
     selectionMode: Boolean, selected: Boolean, color: String?, css: String, modifier: Modifier,
     onAction: (String) -> Unit, onError: (String) -> Unit, onClick: () -> Unit, onSelect: () -> Unit,
     nativeGestures: FeatureCardNativeGestures,
+    busyActions: Set<String>, onNativeAction: (ContainerFeatureAction) -> Unit,
+    htmlHeight: Int,
 ) {
     val feature = entry.feature
     var memory by remember(containerId, feature?.id) { mutableStateOf<Long?>(null) }
@@ -377,16 +478,18 @@ private fun FeatureCardTile(
     val customBackground = remember(color) {
         color?.takeIf { FeatureCardPreferences.validColor(it) }?.let { Color(0xFF000000L or it.drop(1).toLong(16)) }
     }
-    val background = customBackground ?: MaterialTheme.colorScheme.surfaceContainerLow
+    val background by animateColorAsState(customBackground ?: MaterialTheme.colorScheme.surfaceContainer, tween(350, easing = EmphEasing))
     val customForeground = remember(customBackground) { customBackground?.let(::agentContainerContentColor) }
     val foreground = customForeground ?: MaterialTheme.colorScheme.onSurface
     val selectionColor = customForeground ?: MaterialTheme.colorScheme.primary
-    val shape = RoundedCornerShape(24.dp)
+    val shape = RoundedCornerShape(28.dp)
     val html = feature?.cardHtml
     val failure = htmlError ?: state.error
-    Box(modifier.heightIn(min = (if (html != null) feature?.cardHeight ?: 120 else 120).dp).clip(shape).background(background)
-        .border(if (selected) 3.dp else 0.dp, if (selected) selectionColor else Color.Transparent, shape)
-        .semantics(mergeDescendants = html == null || selectionMode) {
+    val actions = feature?.actions.orEmpty()
+    val wide = feature?.cardSpan == 2
+    Box(modifier.heightIn(min = (if (html != null) htmlHeight else feature?.cardHeight ?: 172).dp).clip(shape).background(background)
+        .clickable(enabled = html == null && actions.isNotEmpty() && !selectionMode, onClick = onClick)
+        .semantics(mergeDescendants = (html == null && actions.isEmpty()) || selectionMode) {
             contentDescription = entry.title
             if (selectionMode) this.selected = selected
             onClick(label = if (selectionMode) "选择${entry.title}" else "打开${entry.title}") { onClick(); true }
@@ -399,33 +502,78 @@ private fun FeatureCardTile(
             }.toString()
             val cardCss = remember(css, background, foreground) {
                 fun Color.hex() = "#%06x".format(toArgb() and 0xffffff)
-                "$css\n:root{--wawlink-card-color:${background.hex()};--wawlink-card-foreground:${foreground.hex()};--md-sys-color-on-surface:var(--wawlink-card-foreground)}html,body{margin:0;background:var(--wawlink-card-color)!important;color:var(--wawlink-card-foreground);min-height:100%;}button,input,select,textarea{color:inherit}"
+                "$css\n:root{--wawlink-card-color:${background.hex()};--wawlink-card-foreground:${foreground.hex()}}:where(html,body){margin:0;width:100%;height:100%;overflow:hidden;background:var(--wawlink-card-color);color:var(--wawlink-card-foreground)}:where(button,input,select,textarea){color:inherit}"
             }
             CompositionLocalProvider(LocalFeatureCardNativeGestures provides nativeGestures) {
                 ContainerFeatureCardSurface(html, cardCss, data,
-                    Modifier.fillMaxWidth().height(feature.cardHeight.dp), onAction, { message -> htmlError = message; onError(message) })
+                    Modifier.fillMaxWidth().height(htmlHeight.dp), onAction, { message -> htmlError = message; onError(message) })
             }
             if (selectionMode) Box(Modifier.matchParentSize().pointerInput(Unit) {
                 // Become the hit target instead of the embedded platform view; ancestors own gestures.
                 awaitEachGesture { awaitFirstDown(requireUnconsumed = false); do { val event = awaitPointerEvent() } while (event.changes.any { it.pressed }) }
             })
         } else {
-            Column(Modifier.fillMaxWidth().heightIn(min = 120.dp).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Box(Modifier.size(44.dp).background(foreground.copy(alpha = .09f), RoundedCornerShape(15.dp)), contentAlignment = Alignment.Center) {
-                        Symbol(entry.icon, size = 28.dp, tint = foreground)
+            Column(Modifier.fillMaxWidth().heightIn(min = (feature?.cardHeight ?: 172).dp).padding(16.dp)) {
+                val iconBackground = if (customBackground == null) MaterialTheme.colorScheme.surface else foreground.copy(alpha = .1f)
+                if (wide) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    FeatureCardIcon(entry.icon, iconBackground, foreground)
+                    Column(Modifier.weight(1f)) {
+                        Text(entry.title, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = foreground, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (feature?.showStatus == true) FeatureCardStatus(state.status, foreground)
+                        else Text(entry.description, fontSize = 15.sp, lineHeight = 22.sp, color = foreground.copy(alpha = .76f), maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
-                    Text(entry.title, Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = foreground, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                } else {
+                    FeatureCardIcon(entry.icon, iconBackground, foreground)
+                    Spacer(Modifier.height(14.dp))
+                    Text(entry.title, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = foreground, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(entry.description, Modifier.padding(top = 2.dp), fontSize = 15.sp, lineHeight = 22.sp, color = foreground.copy(alpha = .76f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (feature?.showStatus == true) FeatureCardStatus(state.status, foreground)
                 }
-                Text(entry.description, fontSize = 18.sp, lineHeight = 25.sp, color = foreground.copy(alpha = .76f), maxLines = 3, overflow = TextOverflow.Ellipsis)
-                if (feature?.showStatus == true) FeatureCardStatus(state.status, foreground)
-                if (feature?.showMemory == true) Text("内存 · ${memory?.let(::bytesLabel) ?: "不可用"}", fontSize = 16.sp, color = foreground.copy(alpha = .76f))
+                if (feature?.showMemory == true) Text("内存 · ${memory?.let(::bytesLabel) ?: "不可用"}", Modifier.padding(top = 4.dp), fontSize = 15.sp, color = foreground.copy(alpha = .76f))
+                if (actions.isNotEmpty()) {
+                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.weight(1f))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        actions.forEachIndexed { index, action ->
+                            val running = state.status == ContainerFeatureStatus.RUNNING
+                            val transitioning = state.status == ContainerFeatureStatus.STARTING || state.status == ContainerFeatureStatus.STOPPING
+                            val busy = action.id in busyActions || (transitioning && action.type in setOf(ContainerFeatureActionType.START, ContainerFeatureActionType.STOP, ContainerFeatureActionType.TOGGLE))
+                            val toggle = action.type == ContainerFeatureActionType.TOGGLE
+                            val label = if (toggle) when (state.status) {
+                                ContainerFeatureStatus.RUNNING -> "停止"
+                                ContainerFeatureStatus.STARTING -> "启动中"
+                                ContainerFeatureStatus.STOPPING -> "停止中"
+                                ContainerFeatureStatus.FAILED -> "重试"
+                                ContainerFeatureStatus.STOPPED -> action.title
+                            } else action.title
+                            val icon = if (toggle) when (state.status) { ContainerFeatureStatus.RUNNING -> "stop"; ContainerFeatureStatus.FAILED -> "refresh"; else -> action.icon } else action.icon
+                            val filled = index == 0 && !(toggle && running)
+                            Button({ onNativeAction(action) }, modifier = Modifier.weight(1f).height(44.dp).semantics { contentDescription = label },
+                                enabled = !selectionMode && !busy && (containerRunning || action.type == ContainerFeatureActionType.LUA || action.type == ContainerFeatureActionType.LOGS) &&
+                                    !(action.type == ContainerFeatureActionType.OPEN && !running) && !(action.type == ContainerFeatureActionType.START && running) && !(action.type == ContainerFeatureActionType.STOP && !running),
+                                shape = CircleShape, contentPadding = PaddingValues(horizontal = 6.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = if (filled) foreground else MaterialTheme.colorScheme.surface.copy(alpha = .65f), contentColor = if (filled) background else foreground)) {
+                                if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = LocalContentColor.current, strokeWidth = 2.dp)
+                                else Symbol(icon, size = 20.dp)
+                                if (wide || actions.size < 3) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(label, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                    }
+                }
                 if (failure != null) Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(10.dp)) {
                     Text(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
                 }
             }
         }
-        if (selected) Symbol("check_circle", Modifier.align(Alignment.TopEnd).padding(8.dp), size = 22.dp, tint = selectionColor)
+        if (selected) Box(Modifier.matchParentSize().border(3.dp, selectionColor, shape))
+        val selectionScale by animateFloatAsState(if (selectionMode) 1f else .4f, tween(300, easing = EmphDecelEasing))
+        val selectionAlpha by animateFloatAsState(if (selectionMode) 1f else 0f, tween(250, easing = EmphEasing))
+        if (selectionAlpha > 0f) Box(Modifier.align(Alignment.TopEnd).padding(12.dp).size(32.dp).graphicsLayer { scaleX = selectionScale; scaleY = selectionScale; alpha = selectionAlpha }.background(if (selected) selectionColor else MaterialTheme.colorScheme.surface.copy(alpha = .85f), CircleShape), contentAlignment = Alignment.Center) {
+            if (selected) Symbol("check", size = 22.dp, tint = if (customBackground != null) background else MaterialTheme.colorScheme.onPrimary)
+        }
         if (html != null && failure != null) Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), color = MaterialTheme.colorScheme.errorContainer) {
             Text(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
         }
@@ -433,11 +581,18 @@ private fun FeatureCardTile(
 }
 
 @Composable
+private fun FeatureCardIcon(icon: String, background: Color, foreground: Color) {
+    Box(Modifier.size(52.dp).background(background, RoundedCornerShape(18.dp)), contentAlignment = Alignment.Center) {
+        Symbol(icon, size = 28.dp, tint = foreground)
+    }
+}
+
+@Composable
 private fun FeatureCardStatus(status: ContainerFeatureStatus, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         if (status == ContainerFeatureStatus.STARTING || status == ContainerFeatureStatus.STOPPING) CircularProgressIndicator(Modifier.size(18.dp), color = color, strokeWidth = 2.dp)
-        else Symbol(when (status) { ContainerFeatureStatus.RUNNING -> "play_circle"; ContainerFeatureStatus.FAILED -> "error"; else -> "stop_circle" }, size = 20.dp, tint = color)
-        Text(when (status) { ContainerFeatureStatus.RUNNING -> "运行中"; ContainerFeatureStatus.STARTING -> "正在启动"; ContainerFeatureStatus.STOPPING -> "正在停止"; ContainerFeatureStatus.FAILED -> "运行异常"; ContainerFeatureStatus.STOPPED -> "已停止" }, fontSize = 16.sp, color = color)
+        else Box(Modifier.size(10.dp).background(when (status) { ContainerFeatureStatus.RUNNING -> LocalAgentColors.current.tertiary; ContainerFeatureStatus.FAILED -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.outline }, CircleShape))
+        Text(when (status) { ContainerFeatureStatus.RUNNING -> "运行中"; ContainerFeatureStatus.STARTING -> "正在启动"; ContainerFeatureStatus.STOPPING -> "正在停止"; ContainerFeatureStatus.FAILED -> "运行异常"; ContainerFeatureStatus.STOPPED -> "未运行" }, fontSize = 15.sp, color = color.copy(alpha = .76f))
     }
 }
 
@@ -451,24 +606,3 @@ internal fun FeatureCardError(message: String) {
     }
 }
 
-@Composable
-private fun FeatureCardColorDialog(onDismiss: () -> Unit, onColor: (String?) -> Unit) {
-    var value by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("卡片颜色") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("覆盖所选卡片的颜色；恢复默认将使用清单颜色或应用主题。")
-            listOf("#FFFFFF", "#D3E3FD", "#C4EED0", "#FFF2CC", "#FAD2CF", "#EADDFF").chunked(3).forEach { row ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    row.forEach { color ->
-                        Box(Modifier.size(48.dp).semantics { contentDescription = "卡片颜色 $color"; selected = value == color }
-                            .clickable { value = color }.padding(6.dp)
-                            .background(Color(0xFF000000L or color.drop(1).toLong(16)), RoundedCornerShape(10.dp))
-                            .border(if (value == color) 3.dp else 1.dp, if (value == color) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp)))
-                    }
-                }
-            }
-            OutlinedTextField(value, { value = it }, label = { Text("#RRGGBB") }, singleLine = true, isError = value.isNotEmpty() && !FeatureCardPreferences.validColor(value))
-            TextButton({ onColor(null) }) { Text("恢复默认颜色") }
-        }
-    }, confirmButton = { TextButton({ onColor(value) }, enabled = FeatureCardPreferences.validColor(value)) { Text("应用") } }, dismissButton = { TextButton(onDismiss) { Text("取消") } })
-}

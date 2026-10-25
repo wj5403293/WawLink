@@ -13,3 +13,5 @@ internal class FeatureCardNativeGestures(
 )
 
 internal val LocalFeatureCardNativeGestures = staticCompositionLocalOf<FeatureCardNativeGestures?> { null }
+
+internal val LocalFeatureCardCovered = staticCompositionLocalOf { false }

@@ -15,6 +15,15 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
 enum class ContainerFeatureLifecycle { PAGE, MANUAL }
+enum class ContainerFeatureActionType { OPEN, START, STOP, TOGGLE, LOGS, SCRIPT, LUA }
+data class ContainerFeatureAction(
+    val id: String,
+    val title: String,
+    val icon: String,
+    val type: ContainerFeatureActionType,
+    val script: String? = null,
+    val lua: String? = null,
+)
 data class ContainerFeature(
     val id: String,
     val title: String,
@@ -24,9 +33,11 @@ data class ContainerFeature(
     val lifecycle: ContainerFeatureLifecycle = ContainerFeatureLifecycle.PAGE,
     val color: String? = null,
     val cardHtml: String? = null,
-    val cardHeight: Int = 120,
+    val cardHeight: Int = 172,
     val showStatus: Boolean = false,
     val showMemory: Boolean = false,
+    val cardSpan: Int = 1,
+    val actions: List<ContainerFeatureAction> = emptyList(),
 )
 data class ContainerFeatureCatalog(val home: String, val features: List<ContainerFeature>, val errors: List<String>)
 data class ContainerFeatureSession(val containerId: String, val featureId: String, val url: String, val token: String)
@@ -39,6 +50,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     private val locks = ConcurrentHashMap<String, Mutex>()
     private val active = ConcurrentHashMap<String, Running>()
     private val starting = ConcurrentHashMap<String, Process>()
+    private val scriptActions = ContainerFeatureScriptActions(runtime)
     private val _states = MutableStateFlow<Map<String, ContainerFeatureState>>(emptyMap())
     val states: StateFlow<Map<String, ContainerFeatureState>> = _states.asStateFlow()
     @Volatile private var closed = false
@@ -53,6 +65,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
         scope.launch {
             runtime.containers.collect { containers ->
                 val running = containers.filter { it.running }.map { it.config.id }.toSet()
+                scriptActions.cancelStoppedContainers(running)
                 active.entries.filter { it.key.substringBefore('/') !in running }.forEach { (key, value) ->
                     value.stopping = true
                     value.gateway.close()
@@ -144,10 +157,11 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                         val height = value["cardHeight"]?.let {
                             require(it is JsonPrimitive && !it.isString && it.intOrNull != null) { "cardHeight 必须为整数 dp" }
                             it.int.coerceIn(80, 480)
-                        } ?: 120
+                        } ?: 172
                         val html = readFeatureCardHtml(runtime, containerId, directory, cardFile)
                         features += ContainerFeature(id, required("title"), required("description"), icon, directory, lifecycle,
-                            color, html, height, boolean("showStatus"), boolean("showMemory"))
+                            color, html, height, boolean("showStatus"), boolean("showMemory"),
+                            parseFeatureCardSpan(value), parseFeatureActions(value))
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (failure: Exception) { errors += "$id：${failure.message}" }
                 }
@@ -292,12 +306,26 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
         }
     }
 
+    /** Only an unchanged, explicitly declared script action can execute in the current guest identity. */
+    suspend fun runScriptAction(containerId: String, feature: ContainerFeature, action: ContainerFeatureAction): String =
+        scriptActions.run(containerId, feature, action) {
+            val key = stateKey(containerId, feature.id)
+            locks.getOrPut(key) { Mutex() }.withLock {
+                check(!closed) { "功能服务已关闭" }
+                val current = catalog(containerId).features.firstOrNull { it.id == feature.id }
+                    ?: error("功能已移除或清单无效")
+                require(current == feature) { "功能清单已变化，请返回功能页刷新后重试" }
+                require(action.type == ContainerFeatureActionType.SCRIPT && action in current.actions) { "只能执行清单声明的 script 动作" }
+            }
+        }
+
     suspend fun stop(containerId: String, featureId: String) = withContext(Dispatchers.IO) {
         val key = stateKey(containerId, featureId)
         locks.getOrPut(key) { Mutex() }.withLock { stopLocked(containerId, featureId, key) }
     }
 
     private suspend fun stopLocked(containerId: String, featureId: String, key: String) {
+            scriptActions.cancelFeature(containerId, featureId)
             val running = active[key] ?: return
             running.stopping = true
             update(key) { it.copy(status = ContainerFeatureStatus.STOPPING) }
@@ -374,7 +402,9 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     }
 
     suspend fun leave(containerId: String, featureId: String) {
-        if (active[stateKey(containerId, featureId)]?.feature?.lifecycle != ContainerFeatureLifecycle.MANUAL) stop(containerId, featureId)
+        scriptActions.cancelFeature(containerId, featureId, pageOnly = true)
+        val running = active[stateKey(containerId, featureId)]
+        if (running != null && running.feature.lifecycle != ContainerFeatureLifecycle.MANUAL) stop(containerId, featureId)
     }
 
     /** Composition disposal cannot depend on a cancelled composition CoroutineScope. */
@@ -406,6 +436,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     override fun close() {
         if (closed) return
         closed = true
+        scriptActions.close()
         runBlocking(Dispatchers.IO) {
             starting.values.toList().map { process -> async { finishProcess(process) } }.awaitAll()
             starting.clear()

@@ -71,7 +71,7 @@ internal fun featureCardDocument(html: String, css: String, data: String, font: 
     val script = bootstrap + ";" + featureCardUpdateScript(css, data)
     val head = "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
         "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'\">" +
-        "<style>html,body{margin:0;min-height:100%;width:100%;overflow:hidden;box-sizing:border-box}*,*:before,*:after{box-sizing:inherit}</style>" +
+        "<style>html,body{margin:0;height:100%;width:100%;overflow:hidden;box-sizing:border-box}*,*:before,*:after{box-sizing:inherit}</style>" +
         "<script>${script.replace("</script", "<\\/script", ignoreCase = true)}</script><style>${font.css}</style>"
     val existingHead = Regex("<head(?:\\s[^>]*)?>", RegexOption.IGNORE_CASE).find(html)
     return if (existingHead != null) html.substring(0, existingHead.range.last + 1) + head + html.substring(existingHead.range.last + 1)

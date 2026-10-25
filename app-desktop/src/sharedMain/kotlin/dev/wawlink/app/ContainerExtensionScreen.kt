@@ -85,13 +85,17 @@ internal fun ContainerExtensionScreen(service: ContainerFeatureService, containe
 }
 
 @Composable
-internal fun containerFeatureThemeCss(): String {
+internal fun containerFeatureThemeCss(forCard: Boolean = false): String {
     val colors = MaterialTheme.colorScheme
     fun Color.hex() = "#%06x".format(toArgb() and 0xffffff)
+    val body = if (forCard) ":where(body)" else "body"
+    val inputs = if (forCard) ":where(button,input,select,textarea)" else "button,input,select,textarea"
+    val buttons = if (forCard) ":where(button,[role=button])" else "button,[role=button]"
+    val pressed = if (forCard) ":where(button:active)" else "button:active"
     return """
         @font-face{font-family:'Material Symbols Rounded';src:url('/__wawlink_native/material-symbols.ttf') format('truetype');font-weight:100 700;font-style:normal;font-display:block}
         :root{--md-sys-color-primary:${colors.primary.hex()};--md-sys-color-primary-container:${colors.primaryContainer.hex()};--md-sys-color-on-primary:${colors.onPrimary.hex()};--md-sys-color-on-primary-container:${colors.onPrimaryContainer.hex()};--md-sys-color-surface:#ffffff;--md-sys-color-on-surface:#1f1f1f;--md-sys-color-outline:${colors.outline.hex()};--wawlink-motion:cubic-bezier(.2,0,0,1);color-scheme:light}
-        body{background:#fff;color:var(--md-sys-color-on-surface);font-family:system-ui,'Noto Sans CJK SC',sans-serif;font-size:18px;line-height:1.6}button,input,select,textarea{font:inherit}button,[role=button]{min-height:48px;transition:background-color .3s var(--wawlink-motion),transform .45s var(--wawlink-motion)}button:active{transform:scale(.96)}.material-symbols-outlined,.material-symbols-rounded{font-family:'Material Symbols Rounded';font-weight:normal;font-style:normal;font-size:24px;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;font-feature-settings:'liga';-webkit-font-smoothing:antialiased}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+        $body{background:#fff;color:var(--md-sys-color-on-surface);font-family:system-ui,'Noto Sans CJK SC',sans-serif;font-size:18px;line-height:1.6}$inputs{font:inherit}$buttons{min-height:48px;transition:background-color .3s var(--wawlink-motion),transform .45s var(--wawlink-motion)}$pressed{transform:scale(.96)}.material-symbols-outlined,.material-symbols-rounded{font-family:'Material Symbols Rounded';font-weight:normal;font-style:normal;font-size:24px;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;font-feature-settings:'liga';-webkit-font-smoothing:antialiased}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
     """.trimIndent()
 }
 

@@ -1,9 +1,14 @@
 package dev.wawlink.app
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import dev.wawlink.ui.LocalAgentAppearance
@@ -16,12 +21,14 @@ import javafx.scene.input.KeyEvent
 import javafx.util.Duration
 import javafx.concurrent.Worker
 import javafx.embed.swing.JFXPanel
+import javafx.embed.swing.SwingFXUtils
 import javafx.scene.Scene
 import javafx.scene.web.WebView
 import org.w3c.dom.Element
 import org.w3c.dom.events.EventListener
 import org.w3c.dom.events.EventTarget
 import java.awt.Color
+import javafx.scene.shape.Rectangle
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** A real WebKit document. Only DOM action events cross to the host; no Java objects enter JS. */
@@ -40,6 +47,15 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
     }
     val loadedFont = font ?: return
     val holder = remember(html) { DesktopFeatureCard() }
+    val covered by rememberUpdatedState(LocalFeatureCardCovered.current)
+    var frame by remember(holder) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(covered, holder) {
+        if (covered) Platform.runLater {
+            if (!holder.disposed.get() && covered) try {
+                frame = holder.captureFrame()
+            } catch (failure: Exception) { report("卡片合成失败：${failure.message}") }
+        }
+    }
     val density = LocalDensity.current
     val appearance = LocalAgentAppearance.current
     var nativeScale by remember { mutableFloatStateOf(density.density / appearance.densityScale) }
@@ -55,9 +71,13 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
             }
         }
     }
+    Box(modifier) {
+    if (covered && frame != null) {
+        frame?.let { Image(it, contentDescription = null, modifier = Modifier.fillMaxSize()) }
+    } else {
     CompositionLocalProvider(LocalDensity provides nativeDensity) {
         SwingPanel(factory = {
-            JFXPanel().apply {
+            holder.panel ?: JFXPanel().apply {
                 background = Color.WHITE
                 addPropertyChangeListener("graphicsConfiguration") { graphicsConfiguration?.defaultTransform?.scaleX?.toFloat()?.let { nativeScale = it } }
                 holder.panel = this
@@ -66,6 +86,12 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
                     if (!holder.disposed.get()) try {
                         registerDesktopFeatureFont(loadedFont)
                         val web = WebView()
+                        web.zoom = (density.density / nativeScale).toDouble()
+                        web.fontScale = density.fontScale.toDouble()
+                        web.clip = Rectangle().apply {
+                            widthProperty().bind(web.widthProperty()); heightProperty().bind(web.heightProperty())
+                            arcWidth = 56.0 * density.density / nativeScale; arcHeight = arcWidth
+                        }
                         holder.view = web
                         web.isContextMenuEnabled = false
                         val hold = PauseTransition(Duration.millis(500.0))
@@ -159,19 +185,26 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
                                         .filter { it.hasAttribute("data-wawlink-native-action") }.forEach(::consume)
                                     runCatching { engine.executeScript(featureCardUpdateScript(currentCss, currentData)) }
                                         .onFailure { report("卡片数据更新失败：${it.message}") }
+                                    if (covered) runCatching { frame = holder.captureFrame() }
+                                        .onFailure { report("卡片合成失败：${it.message}") }
                                 }
                                 Worker.State.FAILED -> report("卡片加载失败：${engine.loadWorker.exception?.message}")
                                 else -> Unit
                             }
                         }
-                        scene = Scene(web)
+                        scene = Scene(web).apply { fill = javafx.scene.paint.Color.WHITE }
                         engine.loadContent(featureCardDocument(html, currentCss, currentData, loadedFont, featureDesktopBootstrap() + ";" + symbols), "text/html")
                     } catch (failure: Throwable) { report("无法初始化桌面 WebKit：${failure.message}") }
                 }
             }
-        }, modifier = modifier, update = {
+        }, modifier = Modifier.fillMaxSize(), update = {
             Platform.runLater {
                 if (!holder.disposed.get()) holder.view?.engine?.let { engine ->
+                        holder.view?.apply {
+                            zoom = (density.density / nativeScale).toDouble()
+                            fontScale = density.fontScale.toDouble()
+                            (clip as? Rectangle)?.let { outline -> outline.arcWidth = 56.0 * density.density / nativeScale; outline.arcHeight = outline.arcWidth }
+                        }
                     if (engine.loadWorker.state == Worker.State.SUCCEEDED) {
                         runCatching { engine.executeScript(featureCardUpdateScript(css, data)) }
                             .onFailure { report("卡片数据更新失败：${it.message}") }
@@ -179,6 +212,8 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
                 }
             }
         })
+    }
+    }
     }
 }
 
@@ -199,6 +234,7 @@ private class DesktopFeatureCard {
     var target: EventTarget? = null
     var listener: EventListener? = null
     var stopGestures: (() -> Unit)? = null
+    fun captureFrame(): ImageBitmap? = view?.let { SwingFXUtils.fromFXImage(it.snapshot(null, null), null).toComposeImageBitmap() }
     fun detach() {
         listener?.let { target?.removeEventListener("click", it, true) }
         target = null; listener = null

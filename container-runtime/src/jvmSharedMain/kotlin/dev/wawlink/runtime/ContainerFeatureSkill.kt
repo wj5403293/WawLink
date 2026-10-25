@@ -24,11 +24,15 @@ description: 仅当用户明确要求新增或创建 WawLink 功能页卡片时�
 
 id 只含字母、数字、下划线、短横线，首字符为字母或数字，长度 1–64。card.json 必须为 UTF-8 JSON 对象（不超过 64 KiB），必填 icon、title、description；icon 必须为真实 Google Material Symbols 的小写名称，不使用 emoji、图片或字母代替图标。title 与 description 使用清晰中文。旧清单无需迁移：可选 lifecycle 为 page 或 manual，省略即 page。
 
-可选字段：color 是严格的 #RRGGBB 颜色字符串，未指定时使用应用主题；card 指定功能目录内的相对 HTML 文件路径，不能为绝对路径或含 . / .. 路径段；未指定时自动发现 card.html，文件不存在则使用原生卡片。cardHeight 为整数 dp，默认 120，原生限制到 80–480。showStatus 与 showMemory 为 JSON 布尔值，默认 false，分别在卡片显示真实服务状态、真实监管进程组 RSS。RSS 不可读时显示不可用，不以手机总内存、宿主内存、容器总内存或假数代替。HTML 文件必须是 UTF-8、自包含且不超过 256 KiB；内联 CSS、JS、data URL 资源，不依赖服务已启动或网络 CDN。
+可选字段：color 是严格的 #RRGGBB 颜色字符串，未指定时使用应用主题；card 指定功能目录内的相对 HTML 文件路径，不能为绝对路径或含 . / .. 路径段；未指定时自动发现 card.html，文件不存在则使用原生卡片。cardHeight 为整数 dp，默认 172，原生限制到 80–480，旧清单显式设置的高度继续保留。cardSpan 为整数 1 或 2，默认 1；2 表示占满两列，原生及 HTML 卡片均支持。showStatus 与 showMemory 为 JSON 布尔值，默认 false，分别在原生卡片显示真实服务状态、真实监管进程组 RSS。RSS 不可读时显示不可用，不以手机总内存、宿主内存、容器总内存或假数代替。HTML 文件必须是 UTF-8、自包含且不超过 256 KiB；内联 CSS、JS、data URL 资源，不依赖服务已启动或网络 CDN。发现仍要求 card.json 和 start.sh 都存在，即使卡片只提供脚本或 Lua 动作，也必须提供实际服务所需的 start.sh，不能放入假启动脚本。
 
 不要让目录、清单、HTML、脚本的符号链接逃出该功能目录或当前用户 HOME。启动约定永远是 start.sh，不在清单插入任意 shell 命令、固定端口、host 路径或凭据。原生扫描仅有界读取数据与文件存在性，绝不执行 start.sh/stop.sh、Lua 或卡片 JS；HTML 在卡片显示时才由 Web 渲染器执行，不为显示卡片启动后台服务。原生卡片是默认样式，HTML 卡片仅替换 Functions 页中该功能的卡片区域，不改变容器列表。用户在功能页长按多选、隐藏、排序及覆盖卡片颜色，在应用设置恢复隐藏项；不需要修改 APK、导航、rootfs 或重建容器。
 
-原生卡片顶部为图标和标题同一行、垂直居中，描述文字在下方；不默认附加启动、停止或其他操作按钮。卡片需要哪些按钮、按钮名称及具体功能，应在该卡片设计时按用户需求明确实现；HTML 按钮可调用下述原生动作或 Android LuaJ/系统桥接，不把启停示例当作所有卡片的固定控件。设置卡片底色时，文字和图标默认使用同色系深色，极深底色改用可读的浅色；HTML 可使用 --wawlink-card-color 与 --wawlink-card-foreground，正文及按钮默认继承前景，显式样式仍由卡片作者决定。
+原生卡片默认不附加启动、停止或其他按钮。可选 actions 数组最多三个，超过三个直接拒绝整个清单，不截断；省略或空数组保持无按钮。每个动作必须使用小写字段 id、title、icon、type：id 为 1–64 位小写字母、数字、下划线或短横线，首位为字母或数字，同一卡片不可重复；title 为清晰中文，icon 为真实小写 Material Symbols 名称。type 只能是小写 open（打开服务）、start（启动）、stop（停止）、toggle（按真实状态启停）、logs（查看真实输出）、script（容器脚本）或 lua（Android 原生 LuaJ）。script 动作额外填写 script 相对文件路径，不能绝对、含空路径段或 . / ..；lua 动作额外填写非空内联 lua 源码字符串。不要以按钮标题或 id 推断动作类型，也不要添加用户未要求的动作。
+
+窄卡原生按钮为 1–3 个同宽按钮，不换行；一个或两个显示图标和标题，三个只显示图标但保留可访问性名称；cardSpan=2 的整行卡片按钮显示图标和标题。原生卡片头部按布局使用图标、标题和描述，不要求 HTML 复刻原生布局。设置底色时，文字和图标默认使用同色系深色，极深底色改用可读浅色；HTML 可使用 --wawlink-card-color 与 --wawlink-card-foreground，正文及按钮默认继承前景，显式样式仍由作者决定。
+
+script 动作仅在用户触发时以当前容器配置身份执行声明文件；工作目录是经过当前实际 HOME 校验的原始 HOME/.wawlink/features/<id>，注入 WAWLINK_FEATURE_ID、WAWLINK_FEATURE_DIR、WAWLINK_ACTION_ID。同一动作并发重复点击会拒绝而非排队。脚本不受数据读取命令的 20 秒超时限制；输出、stderr 和非零退出码按真实结果报告。脚本必须留在监管进程组中，不得后台脱离；调用取消、page 生命周期离页、卸载、容器停止和应用关闭都会回收子进程。manual 允许离页持续执行，显式取消或调用方销毁仍会终止，不应依赖页面任务永远存活。lua 动作使用下述相同 Android LuaJ/Java 能力，不在容器中执行、不调用 start.sh，也不伪造桌面支持。
 
 ## 真实服务及生命周期
 
@@ -41,6 +45,8 @@ start.sh 通过 /bin/sh 运行（写 POSIX shell，或由脚本显式 exec 需�
 默认 lifecycle=page：离开功能页面即执行可选 stop.sh 并停止整个服务进程组。只有用户需要跨页面持久运行时才设 lifecycle=manual；离页继续运行，用户在页面或卡片明确停止。两者在容器停止或应用关闭时都回收；不要声称关闭手机进程后还能永久运行。stop.sh 是可选、幂等的收尾，不应再启动服务，读取相同功能/端口/令牌环境；尽快完成。即使 stop.sh 失败，原生仍终止监管进程，并显示停止错误。不得绕开原生监管或重新启动已停止的容器。
 
 ## HTML 卡片与原生操作
+
+HTML 拥有整个卡片区域，不是原生图标标题下的一小块内容。原生不额外添加标题、描述、状态、内边距或动作栏；由 HTML 自行绘制所需信息与按钮。html、body 和根内容使用 width:100%;height:100%;margin:0;box-sizing:border-box，自行设置背景、内边距和布局；不要使用固定像素宽度或假设备边框。父容器负责圆角裁剪，HTML 应铺满到边，不添加外围空隙。cardHeight 决定实际高度，cardSpan 决定占一列或两列；HTML 内部不要自行模拟双卡网格。
 
 HTML 卡片与服务的完整页面均可使用 window.wawlink。卡片初始化后读取 wawlink.card（对象字段 id、status、memoryBytes、containerRunning）；监听 window 的 wawlink-card-update 事件并读取 event.detail，以真实状态更新界面。memoryBytes 为整数或 null，status 为小写的 stopped、starting、running、stopping、failed；不要把 null 当作已测得的零。卡片显示不意味着服务已经启动，不能自行伪造 running。
 
