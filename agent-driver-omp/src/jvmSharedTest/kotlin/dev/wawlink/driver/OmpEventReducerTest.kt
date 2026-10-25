@@ -137,6 +137,36 @@ class OmpEventReducerTest {
         assertEquals(5, group.children.filterIsInstance<ToolNodeItem>().single().elapsedSec)
     }
 
+    @Test fun nestedStreamingAndFinalizationPreservePriorSnapshotsAndMessageOrder() {
+        val thinking = ThinkingNodeItem("omp:1:message:msg-1:block:0", isStreaming = true, text = "Before", startedAtMillis = 1_000L)
+        val tool = ToolNodeItem("nested-tool", titleHtml = "Read", startedAtMillis = 1_000L)
+        val narration = AssistantMessageItem("nested-narration", "Narration", isStreaming = true)
+        val history = StepGroupNodeItem("history", "History", state = NodeStatus.OK, children = listOf(
+            UserMessageItem("history-user", "Original question"), AssistantMessageItem("history-answer", "Original answer"),
+        ))
+        val nested = StepGroupNodeItem("nested", "Nested", children = listOf(thinking, narration, tool))
+        val current = StepGroupNodeItem("current", "Current", children = listOf(UserMessageItem("anchored-user", "Continue"), nested))
+        val captured = listOf(history, current, AssistantMessageItem("last-answer", "Unchanged tail"))
+        val reducer = OmpEventReducer(ChatSessionUiState("session", feed = captured)) { 4_000L }
+        reducer.accept("""{"type":"ready"}""")
+        reducer.updateEvent("""{"type":"thinking_delta","contentIndex":0,"delta":" after"}""")
+        val streaming = reducer.state.feed
+        val streamingNodes = allItems(streaming)
+        assertEquals("Before after", streamingNodes.filterIsInstance<ThinkingNodeItem>().single().text)
+        assertEquals(allItems(captured).map { it.id }, streamingNodes.map { it.id })
+        assertEquals(history, streaming.first())
+        assertEquals("Before", allItems(captured).filterIsInstance<ThinkingNodeItem>().single().text)
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[]}""")
+        val finished = allItems(reducer.state.feed)
+        assertEquals(thinking.copy(text = "Before after", isStreaming = false, elapsedSec = 3), finished.filterIsInstance<ThinkingNodeItem>().single())
+        assertEquals(narration.copy(isStreaming = false), finished.filterIsInstance<AssistantMessageItem>().single { it.id == narration.id })
+        assertEquals(tool.copy(state = NodeStatus.OK, elapsedSec = 3), finished.filterIsInstance<ToolNodeItem>().single())
+        assertTrue(streamingNodes.filterIsInstance<ThinkingNodeItem>().single().isStreaming)
+        assertTrue(streamingNodes.filterIsInstance<AssistantMessageItem>().single { it.id == narration.id }.isStreaming)
+        assertEquals(history, reducer.state.feed.first())
+        assertEquals(allItems(captured).map { it.id }, finished.map { it.id })
+    }
+
     @Test fun unchangedPlansSurviveNewUsersStartsRemindersResultsAndStateSnapshots() {
         val reducer = reducer()
         val tasks = """[{"content":"Read","status":"in_progress"},{"content":"Edit","status":"pending"}]"""

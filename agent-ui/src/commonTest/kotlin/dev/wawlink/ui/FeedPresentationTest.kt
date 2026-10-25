@@ -1,5 +1,10 @@
 package dev.wawlink.ui
 
+import dev.wawlink.protocol.DiffLine
+import dev.wawlink.protocol.DiffLineKind
+import dev.wawlink.protocol.OutputLine
+import dev.wawlink.protocol.ToolDetail
+import dev.wawlink.protocol.ToolNodeItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -20,6 +25,32 @@ class FeedPresentationTest {
         assertEquals(4, runningElapsed(4, 10_000, false, 120_000))
         assertEquals(4, runningElapsed(4, null, true, 120_000))
         assertEquals(4, runningElapsed(4, 10_000, true, 5_000))
+    }
+
+    @Test fun liveElapsedKeepsExactSecondBoundariesAndReportedMinimum() {
+        assertEquals(1, runningElapsed(0, 10_000, true, 11_000))
+        assertEquals(59, runningElapsed(0, 10_000, true, 69_999))
+        assertEquals(60, runningElapsed(0, 10_000, true, 70_000))
+        assertEquals(65, runningElapsed(65, 10_000, true, 70_000))
+        assertEquals(Int.MAX_VALUE, runningElapsed(0, 0, true, Long.MAX_VALUE))
+        assertEquals(0, runningElapsed(-1, 10_000, false, 70_000))
+    }
+
+    @Test fun copyUsesRawThenFullSheetThenCompleteDetailWithoutDisplaySubstitution() {
+        val detail = ToolDetail.CommandAndOutput("printf '原文'", listOf(OutputLine("第一行"), OutputLine("错误", isError = true), OutputLine("")))
+        val node = ToolNodeItem("tool", titleHtml = "命令", detailContent = detail,
+            rawCopyText = "原始\r\n文本\n", fullSheetText = "完整详情\n", codeText = "仅代码", resultText = "额外结果")
+        assertEquals("原始\r\n文本\n", node.copyText())
+        assertEquals("完整详情\n", node.copy(rawCopyText = "").copyText())
+        assertEquals("printf '原文'\n\n第一行\n错误\n", node.copy(rawCopyText = "", fullSheetText = "").copyText())
+        assertEquals(" ", node.copy(rawCopyText = " ").copyText())
+    }
+
+    @Test fun copiedDiffRetainsRawPrefixesRatherThanVisualMinus() {
+        val detail = ToolDetail.DiffBlock(listOf(
+            DiffLine("添加", DiffLineKind.ADDED), DiffLine("移除", DiffLineKind.REMOVED), DiffLine("上下文"),
+        ))
+        assertEquals("+添加\n-移除\n 上下文", ToolNodeItem("diff", titleHtml = "差异", detailContent = detail).copyText())
     }
 
     @Test fun committedMarkdownPrefixRemainsIdenticalWhileTailGrows() {

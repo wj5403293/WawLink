@@ -31,11 +31,14 @@ internal val LocalFeedExpansionInProgress = staticCompositionLocalOf { false }
 internal expect fun feedEpochMillis(): Long
 
 @Composable
-internal fun rememberFeedClock(running: Boolean): State<Long> = produceState(feedEpochMillis(), running) {
-    value = feedEpochMillis()
-    while (running) {
-        delay(250)
+internal fun rememberFeedClock(running: Boolean): State<Long> {
+    val initial = remember { feedEpochMillis() }
+    return produceState(initial, running) {
         value = feedEpochMillis()
+        while (running) {
+            delay(250)
+            value = feedEpochMillis()
+        }
     }
 }
 
@@ -59,16 +62,6 @@ internal fun ThinkingMarkdown(id: String, text: String) {
     }
 }
 
-internal fun flattenedFeed(feed: List<FeedItem>): List<FeedItem> = buildList {
-    fun visit(items: List<FeedItem>) {
-        for (item in items) {
-            add(item)
-            if (item is StepGroupNodeItem) visit(item.children)
-        }
-    }
-    visit(feed)
-}
-
 internal fun FeedItem.isExpanded(expanded: Map<String, Boolean>): Boolean = expanded[id] ?: when (this) {
     is ThinkingNodeItem -> isExpanded
     is ToolNodeItem -> isExpanded
@@ -77,16 +70,6 @@ internal fun FeedItem.isExpanded(expanded: Map<String, Boolean>): Boolean = expa
     else -> false
 }
 
-internal fun visibleFeedNodes(feed: List<FeedItem>, expanded: Map<String, Boolean>, hideTools: Boolean): List<FeedItem> = buildList {
-    fun visit(items: List<FeedItem>) {
-        for (item in items) {
-            if (hideTools && item is ToolNodeItem) continue
-            add(item)
-            if (item is StepGroupNodeItem && item.isExpanded(expanded)) visit(item.children)
-        }
-    }
-    visit(feed)
-}
 
 @Composable
 internal fun ThinkingDetailScreen(id: String, text: String, streaming: Boolean, onBack: () -> Unit) {

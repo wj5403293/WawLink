@@ -860,7 +860,7 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
             when (it) {
                 is ThinkingNodeItem -> if (it.isStreaming) it.copy(isStreaming = false,
                     elapsedSec = it.startedAtMillis?.let { start -> seconds(start) } ?: it.elapsedSec) else it
-                is AssistantMessageItem -> it.copy(isStreaming = false)
+                is AssistantMessageItem -> if (it.isStreaming) it.copy(isStreaming = false) else it
                 is ToolNodeItem -> if (it.state == NodeStatus.RUNNING) it.copy(state = status,
                     elapsedSec = it.startedAtMillis?.let { start -> seconds(start) } ?: it.elapsedSec) else it
                 else -> it
@@ -898,7 +898,13 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
         if (frame.bool("sessionSettled") == true && (!invoked || state.isRunning) && !hasPendingDialog()) settleStatus()
     }
 
-    private fun item(id: String): FeedItem? = allItems(state.feed).firstOrNull { it.id == id }
+    private fun item(id: String, feed: List<FeedItem> = state.feed): FeedItem? {
+        for (node in feed) {
+            if (node.id == id) return node
+            if (node is StepGroupNodeItem) item(id, node.children)?.let { return it }
+        }
+        return null
+    }
     private fun put(value: FeedItem) {
         var found = false
         if (value is ThinkingNodeItem && value.isStreaming && item(value.id) == null) ensureActiveGroup()
@@ -917,8 +923,21 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
             else -> feed + value
         })
     }
-    private fun mapFeed(feed: List<FeedItem>, transform: (FeedItem) -> FeedItem): List<FeedItem> = feed.map {
-        transform(if (it is StepGroupNodeItem) it.copy(children = mapFeed(it.children, transform)) else it)
+    private fun mapFeed(feed: List<FeedItem>, transform: (FeedItem) -> FeedItem): List<FeedItem> {
+        var changed: MutableList<FeedItem>? = null
+        for (index in feed.indices) {
+            val original = feed[index]
+            val node = if (original is StepGroupNodeItem) {
+                val children = mapFeed(original.children, transform)
+                if (children === original.children) original else original.copy(children = children)
+            } else original
+            val mapped = transform(node)
+            if (mapped !== original) {
+                if (changed == null) changed = feed.toMutableList()
+                changed[index] = mapped
+            }
+        }
+        return changed ?: feed
     }
     private fun allItems(feed: List<FeedItem>): Sequence<FeedItem> = sequence {
         for (item in feed) {

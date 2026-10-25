@@ -34,7 +34,10 @@ import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.*
 import kotlinx.coroutines.delay
 
-internal fun plainTitle(html: String) = html.replace(Regex("<[^>]*>"), "").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", "\"")
+private val titleTagPattern = Regex("<[^>]*>")
+private val titleSpanPattern = Regex("<span[^>]*>(.*?)</span>", RegexOption.DOT_MATCHES_ALL)
+
+internal fun plainTitle(html: String) = html.replace(titleTagPattern, "").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", "\"")
 
 @Composable
 private fun nodeTitle(html: String): AnnotatedString {
@@ -42,7 +45,7 @@ private fun nodeTitle(html: String): AnnotatedString {
     return remember(html, color) {
         buildAnnotatedString {
             var end = 0
-            Regex("<span[^>]*>(.*?)</span>", RegexOption.DOT_MATCHES_ALL).findAll(html).forEach { span ->
+            titleSpanPattern.findAll(html).forEach { span ->
                 append(plainTitle(html.substring(end, span.range.first)))
                 withStyle(SpanStyle(color = color, fontWeight = FontWeight.SemiBold)) { append(plainTitle(span.groupValues[1])) }
                 end = span.range.last + 1
@@ -61,22 +64,6 @@ internal fun PlanNodeItem.progressLabel(): String {
     }
 }
 
-/** Observe the whole feed, not recycled rows, so completion is consumed exactly once. */
-internal fun updateGroupExpansion(
-    feed: List<FeedItem>,
-    expanded: MutableMap<String, Boolean>,
-    previouslyRunning: MutableMap<String, Boolean>,
-) {
-    for (item in feed) if (item is StepGroupNodeItem) {
-        val running = item.state == NodeStatus.RUNNING
-        val previous = previouslyRunning[item.id]
-        if (previous != running) {
-            previouslyRunning[item.id] = running
-            if (previous == true && !running) expanded[item.id] = false
-        }
-        updateGroupExpansion(item.children, expanded, previouslyRunning)
-    }
-}
 
 @Composable
 internal fun AgentProgressIndicator(size: androidx.compose.ui.unit.Dp = 20.dp, tint: Color = LocalAgentColors.current.primary) {
@@ -86,8 +73,6 @@ internal fun AgentProgressIndicator(size: androidx.compose.ui.unit.Dp = 20.dp, t
 @Composable
 internal fun NodeStatusLabel(status: NodeStatus, seconds: Int, showTime: Boolean = true, startedAtMillis: Long? = null) {
     val c = LocalAgentColors.current
-    val now = LocalFeedClock.current?.value ?: feedEpochMillis()
-    val time = elapsed(runningElapsed(seconds, startedAtMillis, status == NodeStatus.RUNNING, now))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         when (status) {
             NodeStatus.RUNNING -> AgentProgressIndicator(tint = c.onSurfaceVariant)
@@ -95,8 +80,22 @@ internal fun NodeStatusLabel(status: NodeStatus, seconds: Int, showTime: Boolean
             NodeStatus.ERROR -> Symbol("error", size = 20.dp, tint = c.error, filled = true)
             NodeStatus.STOPPED -> Symbol("stop_circle", size = 20.dp, tint = c.onSurfaceVariant)
         }
-        if (showTime && time.isNotEmpty()) Text(time, fontFamily = LocalAgentMono.current, fontSize = 15.sp, color = c.onSurfaceVariant)
+        if (showTime) NodeElapsedLabel(seconds, startedAtMillis, status == NodeStatus.RUNNING)
     }
+}
+
+@Composable
+private fun NodeElapsedLabel(seconds: Int, startedAtMillis: Long?, running: Boolean) {
+    val time = if (running && startedAtMillis != null) {
+        val clock = LocalFeedClock.current
+        if (clock != null) {
+            val value by remember(seconds, startedAtMillis, clock) {
+                derivedStateOf { elapsed(runningElapsed(seconds, startedAtMillis, true, clock.value)) }
+            }
+            value
+        } else elapsed(runningElapsed(seconds, startedAtMillis, true, feedEpochMillis()))
+    } else elapsed(seconds.coerceAtLeast(0))
+    if (time.isNotEmpty()) Text(time, fontFamily = LocalAgentMono.current, fontSize = 15.sp, color = LocalAgentColors.current.onSurfaceVariant)
 }
 
 @Composable
@@ -233,12 +232,13 @@ private fun ShimmerTitle(text: String) {
 private fun ThinkingTail(text: String) {
     var overflow by remember { mutableStateOf(false) }
     var availableWidth by remember { mutableIntStateOf(0) }
+    val singleLine = remember(text) { text.replace('\n', ' ') }
     Box(Modifier.fillMaxWidth().onSizeChanged { availableWidth = it.width }.graphicsLayer { clip = true; compositingStrategy = CompositingStrategy.Offscreen }
         .drawWithContent {
             drawContent()
             if (overflow) drawRect(Brush.horizontalGradient(listOf(Color.Transparent, Color.Black), endX = 48.dp.toPx()), blendMode = BlendMode.DstIn)
         }) {
-        Text(text.replace('\n', ' '), color = LocalAgentColors.current.onSurfaceVariant, fontSize = 17.sp,
+        Text(singleLine, color = LocalAgentColors.current.onSurfaceVariant, fontSize = 17.sp,
             maxLines = 1, softWrap = false, overflow = TextOverflow.Clip,
             modifier = Modifier.fillMaxWidth().wrapContentWidth(if (overflow) Alignment.End else Alignment.Start, unbounded = true),
             onTextLayout = { overflow = it.size.width > availableWidth })
@@ -305,24 +305,31 @@ private fun Stat(icon: String, prefix: String, count: Int, suffix: String) {
 @Composable
 private fun ToolNode(node: ToolNodeItem, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     val open = expanded[node.id] ?: node.isExpanded
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) { if (copied) { delay(1800); copied = false } }
-    val copyText = node.rawCopyText.ifEmpty { node.fullSheetText.ifEmpty { toolDetailText(node.detailContent) } }
     NodeFrame(node.id, node.icon, node.leadStyle, open, node.titleHtml, { expanded[node.id] = !open },
         status = { NodeStatusLabel(node.state, node.elapsedSec, startedAtMillis = node.startedAtMillis) }, rail = {
             StagedRail(open, 0, "open_in_full", "详情") {
                 val text = node.codeText ?: node.fullSheetText.ifEmpty { toolDetailText(node.detailContent) }
                 onDetail(FeedDetail(node.id, plainTitle(node.titleHtml), text, inferCodeLanguage(node.codeLanguage?.takeUnless { it == "diff" }, node.codePath, text, node.codeInterpreter)))
             }
-            StagedRail(open, 60, if (copied) "check" else "content_copy", if (copied) "已复制" else "复制") {
-                clipboard.setText(AnnotatedString(copyText)); copied = true
-            }
+            ToolCopyRail(node, open)
         }) {
         Expand(!open) { ToolPreviewContent(node) }
         Expand(open) { Box(Modifier.heightIn(min = 150.dp)) { ToolDetailContent(node) } }
     }
 }
+
+@Composable
+private fun ToolCopyRail(node: ToolNodeItem, open: Boolean) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1800); copied = false } }
+    StagedRail(open, 60, if (copied) "check" else "content_copy", if (copied) "已复制" else "复制") {
+        clipboard.setText(AnnotatedString(node.copyText())); copied = true
+    }
+}
+
+internal fun ToolNodeItem.copyText(): String =
+    rawCopyText.ifEmpty { fullSheetText.ifEmpty { toolDetailText(detailContent) } }
 
 @Composable
 private fun StagedRail(open: Boolean, delayMs: Int, icon: String, text: String, onClick: () -> Unit) {

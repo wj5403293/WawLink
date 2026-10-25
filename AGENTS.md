@@ -48,6 +48,7 @@
 - 正文及 Ask 预览中的图片点击进入原生全屏，支持缩放、拖动、复位与保存；PNG/JPEG/GIF/WebP 保存已加载的原始字节，SVG 导出安全校验后的矢量内容。全屏与保存复用已加载内容，不重复请求；取消保存不提示成功，失败可重试。
 - 工具、Todo 与思考的运行耗时实时刷新，结束后固定；不足 1 秒隐藏，1–59 秒显示 `15s`，达到 1 分钟后显示 `1:05`，不显示静止的 `0:00`。
 - 长思考及工具内容展开后，标题滚出可视区时将概况吸附在 Todo 与子任务概况下方；各层可回跳，不遮挡原始标题。思考仅在展开动画期间冻结显示快照，结束后恢复平滑增量输出，复用已完成的 Markdown 段落；阅读、选择或上滑时不强制追尾，全文查看使用 Markdown。
+- 超长聊天性能优化不得通过截断历史或正文、关闭动画、禁用富媒体或删减交互换取性能；保持原有显示、选择复制、展开、吸顶回跳和阅读锚点。流式更新复用未变节点与已完成解析，追尾只滚动实际布局差值，不向 LazyColumn 发送极大滚动距离。
 - LLM 代码块、未展开工具的命令摘要、执行脚本及读取/写入/查找的代码共用成熟库高亮；未知语言保留纯文本。全屏代码只读且可选择、复制原文，Android 使用 Sora Editor 与内置 TextMate 语法、依赖和明暗主题，Desktop 使用原生桌面代码组件，不使用 WebView 冒充 Sora；HTML 中的 JavaScript/CSS 也需高亮。
 - 容器终端使用独立页面与真实 PTY；Android 直接移植 Love2Droid 的 Termux 终端模块、Maple Mono 字体与两行等宽快捷键栏，保留上游许可，不叠加另一套键栏。终端挂载和窗口获焦后建立输入连接，点击终端唤出软键盘，快捷键不抢输入焦点；Desktop 使用成熟终端组件。支持 ANSI、控制键、交互式程序及窗口尺寸更新，离开终端回收其进程。
 - 工具链卡片点击只弹出安装或卸载确认，取消不执行；确认后避免重复触发。同一行卡片按较高内容等高，版本允许换行，Git 仅显示版本号，不重复 `git version`。
@@ -78,12 +79,15 @@
   - 同目录的 `ImageDetailScreen.kt` 提供原生全屏图像、缩放拖动与保存；`RichGraphic.kt` 的 `LocalAgentImageSaveHandler` 由宿主接入系统文档保存，`RichGraphicDocument.kt` 保留校验后的图像字节、MIME 与安全文件名。
   - `src/commonMain/composeResources/files/rich/` 保存 Mermaid 离线引擎、来源与许可证；`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ComposerSlashCommandsTest.kt`、`AskDraftStateTest.kt`、`MarkdownPartsTest.kt` 覆盖命令覆盖优先级、分组作答和富媒体解析边界，`src/desktopTest/kotlin/dev/wawlink/ui/RichGraphicSafetyTest.kt` 覆盖 SVG 主动内容、图像 URI 与重定向边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/FeedPresentation.kt`、`src/jvmSharedMain/kotlin/dev/wawlink/ui/FeedClock.kt` 统一运行耗时、思考稳定展示与详情；`FeedPresentationTest.kt` 覆盖耗时边界，`MarkdownPartsTest.kt` 覆盖稳定 Markdown 段落与代码围栏边界。
+  - 同目录的 `FeedRenderIndex.kt` 按未变对象复用节点索引、根列表投影及吸顶拓扑，滚动时只查询实际测量的候选；`AgentChatScreen.kt` 按可见尾项与底部留白计算有限追尾距离。`src/commonTest/kotlin/dev/wawlink/ui/FeedRenderIndexTest.kt` 覆盖压缩/隐藏、嵌套归属、快照替换、层级变更及吸顶边界。
+  - `Markdown.kt`、`MarkdownParts.kt` 复用流式文本的已完成行、围栏状态与段落，重写/缩短时重新解析；平滑输出只在有待显示文本时唤醒。`MarkdownTest.kt`、`MarkdownPartsTest.kt` 覆盖表格续写、CRLF、围栏、SVG/图片边界及 Unicode 增量。
   - 同目录的 `CodeLanguage.kt`、`HighlightedCode.kt`、`CodeDetailScreen.kt` 提供语言识别、原生高亮与全屏入口；`src/androidMain/kotlin/dev/wawlink/ui/OfflineTextMate.android.kt` 为行内与 Sora 共用离线 TextMate 语法，`CodeDetailScreen.android.kt` 接入只读 Sora；`src/desktopMain/kotlin/dev/wawlink/ui/HighlightedCode.desktop.kt` 与 `CodeDetailScreen.desktop.kt` 接入 RSyntaxTextArea。
   - `src/commonMain/composeResources/files/code/` 保存精确版本来源与许可，`textmate/` 保存语法依赖、主题、索引与哈希；`CodeLanguageTest.kt` 覆盖语言别名、路径选择器和未知语言，`src/androidUnitTest/kotlin/dev/wawlink/ui/OfflineTextMateTokenizerTest.kt` 与 `src/desktopTest/kotlin/dev/wawlink/ui/NativeCodeHighlightTest.kt` 覆盖真实词法器的嵌入语言、多行及颜色边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/AgentManagementScreen.kt` 为新 Agent 设置入口，`ManagementComponents.kt` 提供原型一致的页面、作用域、候选模型链与配置编辑控件；`ManagementAgentsScreen.kt`、`ManagementAdvisorsScreen.kt` 管理定义、运行覆盖及顾问，`ManagementRolesScreen.kt`、`ManagementPoliciesScreen.kt`、`ManagementRuntimeScreen.kt` 分别管理角色、模型策略与原生运行设置，`ManagementNativeProviderScreen.kt` 编辑完整原生服务及模型覆盖。
   - 同目录的 `EditableCodeScreen.kt` 提供带保存与舍弃确认的全屏可编辑原文入口；`src/androidMain/kotlin/dev/wawlink/ui/EditableCodeScreen.android.kt` 接入可编辑 Sora 与既有离线 TextMate，`src/desktopMain/kotlin/dev/wawlink/ui/EditableCodeScreen.desktop.kt` 接入可编辑 RSyntaxTextArea。
   - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除、无效输入和模型子表单状态保存，以及思考默认值的无操作、整段清除、继承与未知字段保留；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
+  - 同目录的 `OmpEventReducer.kt` 缓存带顺序的位置、可见性与叶节点定位，单条增量只替换所属根项和受影响的组；完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考归属。`OmpEventReducerTest.kt` 覆盖嵌套增量/终态不污染旧快照、消息顺序、思考归属及重启代次。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
   - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。
   - 同资源目录的 `clawhub.ts`、`clawhub-http.ts`、`clawhub-source.ts` 提供独立 ClawHub 公开目录、精确版本与完整资源校验、受限联网及作用域安装；`.wawlink-clawhub.json` 只记录安装来源，不认证后续本地编辑内容。

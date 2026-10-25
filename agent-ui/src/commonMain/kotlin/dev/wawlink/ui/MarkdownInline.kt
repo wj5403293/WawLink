@@ -35,21 +35,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isUnspecified
 import androidx.compose.ui.unit.sp
 
+private val inlineContentTag = buildAnnotatedString { appendInlineContent("code", " ") }
+    .getStringAnnotations(0, 1).single().tag
+
 /** Inline replacements annotate the original characters; copying never sees decorative spacing. */
 internal fun inlineCodeContent(text: AnnotatedString, fragments: List<IntRange>): AnnotatedString {
+    if (fragments.isEmpty()) return text
     val builder = AnnotatedString.Builder(text)
     fragments.forEachIndexed { index, range ->
-        val marker = buildAnnotatedString { appendInlineContent("code-$index", text.text.substring(range)) }
-            .getStringAnnotations(0, range.count()).single()
-        builder.addStringAnnotation(marker.tag, marker.item, range.first, range.last + 1)
+        builder.addStringAnnotation(inlineContentTag, "code-$index", range.first, range.last + 1)
     }
     return builder.toAnnotatedString()
 }
 
 internal fun inlineLinkAt(text: AnnotatedString, offset: Int): AnnotatedString.Range<String>? =
-    listOf("FILE", "URL").firstNotNullOfOrNull { tag ->
-        text.getStringAnnotations(tag, offset, offset).firstOrNull { offset >= it.start && offset < it.end }
-    }
+    text.getStringAnnotations("FILE", offset, offset).firstOrNull { offset >= it.start && offset < it.end }
+        ?: text.getStringAnnotations("URL", offset, offset).firstOrNull { offset >= it.start && offset < it.end }
 
 @Composable
 internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, style: TextStyle) {
@@ -57,7 +58,6 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
     val mono = LocalAgentMono.current
     val dark = LocalAgentAppearance.current.darkTheme
     val density = LocalDensity.current
-    val measurer = rememberTextMeasurer()
     val codeSize = (if (style.fontSize.isUnspecified) 18.sp else style.fontSize) * .86f
     val codeStyle = style.copy(
         color = colors.onSurface.copy(alpha = .92f),
@@ -70,6 +70,8 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
         buildInline(text, SpanStyle(color = colors.primary, textDecoration = TextDecoration.Underline),
             SpanStyle(color = colors.onSurface.copy(alpha = .92f), fontFamily = mono, fontSize = codeSize))
     }
+    val codes = remember(annotated) { annotated.getStringAnnotations("CODE", 0, annotated.length) }
+    val measurer = if (codes.isEmpty()) null else rememberTextMeasurer()
     val background = (if (dark) Color.White else colors.onSurface).copy(alpha = if (dark) .10f else .06f)
     val fileHandler = LocalAgentFileLinkHandler.current
     val uri = LocalUriHandler.current
@@ -80,7 +82,7 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
         val available = if (constraints.hasBoundedWidth) (constraints.maxWidth - horizontal * 2).coerceAtLeast(1) else Constraints.Infinity
         val fragments = remember(annotated, codeStyle, available, measurer) {
             buildList {
-                annotated.getStringAnnotations("CODE", 0, annotated.length).forEach { code ->
+                if (measurer != null) codes.forEach { code ->
                     val source = annotated.text.substring(code.start, code.end)
                     val measured = measurer.measure(source, codeStyle, constraints = Constraints(maxWidth = available))
                     var start = 0
@@ -98,7 +100,7 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
                 val source = annotated.text.substring(range)
                 val linked = inlineLinkAt(annotated, range.first)?.tag == "FILE"
                 val fragmentStyle = if (linked) codeStyle.copy(textDecoration = TextDecoration.Underline) else codeStyle
-                val measured = measurer.measure(source, fragmentStyle, softWrap = false)
+                val measured = checkNotNull(measurer).measure(source, fragmentStyle, softWrap = false)
                 "code-$index" to InlineTextContent(
                     Placeholder(
                         width = with(density) { (measured.size.width + horizontal * 2).toSp() },

@@ -26,7 +26,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.geometry.Rect
 import dev.wawlink.protocol.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -59,56 +58,37 @@ fun AgentChatScreen(
         val list = key(state.id) { rememberLazyListState() }
         val expanded = rememberSaveable(state.id, saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
         val previouslyRunning = rememberSaveable(state.id, saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
-        LaunchedEffect(state.id, state.feed) { updateGroupExpansion(state.feed, expanded, previouslyRunning) }
         var settingsMenu by remember { mutableStateOf(false) }
         var detail by remember(state.id) { mutableStateOf<FeedDetail?>(null) }
         var composerHeight by remember { mutableStateOf(156.dp) }
         var followTail by rememberSaveable(state.id) { mutableStateOf(true) }
         val density = LocalDensity.current
-        val nodeBounds = remember(state.id) { mutableStateMapOf<String, Rect>() }
+        val nodeBounds = remember(state.id) { FeedMeasuredBounds() }
         var viewportTop by remember(state.id) { mutableFloatStateOf(0f) }
-        val compactIndex = state.feed.indexOfFirst { it.id == state.compactedThroughId }
         var showCompacted by rememberSaveable(state.id, state.compactedThroughId, appearance.collapseCompacted) { mutableStateOf(!appearance.collapseCompacted) }
+        val feedRenderIndex = remember(state.id) { FeedRenderIndex() }
+        feedRenderIndex.update(state.feed, state.compactedThroughId, showCompacted, appearance.hideToolCalls)
+        LaunchedEffect(state.id, feedRenderIndex.revision) { feedRenderIndex.updateGroupExpansion(expanded, previouslyRunning) }
+        val compactIndex = feedRenderIndex.compactIndex
         val hasCompacted = compactIndex >= 0
-        val visibleFeed = remember(state.feed, appearance.hideToolCalls, showCompacted, compactIndex) {
-            state.feed.drop(if (hasCompacted && !showCompacted) compactIndex + 1 else 0)
-                .filterNot { appearance.hideToolCalls && it is ToolNodeItem }
+        val visibleFeed = feedRenderIndex.visibleFeed
+        val clock = rememberFeedClock(state.isRunning || feedRenderIndex.hasRunningNodes)
+        val measuredPins by remember(feedRenderIndex, feedRenderIndex.topologyRevision, feedRenderIndex.visibilityRevision,
+            feedRenderIndex.projectionRevision, nodeBounds, expanded) {
+            derivedStateOf { feedRenderIndex.measuredPins(nodeBounds.measuredIds(), expanded) }
         }
-        val feedIndex = remember(visibleFeed, hasCompacted) {
-            buildMap { visibleFeed.forEachIndexed { index, item ->
-                flattenedFeed(listOf(item)).forEach { put(it.id, index + if (hasCompacted) 1 else 0) }
-            } }
-        }
-        val allNodes = remember(visibleFeed) { flattenedFeed(visibleFeed) }
-        val itemsById = remember(allNodes) { allNodes.associateBy { it.id } }
-        val visibleNodes = visibleFeedNodes(visibleFeed, expanded, appearance.hideToolCalls)
-        val clock = rememberFeedClock(state.isRunning || allNodes.any {
-            it is ThinkingNodeItem && it.isStreaming || it is ToolNodeItem && it.state == NodeStatus.RUNNING || it is StepGroupNodeItem && it.state == NodeStatus.RUNNING
-        })
-        val plans = remember(visibleFeed) { visibleFeed.filterIsInstance<PlanNodeItem>() }
         val pinHeight = with(density) { 56.dp.toPx() }
         val pinThreshold = with(density) { 8.dp.toPx() }
-        val globalPin by remember(plans, feedIndex, list, pinThreshold) {
-            derivedStateOf {
-                plans.lastOrNull { node ->
-                    val position = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == node.id }
-                    val index = feedIndex[node.id] ?: return@lastOrNull false
-                    position?.let { it.offset + pinThreshold < 0 } ?: (list.firstVisibleItemIndex > index)
-                }
-            }
+        val globalPin by remember(feedRenderIndex, feedRenderIndex.revision, list, pinThreshold) {
+            derivedStateOf { feedRenderIndex.globalPin(list.firstVisibleItemIndex, list.layoutInfo.visibleItemsInfo, pinThreshold) }
         }
         val parentPin by derivedStateOf {
             val line = viewportTop + if (globalPin != null) pinHeight else 0f
-            visibleNodes.filterIsInstance<StepGroupNodeItem>().lastOrNull { node ->
-                node.isExpanded(expanded) && nodeBounds[node.id]?.let { it.top + pinThreshold < line && it.bottom > line + pinHeight } == true
-            }
+            measuredPins.parentPin(nodeBounds, line, pinHeight, pinThreshold)
         }
         val contentPin by derivedStateOf {
             val line = viewportTop + (if (globalPin != null) pinHeight else 0f) + (if (parentPin != null) pinHeight else 0f)
-            visibleNodes.lastOrNull { node ->
-                (node is ThinkingNodeItem || node is ToolNodeItem) && node.isExpanded(expanded) &&
-                    nodeBounds[node.id]?.let { it.top + pinThreshold < line && it.bottom > line + pinHeight } == true
-            }
+            measuredPins.contentPin(nodeBounds, line, pinHeight, pinThreshold)
         }
         LaunchedEffect(list) {
             list.interactionSource.interactions.collect { interaction -> if (interaction is DragInteraction.Start) followTail = false }
@@ -128,12 +108,19 @@ fun AgentChatScreen(
                 if (target != null && target.first > 0) {
                     val last = target.first - 1
                     if (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index != last) list.scrollToItem(last)
-                    list.scrollBy(Float.MAX_VALUE)
+                    val layout = list.layoutInfo
+                    val tail = layout.visibleItemsInfo.lastOrNull()
+                    if (tail?.index == last) {
+                        // A MAX_VALUE scroll can overflow LazyColumn's integer offsets and
+                        // remeasure/dispose the entire history. Only consume actual growth.
+                        val remaining = tail.offset.toFloat() + tail.size - layout.viewportEndOffset + layout.afterContentPadding
+                        if (remaining > 0f) list.scrollBy(remaining)
+                    }
                 }
             }
         }
         fun scrollTo(id: String) {
-            val index = feedIndex[id] ?: return
+            val index = feedRenderIndex.itemIndex(id) ?: return
             followTail = false
             scope.launch {
                 if (nodeBounds[id] == null) {
@@ -141,7 +128,7 @@ fun AgentChatScreen(
                     withFrameNanos { }
                 }
                 val ancestorPins = (if (globalPin != null && globalPin?.id != id) 1 else 0) +
-                    (if (parentPin != null && parentPin?.id != id && itemsById[id] !is PlanNodeItem) 1 else 0)
+                    (if (parentPin != null && parentPin?.id != id && feedRenderIndex[id] !is PlanNodeItem) 1 else 0)
                 nodeBounds[id]?.let { bounds ->
                     list.animateScrollBy(bounds.top - viewportTop - ancestorPins * pinHeight - with(density) { 8.dp.toPx() })
                 }
@@ -149,7 +136,7 @@ fun AgentChatScreen(
         }
         fun anchorFeedItem(id: String) {
             followTail = false
-            val index = feedIndex[id] ?: return
+            val index = feedRenderIndex.itemIndex(id) ?: return
             val owner = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
             val bounds = nodeBounds[id]
             if (owner != null && bounds != null) {
@@ -265,10 +252,10 @@ fun AgentChatScreen(
         }
         detail?.let { request ->
             if (request.markdown) {
-                val thinking = itemsById[request.id] as? ThinkingNodeItem
+                val thinking = feedRenderIndex[request.id] as? ThinkingNodeItem
                 ThinkingDetailScreen(request.id, thinking?.text ?: request.text, thinking?.isStreaming == true, { detail = null })
             } else {
-                val tool = itemsById[request.id] as? ToolNodeItem
+                val tool = feedRenderIndex[request.id] as? ToolNodeItem
                 CodeDetailScreen(request.title, tool?.codeText ?: request.text, request.language, { detail = null })
             }
         }
