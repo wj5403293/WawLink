@@ -10,6 +10,7 @@ internal sealed interface MarkdownPart {
 internal enum class GraphicKind { Svg, Mermaid, Image }
 
 private val openingFence = Regex("^ {0,3}(`{3,}|~{3,})(.*)$")
+private val escapedImageParentheses = Regex("\\\\([()])")
 
 internal fun markdownParts(text: String): List<MarkdownPart> {
     val parts = mutableListOf<MarkdownPart>()
@@ -98,9 +99,14 @@ internal fun markdownParts(text: String): List<MarkdownPart> {
 }
 
 private fun isClosingFence(line: String, marker: String): Boolean {
-    val trimmed = line.trimStart(' ')
-    return line.length - trimmed.length <= 3 && trimmed.takeWhile { it == marker[0] }.length >= marker.length &&
-        trimmed.dropWhile { it == marker[0] }.isBlank()
+    var cursor = 0
+    while (cursor < line.length && line[cursor] == ' ') cursor++
+    if (cursor > 3) return false
+    val start = cursor
+    while (cursor < line.length && line[cursor] == marker[0]) cursor++
+    if (cursor - start < marker.length) return false
+    while (cursor < line.length) if (!line[cursor++].isWhitespace()) return false
+    return true
 }
 
 /** Balanced destinations keep data SVGs and URL parentheses intact; titles aren't part of the URL. */
@@ -128,7 +134,7 @@ private fun imageAt(line: String, start: Int): Pair<Int, Pair<String, String>>? 
         cursor++
     }
     if (cursor == urlStart || cursor >= line.length) return null
-    val url = line.substring(urlStart, cursor).replace(Regex("\\\\([()])"), "$1")
+    val url = line.substring(urlStart, cursor).replace(escapedImageParentheses, "$1")
     if (angled) {
         if (line[cursor] != '>') return null
         cursor++
@@ -152,16 +158,20 @@ internal class StableMarkdownBuffer {
     private var previous = ""
     private var committedThrough = 0
     private val committed = mutableListOf<String>()
+    private var scannedThrough = 0
+    private var fence: String? = null
+    private var svg = false
 
     fun update(text: String): List<String> {
         if (!text.startsWith(previous)) {
             committed.clear()
             committedThrough = 0
+            scannedThrough = 0
+            fence = null
+            svg = false
         }
         previous = text
-        var fence: String? = null
-        var svg = false
-        var lineStart = committedThrough
+        var lineStart = scannedThrough
         while (lineStart < text.length) {
             val end = text.indexOf('\n', lineStart)
             if (end < 0) break
@@ -183,6 +193,7 @@ internal class StableMarkdownBuffer {
             }
             lineStart = end + 1
         }
+        scannedThrough = lineStart
         return buildList {
             addAll(committed)
             if (committedThrough < text.length) add(text.substring(committedThrough))

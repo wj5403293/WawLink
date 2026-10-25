@@ -34,6 +34,7 @@ private val tableDelimiter = Regex(":?-{3,}:?")
 
 /** Separators inside escaped text or a complete code span belong to the cell. */
 internal fun markdownTableCells(line: String): List<String>? {
+    if ('|' !in line) return null
     val separators = mutableListOf<Int>()
     var cursor = 0
     while (cursor < line.length) {

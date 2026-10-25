@@ -24,9 +24,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onPlaced
 import dev.wawlink.protocol.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -65,8 +63,7 @@ fun AgentChatScreen(
         var composerHeight by remember { mutableStateOf(156.dp) }
         var followTail by rememberSaveable(state.id) { mutableStateOf(true) }
         val density = LocalDensity.current
-        val nodeBounds = remember(state.id) { mutableStateMapOf<String, Rect>() }
-        var viewportTop by remember(state.id) { mutableFloatStateOf(0f) }
+        val nodeBounds = remember(state.id) { mutableStateMapOf<String, FeedNodeBounds>() }
         var showCompacted by rememberSaveable(state.id, state.compactedThroughId, appearance.collapseCompacted) { mutableStateOf(!appearance.collapseCompacted) }
         val compactIndex = state.feed.indexOfFirst { it.id == state.compactedThroughId }
         val hasCompacted = compactIndex >= 0
@@ -81,33 +78,63 @@ fun AgentChatScreen(
         }
         val allNodes = remember(visibleFeed) { flattenedFeed(visibleFeed) }
         val itemsById = remember(allNodes) { allNodes.associateBy { it.id } }
-        val visibleNodes = visibleFeedNodes(visibleFeed, expanded, appearance.hideToolCalls)
         val clock = rememberFeedClock(state.isRunning || allNodes.any {
             it is ThinkingNodeItem && it.isStreaming || it is ToolNodeItem && it.state == NodeStatus.RUNNING || it is StepGroupNodeItem && it.state == NodeStatus.RUNNING
         })
         val plans = remember(visibleFeed) { visibleFeed.filterIsInstance<PlanNodeItem>() }
+        val visibleRootRange = remember(list) {
+            derivedStateOf {
+                val rows = list.layoutInfo.visibleItemsInfo
+                if (rows.isEmpty()) IntRange.EMPTY else rows.first().index..rows.last().index
+            }
+        }
+        val pinCandidates = remember(visibleFeed, expanded, appearance.hideToolCalls, hasCompacted, visibleRootRange) {
+            derivedStateOf {
+                val range = visibleRootRange.value
+                val offset = if (hasCompacted) 1 else 0
+                val start = (range.first - offset).coerceIn(0, visibleFeed.size)
+                val end = (range.last + 1 - offset).coerceIn(start, visibleFeed.size)
+                val nodes = visibleFeedNodes(visibleFeed.subList(start, end), expanded, appearance.hideToolCalls)
+                nodes.filterIsInstance<StepGroupNodeItem>().filter { it.isExpanded(expanded) } to
+                    nodes.filter { (it is ThinkingNodeItem || it is ToolNodeItem) && it.isExpanded(expanded) }
+            }
+        }
         val pinHeight = with(density) { 56.dp.toPx() }
         val pinThreshold = with(density) { 8.dp.toPx() }
-        val globalPin by remember(plans, feedIndex, list, pinThreshold) {
+        val globalPinState = remember(plans, feedIndex, list, pinThreshold) {
             derivedStateOf {
-                plans.lastOrNull { node ->
-                    val position = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == node.id }
-                    val index = feedIndex[node.id] ?: return@lastOrNull false
-                    position?.let { it.offset + pinThreshold < 0 } ?: (list.firstVisibleItemIndex > index)
+                val layout = list.layoutInfo
+                var low = 0
+                var high = plans.size
+                while (low < high) {
+                    val middle = (low + high).ushr(1)
+                    val node = plans[middle]
+                    val position = layout.visibleItemsInfo.firstOrNull { it.key == node.id }
+                    val index = feedIndex[node.id] ?: Int.MAX_VALUE
+                    val passed = position?.let { it.offset + pinThreshold < 0 } ?: (list.firstVisibleItemIndex > index)
+                    if (passed) low = middle + 1 else high = middle
+                }
+                plans.getOrNull(low - 1)
+            }
+        }
+        val globalPin by globalPinState
+        val parentPinState = remember(pinCandidates, nodeBounds, globalPinState, pinHeight, pinThreshold) {
+            derivedStateOf {
+                val line = if (globalPin != null) pinHeight else 0f
+                val rows = list.layoutInfo.visibleItemsInfo
+                pinCandidates.value.first.lastOrNull { node ->
+                    nodeBounds[node.id]?.crossesPin(rows, line, pinHeight, pinThreshold) == true
                 }
             }
         }
-        val parentPin by derivedStateOf {
-            val line = viewportTop + if (globalPin != null) pinHeight else 0f
-            visibleNodes.filterIsInstance<StepGroupNodeItem>().lastOrNull { node ->
-                node.isExpanded(expanded) && nodeBounds[node.id]?.let { it.top + pinThreshold < line && it.bottom > line + pinHeight } == true
-            }
-        }
-        val contentPin by derivedStateOf {
-            val line = viewportTop + (if (globalPin != null) pinHeight else 0f) + (if (parentPin != null) pinHeight else 0f)
-            visibleNodes.lastOrNull { node ->
-                (node is ThinkingNodeItem || node is ToolNodeItem) && node.isExpanded(expanded) &&
-                    nodeBounds[node.id]?.let { it.top + pinThreshold < line && it.bottom > line + pinHeight } == true
+        val parentPin by parentPinState
+        val contentPinState = remember(pinCandidates, nodeBounds, globalPinState, parentPinState, pinHeight, pinThreshold) {
+            derivedStateOf {
+                val line = (if (globalPin != null) pinHeight else 0f) + (if (parentPin != null) pinHeight else 0f)
+                val rows = list.layoutInfo.visibleItemsInfo
+                pinCandidates.value.second.lastOrNull { node ->
+                    nodeBounds[node.id]?.crossesPin(rows, line, pinHeight, pinThreshold) == true
+                }
             }
         }
         LaunchedEffect(list) {
@@ -143,14 +170,15 @@ fun AgentChatScreen(
             val index = feedIndex[id] ?: return
             followTail = false
             scope.launch {
-                if (nodeBounds[id] == null) {
+                if (nodeBounds[id] == null || list.layoutInfo.visibleItemsInfo.none { it.index == index }) {
                     list.animateScrollToItem(index)
                     withFrameNanos { }
                 }
                 val ancestorPins = (if (globalPin != null && globalPin?.id != id) 1 else 0) +
                     (if (parentPin != null && parentPin?.id != id && itemsById[id] !is PlanNodeItem) 1 else 0)
                 nodeBounds[id]?.let { bounds ->
-                    list.animateScrollBy(bounds.top - viewportTop - ancestorPins * pinHeight - with(density) { 8.dp.toPx() })
+                    val owner = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == bounds.ownerId }
+                    if (owner != null) list.animateScrollBy(owner.offset + bounds.top - ancestorPins * pinHeight - with(density) { 8.dp.toPx() })
                 }
             }
         }
@@ -161,8 +189,8 @@ fun AgentChatScreen(
             val bounds = nodeBounds[id]
             if (owner != null && bounds != null) {
                 val pinned = (if (globalPin != null) pinHeight else 0f) + (if (parentPin != null) pinHeight else 0f)
-                val top = bounds.top - viewportTop
-                val inOwner = top - owner.offset
+                val top = owner.offset + bounds.top
+                val inOwner = bounds.top
                 val target = top.coerceAtLeast(pinned + with(density) { 8.dp.toPx() })
                 // Apply with the new page's measurement, before a shorter page can clamp the old offset.
                 list.requestScrollToItem(index, (inOwner - target).roundToInt())
@@ -195,7 +223,7 @@ fun AgentChatScreen(
                             }
                         }
                     }
-                    Box(Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { viewportTop = it.positionInRoot().y }) {
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
                         LazyColumn(state = list, modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(top = 8.dp, bottom = composerHeight + 20.dp)) {
                             if (hasCompacted) item(key = "compacted-history") {
@@ -211,11 +239,15 @@ fun AgentChatScreen(
                                 var entered by rememberSaveable(item.id) { mutableStateOf(item is UserMessageItem) }
                                 LaunchedEffect(item.id) { entered = true }
                                 val enter by animateFloatAsState(if (entered) 1f else 0f, tween(600, easing = EmphDecelEasing))
+                                val root = remember(item.id) { FeedRootCoordinates(item.id) }
                                 Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 20.dp).animateItem(
-                                    fadeInSpec = if (item is UserMessageItem) null else tween(600, easing = EmphDecelEasing), placementSpec = null, fadeOutSpec = tween(200, easing = EmphAccelEasing)).graphicsLayer {
+                                    fadeInSpec = if (item is UserMessageItem) null else tween(600, easing = EmphDecelEasing), placementSpec = null, fadeOutSpec = tween(200, easing = EmphAccelEasing))
+                                    .onPlaced { root.coordinates = it }.graphicsLayer {
                                         translationY = (1f - enter) * with(density) { 24.dp.toPx() }; scaleX = .98f + .02f * enter; scaleY = scaleX
                                     }) {
-                                    FeedNode(item, controller, expanded) { request -> followTail = false; detail = request }
+                                    CompositionLocalProvider(LocalFeedRootCoordinates provides root) {
+                                        FeedNode(item, controller, expanded) { request -> followTail = false; detail = request }
+                                    }
                                 }
                             }
                             if (state.error != null) item(key = "session-error") {
@@ -226,33 +258,11 @@ fun AgentChatScreen(
                                 }
                             }
                         }
-                        // Overlay pins do not change feed height; streaming cannot create a sticky-header feedback loop.
-                        Column(Modifier.fillMaxWidth().align(Alignment.TopCenter).background(barColor)) {
-                            PinSlot(globalPin != null) {
-                                globalPin?.let { node ->
-                                    PinRow("checklist", node.progressLabel(), true, progress = node.progress(),
-                                        status = { NodeStatusLabel(if (node.steps.all { it.state == StepState.COMPLETED }) NodeStatus.OK else if (state.isRunning) NodeStatus.RUNNING else NodeStatus.STOPPED, 0, false) }) { scrollTo(node.id) }
-                                }
-                            }
-                            PinSlot(parentPin != null) {
-                                parentPin?.let { node ->
-                                    PinRow(node.icon, node.title, false, stats = node.stats,
-                                        status = { NodeStatusLabel(node.state, node.elapsedSec, startedAtMillis = node.startedAtMillis) }) { scrollTo(node.id) }
-                                }
-                            }
-                            PinSlot(contentPin != null) {
-                                contentPin?.let { node ->
-                                    val thinking = node as? ThinkingNodeItem
-                                    val tool = node as? ToolNodeItem
-                                    PinRow(if (thinking != null) "psychology" else tool?.icon ?: "code", if (thinking != null) "思考" else plainTitle(tool?.titleHtml.orEmpty()), false,
-                                        onCollapse = { followTail = false; expanded[node.id] = false; scrollTo(node.id) },
-                                        status = {
-                                            if (thinking != null) NodeStatusLabel(if (thinking.isStreaming) NodeStatus.RUNNING else NodeStatus.OK, thinking.elapsedSec, startedAtMillis = thinking.startedAtMillis)
-                                            else if (tool != null) NodeStatusLabel(tool.state, tool.elapsedSec, startedAtMillis = tool.startedAtMillis)
-                                        }) { scrollTo(node.id) }
-                                }
-                            }
-                        }
+                        // Geometry invalidates this small overlay, never the whole chat/composer scope.
+                        FeedPins(globalPinState, parentPinState, contentPinState, state.isRunning,
+                            Modifier.fillMaxWidth().align(Alignment.TopCenter).background(barColor),
+                            onScrollTo = { scrollTo(it) },
+                            onCollapse = { id -> followTail = false; expanded[id] = false; scrollTo(id) })
                         if (visibleFeed.isEmpty() && !hasCompacted && state.error == null) Column(Modifier.align(Alignment.Center).padding(bottom = composerHeight), horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Symbol("neurology", size = 40.dp, tint = c.primary)
@@ -277,6 +287,52 @@ fun AgentChatScreen(
             } else {
                 val tool = itemsById[request.id] as? ToolNodeItem
                 CodeDetailScreen(request.title, tool?.codeText ?: request.text, request.language, { detail = null })
+            }
+        }
+    }
+}
+
+private fun FeedNodeBounds.crossesPin(rows: List<LazyListItemInfo>, line: Float, height: Float, threshold: Float): Boolean {
+    val offset = rows.firstOrNull { it.key == ownerId }?.offset ?: return false
+    return offset + top + threshold < line && offset + bottom > line + height
+}
+
+@Composable
+private fun FeedPins(
+    global: State<PlanNodeItem?>,
+    parent: State<StepGroupNodeItem?>,
+    content: State<FeedItem?>,
+    running: Boolean,
+    modifier: Modifier,
+    onScrollTo: (String) -> Unit,
+    onCollapse: (String) -> Unit,
+) {
+    val globalPin by global
+    val parentPin by parent
+    val contentPin by content
+    Column(modifier) {
+        PinSlot(globalPin != null) {
+            globalPin?.let { node ->
+                PinRow("checklist", node.progressLabel(), true, progress = node.progress(),
+                    status = { NodeStatusLabel(if (node.steps.all { it.state == StepState.COMPLETED }) NodeStatus.OK else if (running) NodeStatus.RUNNING else NodeStatus.STOPPED, 0, false) }) { onScrollTo(node.id) }
+            }
+        }
+        PinSlot(parentPin != null) {
+            parentPin?.let { node ->
+                PinRow(node.icon, node.title, false, stats = node.stats,
+                    status = { NodeStatusLabel(node.state, node.elapsedSec, startedAtMillis = node.startedAtMillis) }) { onScrollTo(node.id) }
+            }
+        }
+        PinSlot(contentPin != null) {
+            contentPin?.let { node ->
+                val thinking = node as? ThinkingNodeItem
+                val tool = node as? ToolNodeItem
+                PinRow(if (thinking != null) "psychology" else tool?.icon ?: "code", if (thinking != null) "思考" else plainTitle(tool?.titleHtml.orEmpty()), false,
+                    onCollapse = { onCollapse(node.id) },
+                    status = {
+                        if (thinking != null) NodeStatusLabel(if (thinking.isStreaming) NodeStatus.RUNNING else NodeStatus.OK, thinking.elapsedSec, startedAtMillis = thinking.startedAtMillis)
+                        else if (tool != null) NodeStatusLabel(tool.state, tool.elapsedSec, startedAtMillis = tool.startedAtMillis)
+                    }) { onScrollTo(node.id) }
             }
         }
     }

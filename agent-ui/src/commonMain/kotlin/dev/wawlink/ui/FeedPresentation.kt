@@ -11,7 +11,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.wawlink.protocol.*
-import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -23,8 +23,17 @@ internal data class FeedDetail(
     val markdown: Boolean = false,
 )
 
+/** Relative to the owning lazy row; scrolling does not mutate every descendant's snapshot. */
+internal data class FeedNodeBounds(val ownerId: String, val top: Float, val bottom: Float)
+
+internal class FeedRootCoordinates(val ownerId: String) {
+    var coordinates: LayoutCoordinates? = null
+}
+
+internal val LocalFeedRootCoordinates = staticCompositionLocalOf<FeedRootCoordinates?> { null }
+
 internal val LocalFeedClock = staticCompositionLocalOf<State<Long>?> { null }
-internal val LocalFeedBounds = staticCompositionLocalOf<MutableMap<String, Rect>?> { null }
+internal val LocalFeedBounds = staticCompositionLocalOf<MutableMap<String, FeedNodeBounds>?> { null }
 internal val LocalFeedInteraction = staticCompositionLocalOf<() -> Unit> { {} }
 internal val LocalFeedItemNavigation = staticCompositionLocalOf<(String) -> Unit> { { _ -> } }
 internal val LocalFeedExpansionInProgress = staticCompositionLocalOf { false }

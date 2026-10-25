@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import dev.wawlink.ui.resources.Res
 import java.util.Base64
 import javafx.animation.KeyFrame
 import javafx.animation.Timeline
@@ -27,6 +28,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.floatOrNull
@@ -34,6 +37,14 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+private val mermaidEngineLock = Mutex()
+private var mermaidEngine: String? = null
+
+internal actual suspend fun mermaidEngineScript(): String = mermaidEngineLock.withLock {
+    mermaidEngine ?: ("<script>" + Res.readBytes("files/rich/mermaid.min.js").decodeToString()
+        .replace("</script", "<\\/script", ignoreCase = true) + "</script>").also { mermaidEngine = it }
+}
 
 @Composable
 internal actual fun PlatformRichGraphic(html: String, modifier: Modifier, onResult: (Float?, String?) -> Unit) {

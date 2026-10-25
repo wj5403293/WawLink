@@ -29,11 +29,23 @@ import org.eclipse.tm4e.core.registry.IRegistryOptions
 import org.eclipse.tm4e.core.registry.IThemeSource
 import org.eclipse.tm4e.core.registry.Registry
 
-/** Immutable bundled bytes are shared, but mutable TM4E state is confined to one document/job. */
+/** Bundled bytes are shared; inline registries are serialized, and native editors own analyzers. */
 internal object BundledTextMate {
     private const val root = "files/code/textmate/"
     private val mutex = Mutex()
     private var resources: Map<String, ByteArray>? = null
+    private val highlightMutex = Mutex()
+    private var lightHighlighter: OfflineTextMateTokenizer? = null
+    private var darkHighlighter: OfflineTextMateTokenizer? = null
+
+    /** Inline jobs share two confined registries; native editors still own separate analyzers. */
+    suspend fun highlight(dark: Boolean, language: String, text: String): AnnotatedString = highlightMutex.withLock {
+        val cached = if (dark) darkHighlighter else lightHighlighter
+        val lexer = cached ?: tokenizer(dark).also {
+            if (dark) darkHighlighter = it else lightHighlighter = it
+        }
+        lexer.highlight(language, text)
+    }
 
     suspend fun tokenizer(dark: Boolean): OfflineTextMateTokenizer {
         val bytes = mutex.withLock {
@@ -159,5 +171,5 @@ internal class OfflineTextMateTokenizer(index: String, private val readResource:
 
 internal actual suspend fun highlightPlatformCode(text: String, language: String, colors: AgentColorScheme): AnnotatedString =
     withContext(Dispatchers.Default) {
-        BundledTextMate.tokenizer(colors.surface.luminance() < 0.5f).highlight(language, text)
+        BundledTextMate.highlight(colors.surface.luminance() < 0.5f, language, text)
     }

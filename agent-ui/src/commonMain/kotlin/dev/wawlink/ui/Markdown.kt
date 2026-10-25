@@ -16,6 +16,14 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.withContext
 
 /** Resolve model-authored file links in the host's current session, never as host file:// URIs. */
 val LocalAgentFileLinkHandler = staticCompositionLocalOf<((String) -> Unit)?> { null }
@@ -30,7 +38,7 @@ fun SkillContentPreview(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** Pace only the pending suffix; expansion pauses preserve the already visible prefix. */
+/** Pace pending output only; an idle stream does no polling or repeated full-prefix comparison. */
 @Composable
 internal fun streamedText(text: String, streaming: Boolean, paused: Boolean = false): String {
     val smooth = LocalAgentAppearance.current.smoothStreaming
@@ -39,27 +47,87 @@ internal fun streamedText(text: String, streaming: Boolean, paused: Boolean = fa
     SideEffect { if (!paused && (!streaming || !smooth)) visible = text }
     LaunchedEffect(streaming, smooth, paused) {
         if (paused) return@LaunchedEffect
-        while (streaming && smooth) {
-            val target = latest
-            if (!target.startsWith(visible)) visible = target
-            else if (visible.length < target.length) {
-                val count = ((target.length - visible.length) / 8).coerceIn(1, 64)
-                var end = (visible.length + count).coerceAtMost(target.length)
-                if (end < target.length && target[end - 1].isHighSurrogate() && target[end].isLowSurrogate()) end++
-                visible = target.take(end)
-            }
-            delay(32)
+        if (!streaming || !smooth) {
+            visible = latest
+            return@LaunchedEffect
         }
-        visible = latest
+        coroutineScope {
+            val updates = Channel<String>(Channel.CONFLATED)
+            launch(start = CoroutineStart.UNDISPATCHED) {
+                snapshotFlow { latest }.collect { updates.send(it) }
+            }
+            var target = visible
+            try {
+                while (true) {
+                    if (visible.length >= target.length) {
+                        target = updates.receive()
+                        if (!target.startsWith(visible)) visible = target
+                    } else {
+                        delay(32)
+                        updates.tryReceive().getOrNull()?.let { next ->
+                            target = next
+                            if (!target.startsWith(visible)) visible = target
+                        }
+                        if (visible.length < target.length) {
+                            val count = ((target.length - visible.length) / 8).coerceIn(1, 64)
+                            var end = (visible.length + count).coerceAtMost(target.length)
+                            if (end < target.length && target[end - 1].isHighSurrogate() && target[end].isLowSurrogate()) end++
+                            visible = target.substring(0, end)
+                        }
+                    }
+                }
+            } finally {
+                updates.cancel()
+            }
+        }
     }
     return if (paused || streaming && smooth) visible else text
 }
 
+private val markdownParsing = Dispatchers.Default.limitedParallelism(2)
+private data class ParsedMarkdown(val source: String, val parts: List<MarkdownPart>)
+
+/** One current result and one conflated pending source; no retained parser or character builder. */
+@Composable
+private fun preparedMarkdownParts(text: String): List<MarkdownPart>? {
+    val latest by rememberUpdatedState(text)
+    val prepared by produceState<ParsedMarkdown?>(null) {
+        snapshotFlow { latest }.conflate().collect { source ->
+            val parts = withContext(markdownParsing) { markdownParts(source) }
+            if (latest === source || latest.startsWith(source)) value = ParsedMarkdown(source, parts)
+        }
+    }
+    val current = prepared ?: return null
+    return current.parts.takeIf { text === current.source || text.startsWith(current.source) }
+}
+
+internal fun markdownHorizontalRule(line: String): Boolean {
+    fun whitespace(ch: Char) = ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\u000b' || ch == '\u000c'
+    var cursor = 0
+    while (cursor < line.length && whitespace(line[cursor])) cursor++
+    if (cursor > 3 || cursor == line.length) return false
+    val marker = line[cursor]
+    if (marker != '-' && marker != '*' && marker != '_') return false
+    var count = 0
+    while (cursor < line.length) {
+        val ch = line[cursor++]
+        if (ch == marker) count++ else if (!whitespace(ch)) return false
+    }
+    return count >= 3
+}
+private val headingLine = Regex("^(#{1,6})\\s+(.*)$")
+private val bulletLine = Regex("^(\\s*)([-+*]|\\d+[.)])\\s+(.*)$")
+private val checkboxLine = Regex("^\\[([ xX])]\\s+(.*)$")
+
 @Composable
 internal fun Markdown(text: String, modifier: Modifier = Modifier) {
-    val parts = remember(text) { markdownParts(text) }
+    // Short committed paragraphs stay cheap; only large blocks need a worker/queue.
+    val parts = if (text.length <= 4096) remember(text) { markdownParts(text) } else preparedMarkdownParts(text)
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        parts.forEach { part ->
+        if (parts == null) Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+        }
+        parts?.forEach { part ->
             when (part) {
                 is MarkdownPart.Text -> if (part.text.isNotBlank()) PlainMarkdown(part.text)
                 is MarkdownPart.Code -> MarkdownCode(part)
@@ -101,45 +169,52 @@ private fun PlainMarkdown(text: String, modifier: Modifier = Modifier) {
             var index = 0
             while (index < lines.size) {
                 val line = lines[index]
-                val table = remember(lines, index) { markdownTable(lines, index) }
-                when {
-                    line.matches(Regex("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$")) -> HorizontalDivider(color = c.outlineVariant)
-                    table != null -> {
-                        MarkdownTable(table)
-                        index = table.nextLine
-                        continue
-                    }
-                    line.isBlank() -> Spacer(Modifier.height(2.dp))
-                    else -> {
-                        val heading = Regex("^(#{1,6})\\s+(.*)$").find(line)
-                        val bullet = Regex("^(\\s*)([-+*]|\\d+[.)])\\s+(.*)$").find(line)
-                        val quote = line.startsWith(">")
-                        val body = when {
-                            heading != null -> heading.groupValues[2]
-                            bullet != null -> bullet.groupValues[3]
-                            quote -> line.removePrefix(">").trimStart()
-                            else -> line
-                        }
-                        val prefix = bullet?.let { if (it.groupValues[2].first().isDigit()) it.groupValues[2] else "•" }
-                        Row(Modifier.fillMaxWidth().then(if (quote) Modifier.background(c.surfaceContainerLow, RoundedCornerShape(6.dp)).padding(12.dp) else Modifier)) {
-                            if (prefix != null) Text(prefix, Modifier.padding(start = (bullet.groupValues[1].length * 4).dp, end = 10.dp), fontSize = 18.sp)
-                            val checkbox = Regex("^\\[([ xX])]\\s+(.*)$").find(body)
-                            if (checkbox != null) {
-                                Symbol(if (checkbox.groupValues[1].isBlank()) "check_box_outline_blank" else "check_box", tint = c.primary)
-                                Spacer(Modifier.width(8.dp))
-                            }
-                            InlineMarkdownText(checkbox?.groupValues?.get(2) ?: body,
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    color = if (quote) c.onSurfaceVariant else c.onSurface,
-                                    fontSize = if (heading != null) (28 - heading.groupValues[1].length * 2).coerceAtLeast(18).sp else 18.sp,
-                                    fontWeight = if (heading != null) FontWeight.Bold else FontWeight.Normal))
-                        }
-                    }
+                val table = if ('|' in line) remember(lines, index) { markdownTable(lines, index) } else null
+                if (markdownHorizontalRule(line)) {
+                    HorizontalDivider(color = c.outlineVariant)
+                } else if (table != null) {
+                    MarkdownTable(table)
+                    index = table.nextLine
+                    continue
+                } else {
+                    PlainMarkdownLine(line)
                 }
                 index++
             }
         }
+    }
+}
+
+@Composable
+private fun PlainMarkdownLine(line: String) {
+    val c = LocalAgentColors.current
+    if (line.isBlank()) {
+        Spacer(Modifier.height(2.dp))
+        return
+    }
+    val heading = remember(line) { headingLine.find(line) }
+    val bullet = remember(line) { bulletLine.find(line) }
+    val quote = line.startsWith(">")
+    val body = when {
+        heading != null -> heading.groupValues[2]
+        bullet != null -> bullet.groupValues[3]
+        quote -> line.removePrefix(">").trimStart()
+        else -> line
+    }
+    val prefix = bullet?.let { if (it.groupValues[2].first().isDigit()) it.groupValues[2] else "•" }
+    Row(Modifier.fillMaxWidth().then(if (quote) Modifier.background(c.surfaceContainerLow, RoundedCornerShape(6.dp)).padding(12.dp) else Modifier)) {
+        if (prefix != null) Text(prefix, Modifier.padding(start = (bullet.groupValues[1].length * 4).dp, end = 10.dp), fontSize = 18.sp)
+        val checkbox = remember(body) { checkboxLine.find(body) }
+        if (checkbox != null) {
+            Symbol(if (checkbox.groupValues[1].isBlank()) "check_box_outline_blank" else "check_box", tint = c.primary)
+            Spacer(Modifier.width(8.dp))
+        }
+        InlineMarkdownText(checkbox?.groupValues?.get(2) ?: body,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyLarge.copy(
+                color = if (quote) c.onSurfaceVariant else c.onSurface,
+                fontSize = if (heading != null) (28 - heading.groupValues[1].length * 2).coerceAtLeast(18).sp else 18.sp,
+                fontWeight = if (heading != null) FontWeight.Bold else FontWeight.Normal))
     }
 }
 

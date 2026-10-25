@@ -7,6 +7,7 @@ import dev.wawlink.runtime.ContainerFileService
 import dev.wawlink.runtime.installContainerFeatureSkill
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.charset.CodingErrorAction
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
@@ -1321,7 +1322,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val recorded = JsonObject(frame + ("_wawlinkAtMillis" to JsonPrimitive(System.currentTimeMillis())))
             val file = eventJournal
             file.parentFile.mkdirs()
-            file.appendText(recorded.toString() + "\n", Charsets.UTF_8)
+            FileOutputStream(file, true).bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.write(recorded.toString())
+                writer.write('\n'.code)
+            }
             return recorded
         }
 

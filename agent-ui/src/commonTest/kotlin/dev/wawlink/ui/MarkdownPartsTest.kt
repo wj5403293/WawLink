@@ -80,4 +80,23 @@ class MarkdownPartsTest {
         assertEquals(null, part.language)
     }
 
+    @Test fun growingFenceKeepsCompletedParagraphsAndResetsOnRewrite() {
+        val buffer = StableMarkdownBuffer()
+        val prefix = "前文\n\n```kotlin\nval a = 1\n"
+        val first = buffer.update(prefix)
+        assertEquals(listOf("前文\n\n", "```kotlin\nval a = 1\n"), first)
+        assertEquals(first, buffer.update(prefix))
+        assertEquals(listOf("前文\n\n", "```kotlin\nval a = 1\n```\n\n", "后文"),
+            buffer.update(prefix + "```\n\n后文"))
+        assertEquals(listOf("新文\n\n", "结尾"), buffer.update("新文\n\n结尾"))
+        assertEquals(listOf("前文\n\n", "```kotlin\nval a = 1\n"), first)
+    }
+
+    @Test fun streamedSvgDoesNotSplitAtInteriorBlankLines() {
+        val buffer = StableMarkdownBuffer()
+        val prefix = "<svg>\r\n\r\n<path d=\"M0 0L1 1\"/>\r\n"
+        assertEquals(listOf(prefix), buffer.update(prefix))
+        assertEquals(listOf(prefix + "</svg>\r\n\r\n", "正文"), buffer.update(prefix + "</svg>\r\n\r\n正文"))
+    }
+
 }

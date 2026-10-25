@@ -39,8 +39,18 @@ internal fun placeUserMessage(feed: List<FeedItem>, user: UserMessageItem, posit
  * blocked stays pending, abandoned completes, auto preserves the last effective fixed level.
  */
 class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long = System::currentTimeMillis) {
+    private class FeedLocation(val index: Int, val parent: FeedLocation?, var node: FeedItem)
+    private val feedLocations = HashMap<String, FeedLocation>()
+    private var indexedFeed: List<FeedItem>? = null
+
     var state: ChatSessionUiState = initial
-        private set
+        private set(value) {
+            if (indexedFeed !== value.feed) {
+                feedLocations.clear()
+                indexedFeed = null
+            }
+            field = value
+        }
 
     private var generation = 0L
     private var sequence = 0L
@@ -237,7 +247,7 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
         if (event != null) assistantEvent(id, event, message)
         else if (message != null) snapshot(id, message, type == "message_end")
         if (type == "message_end") {
-            if (message != null) snapshot(id, message, true)
+            if (event != null && message != null) snapshot(id, message, true)
             messageStack.remove(id)
             currentMessage = messageStack.lastOrNull()
         }
@@ -370,14 +380,15 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
         }
     }
 
-    private fun tool(callId: String, name: String, args: JsonObject, intent: String? = null, historical: Boolean = false): ToolRecord {
+    private fun tool(callId: String, name: String, args: JsonObject, intent: String? = null, historical: Boolean = false,
+        renderExisting: Boolean = true): ToolRecord {
         val key = "omp:$generation:tool:$callId"
         val old = tools[key]
         if (old != null) {
             if (name.isNotEmpty()) old.name = name
             if (args.isNotEmpty()) old.args = args
             if (intent != null) old.intent = intent
-            renderTool(old, intent = intent)
+            if (renderExisting) renderTool(old, intent = intent)
             return old
         }
         val record = ToolRecord(key, name, args, if (historical) null else eventTimeMillis)
@@ -398,7 +409,8 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
 
     private fun toolFrame(frame: JsonObject, historical: Boolean = false) {
         val callId = frame.string("toolCallId") ?: return
-        val record = tool(callId, frame.string("toolName").orEmpty(), frame.obj("args") ?: JsonObject(emptyMap()), frame.string("intent"), historical)
+        val record = tool(callId, frame.string("toolName").orEmpty(), frame.obj("args") ?: JsonObject(emptyMap()),
+            frame.string("intent"), historical, renderExisting = false)
         val type = frame.string("type")
         if (type == "tool_execution_start" && !record.executionStarted && !record.finished) {
             record.startedAt = eventTimeMillis
@@ -477,13 +489,15 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
     }
 
     private fun toolNode(record: ToolRecord, error: Boolean = false, intent: String? = null): ToolNodeItem {
-        val command = record.args.string("command") ?: record.args.string("code") ?: record.args.toString()
-        val path = record.args.string("path") ?: record.args.string("file_path")
         val shell = record.name == "bash" || record.name == "python"
+        val suppliedCommand = record.args.string("command") ?: record.args.string("code")
+        val argumentsText = if (shell && suppliedCommand != null) "" else record.args.toString()
+        val command = suppliedCommand ?: argumentsText
+        val path = record.args.string("path") ?: record.args.string("file_path")
         val output = record.output
         val failed = error || record.failed
         val detail = if (shell) ToolDetail.CommandAndOutput(command, output.lines().map { OutputLine(it, failed) })
-            else ToolDetail.PlainText(listOf(record.args.toString(), output).filter { it.isNotEmpty() }.joinToString("\n\n"))
+            else ToolDetail.PlainText(listOf(argumentsText, output).filter { it.isNotEmpty() }.joinToString("\n\n"))
         val details = record.details
         val codePath = details?.string("path") ?: path
         val interpreter = record.args.string("interpreter") ?: when (record.name) {
@@ -506,9 +520,9 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
             titleHtml = escape(intent ?: record.intent ?: record.name),
             state = record.terminalStatus ?: if (!record.finished && record.startedAt != null) NodeStatus.RUNNING else if (failed) NodeStatus.ERROR else NodeStatus.OK,
             elapsedSec = record.elapsedSec ?: record.startedAt?.let { seconds(it, record.finishedAt ?: eventTimeMillis) } ?: 0,
-            previewContent = if (path != null) pathPreview(path) else ToolPreview.CommandOneLine(if (shell) command else record.args.toString()),
+            previewContent = if (path != null) pathPreview(path) else ToolPreview.CommandOneLine(if (shell) command else argumentsText),
             detailContent = detail, rawCopyText = if (output.isEmpty()) command else output,
-            fullSheetText = if (shell) "$command\n\n$output" else listOf(record.args.toString(), output).joinToString("\n\n"),
+            fullSheetText = if (shell) "$command\n\n$output" else listOf(argumentsText, output).joinToString("\n\n"),
             startedAtMillis = record.startedAt,
             codeLanguage = if (diff != null) "diff" else details?.string("language") ?: record.args.string("language"),
             codePath = codePath, codeInterpreter = interpreter, codeText = codeText,
@@ -898,30 +912,93 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
         if (frame.bool("sessionSettled") == true && (!invoked || state.isRunning) && !hasPendingDialog()) settleStatus()
     }
 
-    private fun item(id: String, feed: List<FeedItem> = state.feed): FeedItem? {
-        for (node in feed) {
-            if (node.id == id) return node
-            if (node is StepGroupNodeItem) item(id, node.children)?.let { return it }
-        }
-        return null
+    private fun ensureFeedLocations() {
+        if (indexedFeed === state.feed) return
+        feedLocations.clear()
+        indexFeedLocations(state.feed, null)
+        indexedFeed = state.feed
     }
+
+    private fun indexFeedLocations(feed: List<FeedItem>, parent: FeedLocation?) {
+        for (index in feed.indices) {
+            val node = feed[index]
+            val location = FeedLocation(index, parent, node)
+            feedLocations[node.id] = location
+            if (node is StepGroupNodeItem) indexFeedLocations(node.children, location)
+        }
+    }
+
+    private fun removeFeedLocations(node: FeedItem) {
+        feedLocations.remove(node.id)
+        if (node is StepGroupNodeItem) node.children.forEach(::removeFeedLocations)
+    }
+
+    private fun item(id: String): FeedItem? {
+        ensureFeedLocations()
+        return feedLocations[id]?.node
+    }
+
+    /** Copies only the changed node's ancestor lists; location records never escape the reducer. */
+    private fun replaceFeedItem(location: FeedLocation, value: FeedItem) {
+        val original = location.node
+        if (original == value) return
+        val previousChildren = (original as? StepGroupNodeItem)?.children.orEmpty()
+        val children = (value as? StepGroupNodeItem)?.children.orEmpty()
+        if (previousChildren !== children) {
+            // Remove all changed positions before adding them, so a reorder cannot remove a new entry.
+            for (index in previousChildren.indices) {
+                if (previousChildren[index] !== children.getOrNull(index)) removeFeedLocations(previousChildren[index])
+            }
+            for (index in children.indices) {
+                if (children[index] !== previousChildren.getOrNull(index)) {
+                    val child = children[index]
+                    val childLocation = FeedLocation(index, location, child)
+                    feedLocations[child.id] = childLocation
+                    if (child is StepGroupNodeItem) indexFeedLocations(child.children, childLocation)
+                }
+            }
+        }
+        location.node = value
+        var current = location
+        var replacement = value
+        while (true) {
+            val parent = current.parent
+            val siblings = (parent?.node as? StepGroupNodeItem)?.children ?: state.feed
+            val feed = siblings.toMutableList().apply { set(current.index, replacement) }
+            if (parent == null) {
+                indexedFeed = feed
+                state = state.copy(feed = feed)
+                return
+            }
+            replacement = (parent.node as StepGroupNodeItem).copy(children = feed)
+            parent.node = replacement
+            current = parent
+        }
+    }
+
     private fun put(value: FeedItem) {
-        var found = false
-        if (value is ThinkingNodeItem && value.isStreaming && item(value.id) == null) ensureActiveGroup()
-        val feed = mapFeed(state.feed) { if (it.id == value.id) { found = true; value } else it }
-        if (!found && value is UserMessageItem) planAfterUser = true
-        val group = if (!found && value is ThinkingNodeItem) activeGroup?.let { item(it) as? StepGroupNodeItem } else null
-        state = state.copy(feed = when {
-            found -> feed
-            value is UserMessageItem -> {
-                reserveUserPosition(value.id)
-                placeUserMessage(state.feed, value, userPositions.getValue(value.id), userPositions)
-            }
-            group != null -> mapFeed(feed) {
-                if (it is StepGroupNodeItem && it.id == group.id) it.copy(children = it.children + value) else it
-            }
-            else -> feed + value
-        })
+        ensureFeedLocations()
+        feedLocations[value.id]?.let { replaceFeedItem(it, value); return }
+        if (value is ThinkingNodeItem && value.isStreaming) ensureActiveGroup()
+        if (value is UserMessageItem) {
+            planAfterUser = true
+            reserveUserPosition(value.id)
+            // Anchored insertion can shift existing positions; the state setter invalidates the index.
+            state = state.copy(feed = placeUserMessage(state.feed, value, userPositions.getValue(value.id), userPositions))
+            return
+        }
+        val groupLocation = if (value is ThinkingNodeItem) activeGroup?.let { feedLocations[it] } else null
+        val group = groupLocation?.node as? StepGroupNodeItem
+        if (groupLocation != null && group != null) {
+            replaceFeedItem(groupLocation, group.copy(children = group.children + value))
+        } else {
+            val feed = state.feed + value
+            val location = FeedLocation(state.feed.size, null, value)
+            feedLocations[value.id] = location
+            if (value is StepGroupNodeItem) indexFeedLocations(value.children, location)
+            indexedFeed = feed
+            state = state.copy(feed = feed)
+        }
     }
     private fun mapFeed(feed: List<FeedItem>, transform: (FeedItem) -> FeedItem): List<FeedItem> {
         var changed: MutableList<FeedItem>? = null

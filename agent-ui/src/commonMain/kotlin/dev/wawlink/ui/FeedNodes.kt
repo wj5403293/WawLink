@@ -19,8 +19,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
@@ -164,9 +163,10 @@ private fun NodeFrame(nodeId: String, icon: String, lead: LeadStyle, open: Boole
     content: @Composable ColumnScope.() -> Unit) {
     val c = LocalAgentColors.current
     val bounds = LocalFeedBounds.current
+    val root = LocalFeedRootCoordinates.current
     val onInteract = LocalFeedInteraction.current
     val toggle = onToggle?.let { action -> { onInteract(); action() } }
-    DisposableEffect(nodeId, bounds) { onDispose { bounds?.remove(nodeId) } }
+    DisposableEffect(nodeId, bounds, root) { onDispose { bounds?.remove(nodeId) } }
     val radius by animateDpAsState(if (open) 24.dp else 14.dp, tween(450, easing = EmphEasing))
     val colors = when (lead) {
         LeadStyle.DARK -> c.onSurface to c.surface
@@ -175,8 +175,15 @@ private fun NodeFrame(nodeId: String, icon: String, lead: LeadStyle, open: Boole
         LeadStyle.WARN -> c.warnContainer to if (LocalAgentAppearance.current.darkTheme) c.onSurface else Color(0xFF2E1500)
     }
     Row(Modifier.fillMaxWidth().onGloballyPositioned { coordinates ->
-        val origin = coordinates.positionInRoot()
-        bounds?.set(nodeId, Rect(origin.x, origin.y, origin.x + coordinates.size.width, origin.y + coordinates.size.height))
+        val owner = root?.coordinates
+        if (bounds != null && root != null && owner != null && owner.isAttached && coordinates.isAttached) {
+            val top = owner.localPositionOf(coordinates, Offset.Zero).y
+            val bottom = top + coordinates.size.height
+            val previous = bounds[nodeId]
+            if (previous == null || previous.ownerId != root.ownerId || previous.top != top || previous.bottom != bottom) {
+                bounds[nodeId] = FeedNodeBounds(root.ownerId, top, bottom)
+            }
+        }
     }, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.width(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(48.dp).clip(RoundedCornerShape(radius)).background(colors.first)
@@ -216,7 +223,6 @@ private fun Expand(visible: Boolean, transition: MutableTransitionState<Boolean>
 @Composable
 private fun ThinkingNode(node: ThinkingNodeItem, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     val open = expanded[node.id] ?: node.isExpanded
-    val c = LocalAgentColors.current
     val expansion = remember(node.id) { MutableTransitionState(open) }
     expansion.targetState = open
     val text = streamedText(node.text, node.isStreaming, paused = !expansion.isIdle || LocalFeedExpansionInProgress.current)
@@ -225,8 +231,7 @@ private fun ThinkingNode(node: ThinkingNodeItem, expanded: MutableMap<String, Bo
         rail = { StagedRail(open, 0, "open_in_full", "全屏") { onDetail(FeedDetail(node.id, "思考", node.text, markdown = true)) } },
         titleContent = { if (node.isStreaming) ShimmerTitle("思考中") else Text("思考", fontSize = 19.sp, fontWeight = FontWeight.Bold) }) {
         Expand(!open) {
-            if (node.isStreaming) ThinkingTail(text)
-            else Text(text, color = c.onSurfaceVariant, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            ThoughtPreview(text, tail = node.isStreaming)
         }
         Expand(open, expansion) { ThinkingMarkdown(node.id, text) }
     }
@@ -245,22 +250,6 @@ private fun ShimmerTitle(text: String) {
         onTextLayout = { width = it.size.width.toFloat() })
 }
 
-@Composable
-private fun ThinkingTail(text: String) {
-    var overflow by remember { mutableStateOf(false) }
-    var availableWidth by remember { mutableIntStateOf(0) }
-    val singleLine = remember(text) { text.replace('\n', ' ') }
-    Box(Modifier.fillMaxWidth().onSizeChanged { availableWidth = it.width }.graphicsLayer { clip = true; compositingStrategy = CompositingStrategy.Offscreen }
-        .drawWithContent {
-            drawContent()
-            if (overflow) drawRect(Brush.horizontalGradient(listOf(Color.Transparent, Color.Black), endX = 48.dp.toPx()), blendMode = BlendMode.DstIn)
-        }) {
-        Text(singleLine, color = LocalAgentColors.current.onSurfaceVariant, fontSize = 17.sp,
-            maxLines = 1, softWrap = false, overflow = TextOverflow.Clip,
-            modifier = Modifier.fillMaxWidth().wrapContentWidth(if (overflow) Alignment.End else Alignment.Start, unbounded = true),
-            onTextLayout = { overflow = it.size.width > availableWidth })
-    }
-}
 
 @Composable
 private fun PlanNode(node: PlanNodeItem, expanded: MutableMap<String, Boolean>) {

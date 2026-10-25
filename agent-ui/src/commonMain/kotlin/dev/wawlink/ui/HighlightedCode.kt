@@ -19,6 +19,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -69,11 +71,11 @@ private object CodeHighlightCache {
     private var characters = 0
     private const val maxCharacters = 512_000
 
-    suspend fun highlight(text: String, language: String?, colors: AgentColorScheme): AnnotatedString {
-        if (language == null) return AnnotatedString(text)
+    suspend fun highlight(text: String, language: String?, colors: AgentColorScheme): AnnotatedString = withContext(Dispatchers.Default) {
+        if (language == null) return@withContext AnnotatedString(text)
         val key = HighlightKey(text, language, colors)
         mutex.withLock {
-            entries.remove(key)?.let { entries[key] = it; return it }
+            entries.remove(key)?.let { entries[key] = it; return@withContext it }
         }
         val result = highlightPlatformCode(text, language, colors)
         currentCoroutineContext().ensureActive()
@@ -88,7 +90,7 @@ private object CodeHighlightCache {
                 }
             }
         }
-        return result
+        result
     }
 }
 

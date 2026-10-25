@@ -79,8 +79,8 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     }.stateIn(scope, SharingStarted.Eagerly, null)
     private val _busy = MutableStateFlow(0)
     val busy: StateFlow<Int> = _busy.asStateFlow()
-    val sessions = combine(records, sessionStates) { items, states ->
-        items.sortedByDescending { it.updatedAt }.map { item -> HomeSession(item, (states[item.id] ?: ChatSessionUiState(item.id)).copy(title = item.title, workspace = item.workspace)) }
+    val sessions = combine(records.map { items -> items.sortedByDescending { it.updatedAt } }, sessionStates) { items, states ->
+        items.map { item -> HomeSession(item, (states[item.id] ?: ChatSessionUiState(item.id)).copy(title = item.title, workspace = item.workspace)) }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
     val active = combine(runtime.containers, runtime.deployments, sessions, busy) { containers, deployments, sessions, busy ->
         containers.any { it.running } || deployments.any { it.error == null && it.progress < 1f } || sessions.any { it.state.isRunning } || busy > 0
@@ -334,7 +334,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         observers[id] = scope.launch {
             controller.state.collect { state ->
                 sessionStates.update { it + (id to state) }
-                val becameDurable = hasAcceptedMessage(state.feed) && provisionalSessions.remove(id)
+                val becameDurable = id in provisionalSessions && hasAcceptedMessage(state.feed) && provisionalSessions.remove(id)
                 if (becameDurable) backgroundDrafts.remove(id)
                 val latest = latestUserId(state.feed)
                 val userChanged = latest != null && latest != lastUser

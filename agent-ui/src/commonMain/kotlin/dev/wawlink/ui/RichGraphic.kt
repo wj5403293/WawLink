@@ -36,14 +36,20 @@ private fun Color.cssColor() = "#" + (toArgb() and 0xffffff).toString(16).padSta
 internal fun RichGraphic(graphic: MarkdownPart.Graphic, modifier: Modifier = Modifier) {
     val colors = LocalAgentColors.current
     val svgRasterizer = rememberSvgRasterizer()
-    val theme = RichGraphicTheme(colors.onSurface.cssColor(), colors.surfaceContainerLow.cssColor(), colors.primary.cssColor())
-    var prepared by remember(graphic, theme) { mutableStateOf<PreparedGraphic?>(null) }
-    var failure by remember(graphic, theme) { mutableStateOf<String?>(null) }
-    var loading by remember(graphic, theme) { mutableStateOf(true) }
-    var height by remember(graphic) { mutableStateOf(96f) }
-    var retry by remember(graphic) { mutableStateOf(0) }
-    var expanded by remember(graphic) { mutableStateOf(false) }
-    LaunchedEffect(graphic, theme, retry) {
+    val theme = remember(colors.onSurface, colors.surfaceContainerLow, colors.primary) {
+        RichGraphicTheme(colors.onSurface.cssColor(), colors.surfaceContainerLow.cssColor(), colors.primary.cssColor())
+    }
+    var prepared by remember(graphic.kind, graphic.source) { mutableStateOf<PreparedGraphic?>(null) }
+    var failure by remember(graphic.kind, graphic.source) { mutableStateOf<String?>(null) }
+    var loading by remember(graphic.kind, graphic.source) { mutableStateOf(true) }
+    var height by remember(graphic.kind, graphic.source) { mutableStateOf(96f) }
+    var retry by remember(graphic.kind, graphic.source) { mutableStateOf(0) }
+    var expanded by remember(graphic.kind, graphic.source) { mutableStateOf(false) }
+    LaunchedEffect(graphic.kind, graphic.source, theme, retry, svgRasterizer) {
+        // Native raster pixels do not depend on the chat theme or the image description.
+        val current = prepared
+        if (current is PreparedGraphic.Raster && current.mimeType != "image/svg+xml") return@LaunchedEffect
+        prepared = null
         loading = true
         failure = null
         try {
@@ -103,6 +109,9 @@ internal expect fun rememberSvgRasterizer(): suspend (String) -> ImageBitmap
 
 internal expect suspend fun prepareRichGraphic(graphic: MarkdownPart.Graphic, theme: RichGraphicTheme, svgRasterizer: suspend (String) -> ImageBitmap): PreparedGraphic
 
-/** The host only displays the self-contained trusted document; it never resolves model URLs. */
+/** Supplies only the bundled, app-owned Mermaid engine; never model-authored script. */
+internal expect suspend fun mermaidEngineScript(): String
+
+/** The host displays only trusted offline documents/resources; it never resolves model URLs. */
 @Composable
 internal expect fun PlatformRichGraphic(html: String, modifier: Modifier, onResult: (Float?, String?) -> Unit)

@@ -7,6 +7,7 @@ import androidx.compose.ui.text.font.FontWeight
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 class MarkdownTest {
     private fun inline(text: String) = buildInline(text, SpanStyle(), SpanStyle(fontFamily = FontFamily.Monospace))
@@ -117,5 +118,15 @@ class MarkdownTest {
         assertEquals(null, markdownTable(listOf("`only|code`", "--- | ---"), 0))
         assertEquals(listOf("A", "B"), markdownTableCells("A | B"))
         assertEquals(listOf("`unclosed", "B"), markdownTableCells("`unclosed | B"))
+    }
+
+    @Test fun longHorizontalRulesAndInvalidMixedDelimitersKeepTheirMeaning() {
+        assertTrue(markdownHorizontalRule("  " + "* ".repeat(20_000)))
+        assertTrue(markdownHorizontalRule("---"))
+        assertTrue(markdownHorizontalRule("\t _\t_ _\r"))
+        assertFalse(markdownHorizontalRule("    ---"))
+        assertFalse(markdownHorizontalRule("--"))
+        assertFalse(markdownHorizontalRule("*-*"))
+        assertFalse(markdownHorizontalRule("_ ".repeat(20_000) + "x"))
     }
 }

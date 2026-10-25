@@ -71,18 +71,19 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
             SpanStyle(color = colors.onSurface.copy(alpha = .92f), fontFamily = mono, fontSize = codeSize))
     }
     val codes = remember(annotated) { annotated.getStringAnnotations("CODE", 0, annotated.length) }
-    val measurer = if (codes.isEmpty()) null else rememberTextMeasurer()
+    if (codes.isEmpty()) {
+        MarkdownText(annotated, modifier, style)
+        return
+    }
+    val measurer = rememberTextMeasurer(cacheSize = 2)
     val background = (if (dark) Color.White else colors.onSurface).copy(alpha = if (dark) .10f else .06f)
-    val fileHandler = LocalAgentFileLinkHandler.current
-    val uri = LocalUriHandler.current
-    val externalContent = LocalMarkdownExternalContent.current
     BoxWithConstraints(modifier) {
         val horizontal = with(density) { 5.dp.roundToPx() }
         val vertical = with(density) { 3.dp.roundToPx() }
         val available = if (constraints.hasBoundedWidth) (constraints.maxWidth - horizontal * 2).coerceAtLeast(1) else Constraints.Infinity
         val fragments = remember(annotated, codeStyle, available, measurer) {
             buildList {
-                if (measurer != null) codes.forEach { code ->
+                codes.forEach { code ->
                     val source = annotated.text.substring(code.start, code.end)
                     val measured = measurer.measure(source, codeStyle, constraints = Constraints(maxWidth = available))
                     var start = 0
@@ -100,7 +101,7 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
                 val source = annotated.text.substring(range)
                 val linked = inlineLinkAt(annotated, range.first)?.tag == "FILE"
                 val fragmentStyle = if (linked) codeStyle.copy(textDecoration = TextDecoration.Underline) else codeStyle
-                val measured = checkNotNull(measurer).measure(source, fragmentStyle, softWrap = false)
+                val measured = measurer.measure(source, fragmentStyle, softWrap = false)
                 "code-$index" to InlineTextContent(
                     Placeholder(
                         width = with(density) { (measured.size.width + horizontal * 2).toSp() },
@@ -116,23 +117,45 @@ internal fun InlineMarkdownText(text: String, modifier: Modifier = Modifier, sty
                 }
             }.toMap()
         }
-        var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-        BasicText(
-            text = displayed,
-            modifier = Modifier.fillMaxWidth().pointerInput(displayed, fileHandler, uri, externalContent) {
-                detectTapGestures { position ->
-                    if (!externalContent) return@detectTapGestures
-                    val result = layout ?: return@detectTapGestures
-                    val placeholder = result.placeholderRects.indexOfFirst { it?.contains(position) == true }
-                    val offset = if (placeholder >= 0) fragments[placeholder].first else result.getOffsetForPosition(position)
-                    inlineLinkAt(annotated, offset)?.let { link ->
-                        if (link.tag == "FILE") fileHandler?.invoke(link.item) else uri.openUri(link.item)
-                    }
-                }
-            },
-            style = style,
-            inlineContent = content,
-            onTextLayout = { layout = it },
-        )
+        MarkdownText(displayed, Modifier, style, fragments, content)
     }
+}
+
+/** Ordinary paragraphs need neither a subcomposition nor a text-layout observer. */
+@Composable
+private fun MarkdownText(
+    text: AnnotatedString,
+    modifier: Modifier,
+    style: TextStyle,
+    fragments: List<IntRange> = emptyList(),
+    content: Map<String, InlineTextContent> = emptyMap(),
+) {
+    val externalContent = LocalMarkdownExternalContent.current
+    val interactive = remember(text, externalContent) {
+        externalContent && (text.getStringAnnotations("FILE", 0, text.length).isNotEmpty() ||
+            text.getStringAnnotations("URL", 0, text.length).isNotEmpty())
+    }
+    if (!interactive) {
+        BasicText(text, modifier.fillMaxWidth(), style = style, inlineContent = content)
+        return
+    }
+    val fileHandler = LocalAgentFileLinkHandler.current
+    val uri = LocalUriHandler.current
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    BasicText(
+        text = text,
+        modifier = modifier.fillMaxWidth().pointerInput(text, fragments, fileHandler, uri) {
+            detectTapGestures { position ->
+                val result = layout ?: return@detectTapGestures
+                val placeholder = result.placeholderRects.indexOfFirst { it?.contains(position) == true }
+                val offset = if (placeholder >= 0) fragments[placeholder].first else result.getOffsetForPosition(position)
+                inlineLinkAt(text, offset)?.let { link ->
+                    if (link.tag == "FILE") fileHandler?.invoke(link.item) else uri.openUri(link.item)
+                }
+            }
+        },
+        style = style,
+        inlineContent = content,
+        onTextLayout = { layout = it },
+    )
 }

@@ -1,7 +1,6 @@
 package dev.wawlink.ui
 
 import androidx.compose.ui.graphics.ImageBitmap
-import dev.wawlink.ui.resources.Res
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
@@ -12,8 +11,6 @@ import javax.xml.transform.OutputKeys
 import javax.xml.transform.TransformerFactory
 import javax.xml.transform.dom.DOMSource
 import javax.xml.transform.stream.StreamResult
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import org.xml.sax.SAXException
@@ -21,13 +18,6 @@ import org.xml.sax.SAXException
 internal const val MAX_GRAPHIC_BYTES = 8 * 1024 * 1024
 private const val MAX_SVG_BYTES = 1024 * 1024
 private const val MAX_MERMAID_CHARS = 50_000
-private val engineLock = Mutex()
-private var engine: String? = null
-
-private suspend fun mermaidEngine(): String = engineLock.withLock {
-    engine ?: Res.readBytes("files/rich/mermaid.min.js").decodeToString()
-        .replace("</script", "<\\/script", ignoreCase = true).also { engine = it }
-}
 
 internal actual suspend fun prepareRichGraphic(graphic: MarkdownPart.Graphic, theme: RichGraphicTheme, svgRasterizer: suspend (String) -> ImageBitmap): PreparedGraphic {
     if (graphic.kind != GraphicKind.Mermaid) {
@@ -52,7 +42,7 @@ private suspend fun richGraphicDocument(graphic: MarkdownPart.Graphic, theme: Ri
         }
         content = "<div id=graphic></div>"
         val source = Base64.getEncoder().encodeToString(graphic.source.toByteArray(Charsets.UTF_8))
-        engineScript = mermaidEngine()
+        engineScript = mermaidEngineScript()
         javascript = """
             mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'base',
               maxTextSize:$MAX_MERMAID_CHARS,maxEdges:500,htmlLabels:false,
@@ -102,7 +92,7 @@ private suspend fun richGraphicDocument(graphic: MarkdownPart.Graphic, theme: Ri
         append("""
         <!doctype html><html><head><meta charset=utf-8>
         <meta name=viewport content="width=device-width,initial-scale=1">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://wawlink.invalid/mermaid.min.js; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
         <style>
           :root{--fg:${theme.foreground};--foreground:${theme.foreground};--bg:${theme.background};--background:${theme.background};--surface:${theme.background};--primary:${theme.accent};--accent:${theme.accent};color:${theme.foreground};background:${theme.background};color-scheme:light;}
           html,body{margin:0;padding:0;font-family:sans-serif;overflow:auto;}
@@ -124,8 +114,9 @@ private suspend fun richGraphicDocument(graphic: MarkdownPart.Graphic, theme: Ri
           window.addEventListener('resize',function(){if(rendered)measure();});
           setTimeout(function(){if(!finished)failed();},20000);
         """.trimIndent())
-        append('\n')
+        append("\n</script>\n")
         engineScript?.let { append(it); append('\n') }
+        append("<script>\n")
         append(javascript)
         append("</script></body></html>")
     }
@@ -230,7 +221,7 @@ private fun detectImageType(bytes: ByteArray, declared: String?): String? {
         starts(255, 216, 255) -> "image/jpeg"
         bytes.size >= 6 && bytes.copyOfRange(0, 6).toString(Charsets.US_ASCII) in setOf("GIF87a", "GIF89a") -> "image/gif"
         bytes.size >= 12 && bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" && bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WEBP" -> "image/webp"
-        declared == "image/svg+xml" || bytes.take(512).toByteArray().toString(Charsets.UTF_8).trimStart('\uFEFF', ' ', '\n', '\r', '\t').let { it.startsWith("<svg") || it.startsWith("<?xml") } -> "image/svg+xml"
+        declared == "image/svg+xml" || String(bytes, 0, minOf(512, bytes.size), Charsets.UTF_8).trimStart('\uFEFF', ' ', '\n', '\r', '\t').let { it.startsWith("<svg") || it.startsWith("<?xml") } -> "image/svg+xml"
         else -> null
     }
 }
@@ -267,17 +258,24 @@ private val svgElements = setOf(
 )
 private val localUrl = Regex("url\\(\\s*['\"]?#[\\w:.-]+['\"]?\\s*\\)", RegexOption.IGNORE_CASE)
 private val unsafeCss = Regex("url\\s*\\(|@|\\\\|/\\*|expression\\s*\\(|javascript\\s*:", RegexOption.IGNORE_CASE)
+private val svgDeclarations = Regex("<!\\s*(DOCTYPE|ENTITY)", RegexOption.IGNORE_CASE)
+private val localSvgReference = Regex("#[\\w:.-]+")
+private val svgNamespaces = setOf(null, "http://www.w3.org/2000/svg")
+private val svgAttributeNamespaces = setOf(null, "http://www.w3.org/1999/xlink", "http://www.w3.org/XML/1998/namespace", "http://www.w3.org/2000/xmlns/")
+private val svgDeclaredNamespaces = setOf("http://www.w3.org/2000/svg", "http://www.w3.org/1999/xlink")
+private val forbiddenSvgAttributes = setOf("base", "src", "srcset")
 /** Reject rather than silently stripping active content. Parsed XML catches entities and mixed-case attributes. */
 internal fun safeSvg(source: String, theme: RichGraphicTheme): String {
-    require(source.toByteArray(Charsets.UTF_8).size <= MAX_SVG_BYTES) { "图形 SVG 过大（最多 1 MiB）" }
-    require(!Regex("<!\\s*(DOCTYPE|ENTITY)", RegexOption.IGNORE_CASE).containsMatchIn(source)) { "图形 SVG 不允许文档类型或实体声明" }
+    val sourceBytes = source.toByteArray(Charsets.UTF_8)
+    require(sourceBytes.size <= MAX_SVG_BYTES) { "图形 SVG 过大（最多 1 MiB）" }
+    require(!svgDeclarations.containsMatchIn(source)) { "图形 SVG 不允许文档类型或实体声明" }
     val factory = DocumentBuilderFactory.newInstance().apply {
         isNamespaceAware = true
         isExpandEntityReferences = false
     }
     val builder = factory.newDocumentBuilder()
     builder.setEntityResolver { _, _ -> throw SAXException("external entity") }
-    val document = try { builder.parse(ByteArrayInputStream(source.toByteArray(Charsets.UTF_8))) }
+    val document = try { builder.parse(ByteArrayInputStream(sourceBytes)) }
         catch (_: Exception) { error("图形 SVG 格式无效") }
     var documentChild = document.firstChild
     while (documentChild != null) {
@@ -287,24 +285,24 @@ internal fun safeSvg(source: String, theme: RichGraphicTheme): String {
         documentChild = documentChild.nextSibling
     }
     val root = document.documentElement
-    require(root.localName == "svg" && root.namespaceURI in setOf(null, "http://www.w3.org/2000/svg")) { "图形必须是 SVG 文档" }
+    require(root.localName == "svg" && root.namespaceURI in svgNamespaces) { "图形必须是 SVG 文档" }
     var nodes = 0
     fun checkCss(value: String) {
         require(!unsafeCss.containsMatchIn(localUrl.replace(value, ""))) { "图形 SVG 不允许外部样式或资源引用" }
     }
     fun visit(element: Element, depth: Int) {
         require(++nodes <= 10_000 && depth <= 64) { "图形 SVG 结构过于复杂" }
-        require(element.localName in svgElements && element.namespaceURI in setOf(null, "http://www.w3.org/2000/svg")) { "图形 SVG 包含不安全或不支持的元素" }
+        require(element.localName in svgElements && element.namespaceURI in svgNamespaces) { "图形 SVG 包含不安全或不支持的元素" }
         val attributes = element.attributes
         for (index in 0 until attributes.length) {
             val attribute = attributes.item(index)
             val name = (attribute.localName ?: attribute.nodeName).lowercase()
             val value = attribute.nodeValue.trim()
-            require(!name.startsWith("on") && name !in setOf("base", "src", "srcset")) { "图形 SVG 不允许脚本或外部资源" }
-            require(attribute.namespaceURI in setOf(null, "http://www.w3.org/1999/xlink", "http://www.w3.org/XML/1998/namespace", "http://www.w3.org/2000/xmlns/")) { "图形 SVG 属性命名空间不受支持" }
-            if (name == "href") require(value.matches(Regex("#[\\w:.-]+"))) { "图形 SVG 只能引用文档内元素" }
+            require(!name.startsWith("on") && name !in forbiddenSvgAttributes) { "图形 SVG 不允许脚本或外部资源" }
+            require(attribute.namespaceURI in svgAttributeNamespaces) { "图形 SVG 属性命名空间不受支持" }
+            if (name == "href") require(localSvgReference.matches(value)) { "图形 SVG 只能引用文档内元素" }
             if (attribute.nodeName == "xmlns" || attribute.prefix == "xmlns") {
-                require(value in setOf("http://www.w3.org/2000/svg", "http://www.w3.org/1999/xlink")) { "图形 SVG 命名空间不受支持" }
+                require(value in svgDeclaredNamespaces) { "图形 SVG 命名空间不受支持" }
             } else checkCss(value)
         }
         if (element.localName == "style") checkCss(element.textContent)
