@@ -10,6 +10,7 @@
 - 文字只保留大号 UI 内容或标题；不添加小号卡片说明、装饰性文本或非必要装饰元素。
 - 不得擅自修改既有显示样式；主页、聊天与框架设置的视觉及非线性动画以 `ref-plan/ref-home.html`、`ref-plan/ref-coding-agent-ui.html`、`ref-plan/ref-agent-setting.html` 为准，新增 Agent 设置以 `ref-plan/agent-settings.html` 为准，功能遵循 `ref-plan/plan.md`。
 - 插件与技能管理分别严格遵循 `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 的布局、控件和非线性交互，不做视觉简化；原型紫色替换为当前主题色，演示数据、模拟加载与假重载不进入实现。
+- Session 历史树与运行时 Agent Hub 分别严格遵循 `ref-plan/session-history.html`、`ref-plan/agent-hub.html` 的布局、控件、状态与非线性交互，不做视觉简化；聊天 AppBar 设置按钮左侧保留历史树和 Hub 两个图标入口，配色使用当前应用主题，不引入演示数据。历史预览不改变续写位置，切换、回退、独立分支、标签与历史 Ask 使用原生身份；子代理正文、审批、提问、消息、模型和生命周期操作隔离到具体运行实例，不转发为主会话操作。
 - 技能市场默认浏览独立的 ClawHub 公开目录，保留官方 Skillshare 来源及包、账号和发布管理；官方空库不得伪装为全市场无技能。第三方内容固定发布者、技能和精确版本，安装完整资源并校验大小与哈希，不覆盖已有目录、不改写原始 frontmatter、不执行脚本，不将扫描 clean 或 OpenClaw 声明当作 OMP 兼容或安全保证。
 - 页面进入保留既有的右侧滑入与非线性曲线；返回时当前页向右滑出、上一级从左侧恢复，不能沿用进入方向。主页底栏固定按“会话、功能、容器”排列，功能位于中间、容器左边；按位置定向切换，向右侧页面切换时向左、向左侧页面切换时向右。
 - Android 聊天页状态栏与 AppBar 使用同一背景色并同步滚动变色动画；保留明暗主题的图标对比度和顶部安全区，不重复添加顶部留白。
@@ -70,6 +71,7 @@
 - `agent-protocol/`：独立 Kotlin 领域模型、会话控制、模型服务与设置契约；仅使用协程状态流，不依赖驱动或容器。
   - `src/commonMain/kotlin/dev/wawlink/protocol/AgentManagement.kt` 定义作用域、来源、Agent、顾问、角色、认证、原始配置与原生管理仓库契约。
   - 同目录的 `AgentResources.kt` 定义按当前容器、配置档与项目上下文执行原生插件/技能操作的 `AgentResourceRepository`，不依赖模型 SDK。
+  - 同目录的 `SessionExplorer.kt` 定义原生历史树、消息复制片段、恢复草稿、运行实例、活动、产物、后台任务及按实例隔离的会话探索契约。
 - `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonMain/kotlin/dev/wawlink/ui/ModelIcon.kt` 统一离线品牌图标与 ID 字母标识，`src/commonMain/composeResources/files/model-icons/` 保存来源/许可，`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ModelIconTest.kt`、`FeedExpansionStateTest.kt` 和 `MarkdownTest.kt` 覆盖字母标识/颜色区分、展开状态和 Markdown 边界。
   - 同目录的 `AgentPalette.kt`、`AgentPaletteSettings.kt` 提供默认蓝色、Material HCT 种子配色与设置控件；`src/androidMain/kotlin/dev/wawlink/ui/AgentPalette.android.kt` 读取系统动态配色，`src/desktopMain/kotlin/dev/wawlink/ui/AgentPalette.desktop.kt` 明确回退，`AgentPaletteTest.kt` 覆盖明暗配色对比度及 HEX 输入边界。完整 Material Color Utilities 许可随 `src/commonMain/composeResources/files/licenses/material-color-utilities.txt` 打包。
   - 同目录的 `AgentTheme.kt` 提供统一主题、标准表单 sheet，以及参考 WawSSH 的 `AgentActionSheet` / `AgentActionRow` 全宽操作面板与列表行。
@@ -80,6 +82,7 @@
   - `src/commonMain/composeResources/files/rich/` 保存 Mermaid 离线引擎、来源与许可证；`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ComposerSlashCommandsTest.kt`、`AskDraftStateTest.kt`、`MarkdownPartsTest.kt` 覆盖命令覆盖优先级、分组作答和富媒体解析边界，`src/desktopTest/kotlin/dev/wawlink/ui/RichGraphicSafetyTest.kt` 覆盖 SVG 主动内容、图像 URI 与重定向边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/FeedPresentation.kt`、`src/jvmSharedMain/kotlin/dev/wawlink/ui/FeedClock.kt` 统一运行耗时、思考稳定展示与详情；`ThoughtPreview.kt` 按实际宽度准备思考预览而不测量全文超长单行，保留完整来源、语义及全屏内容。`FeedPresentationTest.kt` 覆盖耗时边界，`MarkdownPartsTest.kt` 覆盖稳定段落、流式围栏/SVG 与重写边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/AgentChatScreen.kt` 使用原生 `SnapshotStateMap` 保存相对所属 Lazy 行的吸顶几何，普通滚动不再重写每个节点的坐标；候选只取可见根项，历史计划二分定位，吸顶观察隔离于聊天与输入区。保留有限距离追尾、三层吸顶及各层回跳，不通过结构相等的自定义 Map 包装几何状态。
+  - 同目录的 `SessionHistorySheet.kt` 实现历史树、时间线、回退、复制、预览、标签和历史 Ask；`AgentHubScreen.kt`、`SubagentScreen.kt` 实现运行总览、活动与独立子代理会话/概况/产物/任务页面；`AgentChatNavigation.kt` 保存跨页精确定位及返回请求，不用相同文本猜测原生节点。
   - `Markdown.kt` 的大块拆分在有界后台队列执行，普通行独立重组、无内联代码时跳过子组合布局、无链接时跳过点击/布局观察；无待显示增量时平滑输出挂起。`MarkdownParts.kt` 的 `StableMarkdownBuffer` 仅保留已完成段落与扫描游标，不重复扫描未闭合围栏的旧行，不持有逐段 `StringBuilder` 或重复解析器。超长分隔线使用迭代识别，保留原文选择复制与富媒体安全边界。
   - 同目录的 `CodeLanguage.kt`、`HighlightedCode.kt`、`CodeDetailScreen.kt` 提供语言识别、后台高亮与全屏入口；`src/androidMain/kotlin/dev/wawlink/ui/OfflineTextMate.android.kt` 串行复用明/暗两套行内语法注册表，原生 Sora 编辑器仍独立持有分析器；`CodeDetailScreen.android.kt` 接入只读 Sora，`src/desktopMain/kotlin/dev/wawlink/ui/HighlightedCode.desktop.kt` 与 `CodeDetailScreen.desktop.kt` 接入 RSyntaxTextArea。
   - `src/commonMain/composeResources/files/code/` 保存精确版本来源与许可，`textmate/` 保存语法依赖、主题、索引与哈希；`CodeLanguageTest.kt` 覆盖语言别名、路径选择器和未知语言，`src/androidUnitTest/kotlin/dev/wawlink/ui/OfflineTextMateTokenizerTest.kt` 与 `src/desktopTest/kotlin/dev/wawlink/ui/NativeCodeHighlightTest.kt` 覆盖真实词法器的嵌入语言、多行及颜色边界。
@@ -89,6 +92,7 @@
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - 同目录的 `OmpEventReducer.kt` 在归并器内部按稳定 ID 定位当前节点，只复制变更节点的祖先兄弟列表，外部整体替换自动失效索引；重复终态与工具输出的冗余渲染被消除。完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考归属。`OmpProcessPool.kt` 的事件日志逐条写入并关闭缓冲 UTF-8 writer，不额外构造整条换行字符串及其 UTF-8 字节数组。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
+  - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生历史与运行实例接入 Kotlin 状态流，并复用消息归并、附件及文件服务。`omp-management/session.mjs` 加载 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs`，通过当前原生 AgentSession 的扩展侧通道执行历史及子代理操作；有状态模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖分支返回、相同文本的身份隔离、多投影定位及可见正文复制边界。
   - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。
   - 同资源目录的 `clawhub.ts`、`clawhub-http.ts`、`clawhub-source.ts` 提供独立 ClawHub 公开目录、精确版本与完整资源校验、受限联网及作用域安装；`.wawlink-clawhub.json` 只记录安装来源，不认证后续本地编辑内容。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpInstallation.kt` 提供容器内安装自检与终端命令，`src/jvmSharedMain/resources/omp-install.sh` 固定 OMP/Bun 来源和完整依赖，分阶段校验真实原生模块与 RPC 后切换安装；缺少 CA 的 APT 基础镜像先通过保留签名校验的临时 HTTP 源安装证书，不修改原软件源或关闭 TLS 校验。`OmpProcessPool.kt` 聚合会话及管理进程故障并暂停/恢复修复关联进程，`src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpInstallationTest.kt` 覆盖引擎故障与缺失安装的区分及自检协议边界。
@@ -120,6 +124,7 @@
   - `ref-plan/session-history-agent-hub-capabilities.md`：以 OMP 18.12.6 为基准的 Session 历史树、Rewind、消息复制、运行时 Agent Hub 与独立 Subagent 页原型能力清单，覆盖生命周期、历史恢复及 RPC 边界；只列能力与状态，不规定视觉方案，也不代表已实现。
   - `ref-plan/agent-settings.html`：新增 Agent 设置的完整视觉与交互原型，保留原文件，不修改演示数据。
   - `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 为插件与技能管理的完整视觉和交互原型；保留原文件，不修改演示数据。
+  - `ref-plan/session-history.html`、`ref-plan/agent-hub.html` 为本会话历史树与运行时 Agent Hub/子代理详情的完整视觉和交互原型；保留原文件，不修改演示数据。
 - `README.md`：构建运行、独立 UI 接入、能力边界、产物与已验证范围。
 - `scripts/USAGE.txt`：固定输入、免 Docker 构建、原生程序加载与上游许可说明。
 

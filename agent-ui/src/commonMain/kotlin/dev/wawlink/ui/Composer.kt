@@ -98,11 +98,29 @@ private val AttachmentDraftSaver = listSaver<SnapshotStateList<AttachmentFile>, 
     }.toMutableStateList() },
 )
 
+internal class ComposerDraftState(val textState: MutableState<String>, val attachments: SnapshotStateList<AttachmentFile>) {
+    val hasContent: Boolean get() = textState.value.isNotEmpty() || attachments.isNotEmpty()
+    fun restore(prompt: RestoredSessionPrompt, replaceExisting: Boolean) {
+        if (!replaceExisting && hasContent) return
+        textState.value = prompt.text
+        attachments.clear()
+        attachments.addAll(prompt.attachments)
+    }
+}
+
+@Composable
+internal fun rememberComposerDraft(sessionId: String): ComposerDraftState {
+    val text = rememberSaveable(sessionId) { mutableStateOf("") }
+    val attachments = rememberSaveable(sessionId, saver = AttachmentDraftSaver) { mutableStateListOf<AttachmentFile>() }
+    return remember(sessionId, text, attachments) { ComposerDraftState(text, attachments) }
+}
+
 @OptIn(ExperimentalAnimationApi::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun ComposerArea(controller: AgentSessionController, state: ChatSessionUiState, providerRepository: ProviderConfigRepository, modelRepository: AgentManagementRepository,
     onOpenProviderSettings: () -> Unit, onPickFiles: suspend () -> List<AttachmentFile>, onPickContainerFiles: suspend () -> List<AttachmentFile>,
-    onPromptSubmitted: () -> Unit, modifier: Modifier = Modifier) {
+    onPromptSubmitted: () -> Unit, modifier: Modifier = Modifier, draft: ComposerDraftState = rememberComposerDraft(state.id),
+    showExecutionMode: Boolean = true) {
     val c = LocalAgentColors.current
     val appearance = LocalAgentAppearance.current
     val scope = rememberCoroutineScope()
@@ -113,8 +131,8 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     val modelState by modelRepository.state.collectAsState()
     val availableModels = remember(modelState.models) { modelState.models.filter { it.available && it.kind == "chat" }.groupBy { it.provider } }
     val selectedNativeModel = remember(modelState.models, state.providerId, state.modelId) { modelState.models.firstOrNull { it.provider == state.providerId && it.id == state.modelId } }
-    var text by rememberSaveable(state.id) { mutableStateOf("") }
-    val attachments = rememberSaveable(state.id, saver = AttachmentDraftSaver) { mutableStateListOf<AttachmentFile>() }
+    var text by draft.textState
+    val attachments = draft.attachments
     val workspaceExpanded = rememberSaveable(state.id, saver = BooleanStateMapSaver) { mutableStateMapOf<String, Boolean>() }
     var menu by remember { mutableStateOf<String?>(null) }
     var workspacePicker by remember { mutableStateOf(false) }
@@ -306,8 +324,10 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                                 customIcon = { ThinkingBulb(level) }) { controller.selectThinkingLevel(level); menu = null } }
                         }
                     }
-                    ComposerButton(if (state.autoApprove) "自动执行" else "需批准", false, { controller.toggleExecutionMode(!state.autoApprove) }, lit = state.autoApprove) {
-                        Symbol(if (state.autoApprove) "bolt" else "shield", filled = state.autoApprove)
+                    if (showExecutionMode) {
+                        ComposerButton(if (state.autoApprove) "自动执行" else "需批准", false, { controller.toggleExecutionMode(!state.autoApprove) }, lit = state.autoApprove) {
+                            Symbol(if (state.autoApprove) "bolt" else "shield", filled = state.autoApprove)
+                        }
                     }
                     Spacer(Modifier.weight(1f))
                     val hasInput = text.isNotBlank() || attachments.isNotEmpty()

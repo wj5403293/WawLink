@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
@@ -47,6 +48,11 @@ fun AgentChatScreen(
     onPickContainerFiles: suspend () -> List<AttachmentFile>,
     onOpenProjectPlugins: () -> Unit,
     onOpenProjectSkills: () -> Unit,
+    explorer: SessionExplorer,
+    onOpenAgentHub: () -> Unit,
+    onFork: suspend (String) -> String,
+    onOpenFork: (String) -> Unit,
+    navigation: AgentChatNavigation,
     appearance: AgentAppearance = AgentAppearance(),
 ) {
     val inheritedColors = if (LocalAgentThemeProvided.current && LocalAgentAppearance.current == appearance) LocalAgentColors.current else null
@@ -60,6 +66,22 @@ fun AgentChatScreen(
         LaunchedEffect(state.id, state.feed) { updateGroupExpansion(state.feed, expanded, previouslyRunning) }
         var settingsMenu by remember { mutableStateOf(false) }
         var detail by remember(state.id) { mutableStateOf<FeedDetail?>(null) }
+        var historyOpen by rememberSaveable(state.id) { mutableStateOf(false) }
+        var historyFocus by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
+        var historyCopy by rememberSaveable(state.id) { mutableStateOf(false) }
+        val historyStates = rememberSaveableStateHolder()
+        val draft = rememberComposerDraft(state.id)
+        SideEffect {
+            navigation.backHandler = {
+                when {
+                    historyOpen -> { historyOpen = false; true }
+                    detail != null -> { detail = null; true }
+                    settingsMenu -> { settingsMenu = false; true }
+                    else -> false
+                }
+            }
+        }
+        DisposableEffect(navigation) { onDispose { navigation.backHandler = null } }
         var composerHeight by remember { mutableStateOf(156.dp) }
         var followTail by rememberSaveable(state.id) { mutableStateOf(true) }
         val density = LocalDensity.current
@@ -198,8 +220,31 @@ fun AgentChatScreen(
                 list.requestScrollToItem(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset)
             }
         }
+        LaunchedEffect(navigation.location, feedIndex) {
+            val request = navigation.location ?: return@LaunchedEffect
+            if (hasCompacted && !showCompacted) {
+                showCompacted = true
+                return@LaunchedEffect
+            }
+            if (request.id !in feedIndex) return@LaunchedEffect
+            fun expandPath(nodes: List<FeedItem>): Boolean {
+                for (node in nodes) {
+                    if (node.id == request.id) return true
+                    if (node is StepGroupNodeItem && expandPath(node.children)) {
+                        expanded[node.id] = true
+                        return true
+                    }
+                }
+                return false
+            }
+            expandPath(state.feed)
+            withFrameNanos { }
+            scrollTo(request.id)
+            navigation.located(request)
+        }
         CompositionLocalProvider(LocalFeedClock provides clock, LocalFeedBounds provides nodeBounds,
-            LocalFeedInteraction provides { followTail = false }, LocalFeedItemNavigation provides { id -> anchorFeedItem(id) }) {
+            LocalFeedInteraction provides { followTail = false }, LocalFeedItemNavigation provides { id -> anchorFeedItem(id) },
+            LocalFeedHistoryRequest provides { id, copy -> historyFocus = id; historyCopy = copy; historyOpen = true }) {
         val scrolled by remember(list) { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 4 } }
         val barColor by animateColorAsState(if (scrolled) c.surfaceContainer else c.surface, tween(350, easing = EmphEasing))
         val topInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top)
@@ -211,6 +256,8 @@ fun AgentChatScreen(
                         AgentIconButton("forum", "会话列表", onNavigateToSessionList)
                         Text(state.title, Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         AgentIconButton("edit_square", "新建会话", onNewSession)
+                        AgentIconButton("account_tree", "历史树", { historyFocus = null; historyCopy = false; historyOpen = true })
+                        AgentIconButton("groups", "Agent 运行总览", onOpenAgentHub)
                         Box {
                             AgentIconButton("settings", "设置", { settingsMenu = true })
                             ManagementMenu(settingsMenu, { settingsMenu = false }) {
@@ -274,7 +321,7 @@ fun AgentChatScreen(
                             FilledTonalIconButton({ followTail = true }) { Symbol("arrow_downward", contentDescription = "回到最新消息") }
                         }
                         ComposerArea(controller, state, providers, modelRepository, onOpenProviderSettings, onPickFiles, onPickContainerFiles, { followTail = true },
-                            Modifier.align(Alignment.BottomCenter).onSizeChanged { size -> composerHeight = with(density) { size.height.toDp() } })
+                            Modifier.align(Alignment.BottomCenter).onSizeChanged { size -> composerHeight = with(density) { size.height.toDp() } }, draft = draft)
                     }
                 }
             }
@@ -288,6 +335,13 @@ fun AgentChatScreen(
                 val tool = itemsById[request.id] as? ToolNodeItem
                 CodeDetailScreen(request.title, tool?.codeText ?: request.text, request.language, { detail = null })
             }
+        }
+        if (historyOpen) historyStates.SaveableStateProvider("history:${state.id}") {
+            SessionHistorySheet(explorer, controller, onDismiss = { historyOpen = false },
+                onLocate = { id -> historyOpen = false; navigation.locate(id) },
+                onRestorePrompt = { prompt, replace -> draft.restore(prompt, replace) }, hasDraft = draft.hasContent,
+                onFork = onFork, onOpenFork = { id -> historyOpen = false; onOpenFork(id) },
+                focusChatItemId = historyFocus, copyFocusedMessage = historyCopy)
         }
     }
 }

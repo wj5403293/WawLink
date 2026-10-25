@@ -393,6 +393,16 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         persistSessions()
         return next.id
     }
+    suspend fun registerFork(sourceId: String, guestSessionFile: String): String {
+        val source = records.value.firstOrNull { it.id == sourceId } ?: error("来源会话已不存在")
+        val next = source.copy(id = UUID.randomUUID().toString(), title = "${source.title} 分支",
+            titleSource = SessionTitleSource.MANUAL, pinned = false, archived = false, updatedAt = System.currentTimeMillis())
+        val controller = pool.adoptFork(sourceId, next.id, guestSessionFile, next.title)
+        records.update { it + next }
+        synchronized(controllers) { controllers[next.id] = controller; observe(next.id, controller) }
+        persistSessions()
+        return next.id
+    }
     suspend fun editSession(id: String, title: String, workspace: String, containerId: String, manualTitle: Boolean = true) {
         require(title.isNotBlank()) { "会话标题不能为空" }
         require(workspace.startsWith('/')) { "工作区必须是容器内绝对路径" }

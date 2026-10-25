@@ -29,6 +29,7 @@ fun AgentManagementScreen(
     session: AgentSessionController? = null,
     initialSection: String = "home",
     registerBack: ((() -> Boolean)?) -> Unit = {},
+    initialAgent: String? = null,
 ) {
     val state by repository.state.collectAsState()
     val persistedProviders by providers.providers.collectAsState()
@@ -68,7 +69,7 @@ fun AgentManagementScreen(
                     val goHome: () -> Unit = { if (current == initialSection) rootBack() else navigate(initialSection) }
                     when (current) {
                         "home" -> ManagementHome(repository, state, configurationScope, { configurationScope = it }, persistedProviders, goHome, ::navigate)
-                        "agents" -> ManagementAgentsScreen(repository, configurationScope, { configurationScope = it }, goHome, setBack)
+                        "agents" -> ManagementAgentsScreen(repository, configurationScope, { configurationScope = it }, goHome, setBack, initialAgent)
                         "advisors" -> ManagementAdvisorsScreen(repository, configurationScope, { configurationScope = it }, goHome, setBack)
                         "roles" -> ManagementRolesScreen(repository, goHome, setBack)
                         "runtime" -> ManagementRuntimeScreen(repository, configurationScope, { configurationScope = it }, goHome, setBack)

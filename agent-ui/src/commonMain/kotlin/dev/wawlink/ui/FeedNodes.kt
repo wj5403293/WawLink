@@ -118,7 +118,7 @@ private fun NodeElapsedLabel(seconds: Int, startedAtMillis: Long?, running: Bool
 internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     if (LocalAgentAppearance.current.hideToolCalls && item is ToolNodeItem) return
     when (item) {
-        is UserMessageItem -> {
+        is UserMessageItem -> Column {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                 Surface(shape = RoundedCornerShape(24.dp, 24.dp, 6.dp, 24.dp), color = LocalAgentColors.current.surfaceContainerHigh,
                     modifier = Modifier.fillMaxWidth(.84f)) {
@@ -132,11 +132,13 @@ internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expand
                     }
                 }
             }
+            if (item.accepted) FeedHistoryActions(item.id, alignEnd = true)
         }
         is AssistantMessageItem -> {
             Column(Modifier.padding(horizontal = 4.dp)) {
                 Markdown(streamedText(item.markdownText, item.isStreaming))
                 if (item.isStreaming) StreamingCaret()
+                if (!item.isStreaming) FeedHistoryActions(item.id)
             }
         }
         is ThinkingNodeItem -> ThinkingNode(item, expanded, onDetail)
@@ -144,7 +146,10 @@ internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expand
         is StepGroupNodeItem -> GroupNode(item, controller, expanded, onDetail)
         is ToolNodeItem -> ToolNode(item, expanded, onDetail)
         is ApprovalCardItem -> ApprovalCard(item, controller)
-        is AskCardItem -> AskCard(item, controller)
+        is AskCardItem -> Column {
+            AskCard(item, controller)
+            FeedHistoryActions(item.id)
+        }
     }
 }
 

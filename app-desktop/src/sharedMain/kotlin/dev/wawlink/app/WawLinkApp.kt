@@ -49,8 +49,8 @@ private data class HostRoute(
     val feature: ContainerFeature? = null,
 ) {
     val stateKey: String = when (page) {
-        "chat" -> "chat:$sessionId"
-        "providers", "management" -> "$page:$containerId:${sessionId ?: "global"}"
+        "chat", "hub" -> "$page:$sessionId"
+        "providers", "management" -> "$page:$containerId:${sessionId ?: "global"}:${initialResource.orEmpty()}"
         "framework", "container", "files", "rules" -> "$page:$containerId"
         "plugins", "skills" -> "$page:$containerId:${resourceWorkspace ?: "user"}:$sessionId:$initialResource"
         "extension" -> "extension:$containerId:${feature?.id}"
@@ -94,6 +94,9 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     val rulesNavigation = remember { HostNavigation() }
     val fileNavigation = remember { HostNavigation() }
     val settingsNavigation = remember { HostNavigation() }
+    val hubNavigation = remember { HostNavigation() }
+    val chatNavigations = remember { mutableMapOf<String, AgentChatNavigation>() }
+    var definitionName by rememberSaveable { mutableStateOf<String?>(null) }
     var containerAttachmentPick by remember { mutableStateOf<ContainerAttachmentPick?>(null) }
     val attachmentNavigation = remember { HostNavigation() }
     fun finishAttachmentPick(selection: List<ContainerFileSelection>) {
@@ -144,6 +147,9 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         (page == "plugins" || page == "skills") && resourceNavigation.onBack?.invoke() == true -> true
         page == "plugins" || page == "skills" -> { page = resourcesReturn; true }
         page == "rules" && rulesNavigation.onBack?.invoke() == true -> true
+        page == "hub" && hubNavigation.onBack?.invoke() == true -> true
+        page == "hub" -> { page = "chat"; true }
+        page == "chat" && chatNavigations[selectedSession]?.back() == true -> true
         page == "chat" -> { leaveChat(); true }
         page != "home" -> { page = "home"; true }
         else -> false
@@ -181,10 +187,11 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     }
     val configurationContainer = containers.firstOrNull { it.config.id == (selectedContainer ?: currentContainerId) }
     val route = when (page) {
-        "chat" -> HostRoute(page, sessionId = selectedSession)
+        "chat", "hub" -> HostRoute(page, sessionId = selectedSession, returnPage = if (page == "hub") "chat" else "home")
         "providers", "management" -> HostRoute(page, containerId = configurationContainer?.config?.id,
-            sessionId = if (settingsReturn == "chat") selectedSession else resourceSession.takeIf { settingsReturn == "plugins" || settingsReturn == "skills" },
-            returnPage = settingsReturn, resourceWorkspace = resourceWorkspace.takeIf { settingsReturn == "plugins" || settingsReturn == "skills" })
+            sessionId = if (settingsReturn == "chat" || settingsReturn == "hub") selectedSession else resourceSession.takeIf { settingsReturn == "plugins" || settingsReturn == "skills" },
+            returnPage = settingsReturn, resourceWorkspace = resourceWorkspace.takeIf { settingsReturn == "plugins" || settingsReturn == "skills" },
+            initialResource = definitionName.takeIf { settingsReturn == "hub" })
         "framework" -> HostRoute(page, containerId = configurationContainer?.config?.id, returnPage = settingsReturn)
         "container", "rules" -> HostRoute(page, containerId = selectedContainer)
         "plugins", "skills" -> HostRoute(page, containerId = selectedContainer, sessionId = resourceSession, returnPage = resourcesReturn, resourceWorkspace = resourceWorkspace, initialResource = initialResource)
@@ -196,7 +203,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     }
     LaunchedEffect(sessions, route) {
         val retained = savedSessionIds.filter { id ->
-            app.hasSession(id).also { exists -> if (!exists) pageStates.removeState("chat:$id") }
+            app.hasSession(id).also { exists -> if (!exists) { pageStates.removeState("chat:$id"); pageStates.removeState("hub:$id"); chatNavigations.remove(id) } }
         }
         val currentId = route.sessionId?.takeIf(app::hasSession)
         savedSessionIds = if (currentId != null && currentId !in retained) retained + currentId else retained
@@ -244,18 +251,48 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                                     sizeBytes = selected.file.size, source = AttachmentSource.CONTAINER)
                                             }
                                         }, onOpenProjectPlugins = { openResources("plugins", record.containerId, record.workspace, record.id) },
-                                        onOpenProjectSkills = { openResources("skills", record.containerId, record.workspace, record.id) }, appearance = appearance)
+                                        onOpenProjectSkills = { openResources("skills", record.containerId, record.workspace, record.id) },
+                                        explorer = app.pool.explorer(record.id), onOpenAgentHub = { page = "hub" },
+                                        onFork = { source -> app.registerFork(record.id, source) },
+                                        onOpenFork = { id -> selectedSession = id; page = "chat" },
+                                        navigation = chatNavigations.getOrPut(record.id) { AgentChatNavigation() }, appearance = appearance)
                                     }
                                     else Box(Modifier.windowInsetsPadding(topInsets)) { EmptyHost("会话已删除") }
                                 }, onFailure = { error -> Column(Modifier.windowInsetsPadding(topInsets)) { AgentTopBar("无法进入会话", { page = "home" }); EmptyHost(error.message ?: error.toString()) } })
+                            }
+                            "hub" -> {
+                                val controller = remember(current.sessionId) { runCatching { app.openSession(requireNotNull(current.sessionId)) } }
+                                val record = sessions.firstOrNull { it.record.id == current.sessionId }?.record
+                                controller.fold(onSuccess = { main ->
+                                    if (record == null) EmptyHost("会话已删除")
+                                    else CompositionLocalProvider(LocalAgentImageSaveHandler provides saveImage) {
+                                        AgentHubScreen(app.pool.explorer(record.id), main, app.pool.providers(record.containerId),
+                                            app.pool.management(record.containerId, record.workspace),
+                                            onBack = { page = "chat" }, onMain = { page = "chat" },
+                                            onLocateMain = { id -> chatNavigations.getOrPut(record.id) { AgentChatNavigation() }.locate(id); page = "chat" },
+                                            onOpenDefinition = { name -> selectedContainer = record.containerId; definitionName = name; settingsReturn = "hub"; page = "management" },
+                                            onPickFiles = files::pickAttachments,
+                                            onPickContainerFiles = { workspace -> pickContainerAttachments(record.containerId, workspace).map { selected ->
+                                                AttachmentFile(java.util.UUID.randomUUID().toString(), selected.file.name, selected.path,
+                                                    sizeBytes = selected.file.size, source = AttachmentSource.CONTAINER)
+                                            } },
+                                            onOpenFile = { workspace, source -> openSessionFile(record.copy(workspace = workspace), source) },
+                                            onExport = { export ->
+                                                files.saveFile(hostFileName(export.name), export.mimeType) { output ->
+                                                    val container = app.runtime.containers.value.firstOrNull { it.config.id == record.containerId }?.config ?: error("会话容器已不存在")
+                                                    ContainerFileService(app.runtime, container).exportFile(export.path, output)
+                                                }
+                                            }, registerBack = { handler -> if (page == "hub") hubNavigation.onBack = handler })
+                                    }
+                                }, onFailure = { error -> Column { AgentTopBar("无法进入 Agent", { page = "chat" }); EmptyHost(error.message ?: error.toString()) } })
                             }
                             "providers", "management" -> if (current.containerId != null) {
                                 val session = current.sessionId?.let(app::openedSession)
                                 val record = sessions.firstOrNull { session != null && it.record.id == current.sessionId && it.record.containerId == current.containerId }?.record
                                 val management = remember(current.containerId, record?.workspace, record?.id, current.resourceWorkspace) { app.pool.management(current.containerId, record?.workspace ?: current.resourceWorkspace, record?.id) }
                                 AgentManagementScreen(management, app.pool.providers(current.containerId), { page = settingsReturn },
-                                    session = session.takeIf { record != null }, initialSection = if (current.page == "providers") "providers" else "home",
-                                    registerBack = { settingsNavigation.onBack = it })
+                                    session = session.takeIf { record != null }, initialSection = when { current.page == "providers" -> "providers"; current.returnPage == "hub" -> "agents"; else -> "home" },
+                                    registerBack = { settingsNavigation.onBack = it }, initialAgent = current.initialResource)
                             } else MissingContainer { page = "home" }
                             "framework" -> if (current.containerId != null) AgentConfigScreen(app.pool.settings(current.containerId), { page = settingsReturn }) else MissingContainer { page = "home" }
                             "appearance" -> AppearanceScreen(app, { page = "home" },

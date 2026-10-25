@@ -20,7 +20,8 @@ import kotlinx.serialization.json.*
 
 @Composable
 fun ManagementAgentsScreen(repository: AgentManagementRepository, configurationScope: ConfigurationScope,
-    onScopeChange: (ConfigurationScope) -> Unit, onBack: () -> Unit, registerBack: ((() -> Boolean)?) -> Unit) {
+    onScopeChange: (ConfigurationScope) -> Unit, onBack: () -> Unit, registerBack: ((() -> Boolean)?) -> Unit,
+    initialAgent: String? = null) {
     val state by repository.state.collectAsState()
     val actions = LocalManagementActions.current
     var route by remember { mutableStateOf("list") }
@@ -31,6 +32,18 @@ fun ManagementAgentsScreen(repository: AgentManagementRepository, configurationS
     var create by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     val agent = state.agents.firstOrNull { it.name == selected?.name } ?: selected
+    var initialPending by rememberSaveable(initialAgent) { mutableStateOf(initialAgent != null) }
+    LaunchedEffect(initialAgent, state.loading, state.agents) {
+        if (initialPending && !state.loading) {
+            initialPending = false
+            selected = state.agents.firstOrNull { it.name == initialAgent }
+            if (selected != null) route = "detail"
+            else {
+                query = initialAgent.orEmpty()
+                actions.launch { error("当前容器未发现 Agent 定义：${initialAgent.orEmpty()}") }
+            }
+        }
+    }
     val back = { route = if (route == "detail" || route == "generate" || selected == null) "list" else "detail" }
     val pageStates = rememberSaveableStateHolder()
     pageStates.SaveableStateProvider(if (route == "list") "list" else "$route:${selected?.path.orEmpty()}") {

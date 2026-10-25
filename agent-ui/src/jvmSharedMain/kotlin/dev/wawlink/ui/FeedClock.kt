@@ -1,6 +1,11 @@
 package dev.wawlink.ui
 
 import androidx.compose.ui.text.style.TextDirection
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
+import java.util.Locale
 
 internal actual fun feedEpochMillis(): Long = System.currentTimeMillis()
 
@@ -20,4 +25,14 @@ internal actual fun firstStrongTextDirection(text: String): TextDirection? {
         index += Character.charCount(codePoint)
     }
     return null
+}
+
+private val explorerTimeFormat = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
+private val explorerDateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
+
+internal actual fun explorerTimestamp(value: String, full: Boolean): String {
+    val instant = value.toLongOrNull()?.let(Instant::ofEpochMilli) ?: try {
+        Instant.parse(value)
+    } catch (_: DateTimeParseException) { return value }
+    return (if (full) explorerDateFormat else explorerTimeFormat).format(instant.atZone(ZoneId.systemDefault()))
 }

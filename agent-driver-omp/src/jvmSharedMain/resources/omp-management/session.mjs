@@ -1,6 +1,7 @@
 import { watch } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createSessionExplorer, explorerError } from './explorer.mjs';
 
 /** Native-session control, isolated by an app-owned request directory and acknowledged by that session. */
 export default function managementSessionExtension(pi) {
@@ -8,6 +9,12 @@ export default function managementSessionExtension(pi) {
   if (!directory) return;
   let watcher;
   let context;
+  const explorer = createSessionExplorer(pi, () => context);
+  async function respond(request, response) {
+    const destination = join(directory, `response-${request.id}.json`);
+    await writeFile(destination + '.tmp', JSON.stringify(response), { mode: 0o600 });
+    await rename(destination + '.tmp', destination);
+  }
   let chain = Promise.resolve();
   async function drain() {
     if (!context) return;
@@ -17,6 +24,15 @@ export default function managementSessionExtension(pi) {
       let request;
       try { request = JSON.parse(await readFile(file, 'utf8')); } catch { continue; }
       await unlink(file);
+      // Navigation/Ask/model admission may wait. Their cancellation and replies
+      // must overtake that wait instead of deadlocking behind the drain queue.
+      // Explorer reads do not reload credentials or alter explicit account pins.
+      if (typeof request.op === 'string' && request.op.startsWith('explorer_')) {
+        void explorer(request).then(response => respond(request, response)).catch(error => {
+          process.stderr.write(`Session explorer response failed: ${explorerError(error, request)}\n`);
+        });
+        continue;
+      }
       let response;
       try {
         const storage = context.modelRegistry.authStorage;
@@ -43,10 +59,8 @@ export default function managementSessionExtension(pi) {
           }
           response = { success: true, pins };
         } else throw Error('Unknown management operation');
-      } catch { response = { success: false, error: 'Session is busy or account capability is unavailable' }; }
-      const destination = join(directory, `response-${request.id}.json`);
-      await writeFile(destination + '.tmp', JSON.stringify(response), { mode: 0o600 });
-      await rename(destination + '.tmp', destination);
+      } catch (error) { response = { success: false, error: explorerError(error, request) }; }
+      await respond(request, response);
     }
   }
   pi.on('session_start', async (_event, ctx) => {

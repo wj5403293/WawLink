@@ -72,6 +72,7 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
     private val consumedQueue = mutableListOf<QueuedPrompt>()
     private val tools = mutableMapOf<String, ToolRecord>()
     private val argumentDeltas = mutableMapOf<String, String>()
+    private val askFeedByTool = mutableMapOf<String, String>()
     private var planId: String? = initial.feed.filterIsInstance<PlanNodeItem>().lastOrNull()?.id
     private var planSteps = initial.feed.filterIsInstance<PlanNodeItem>().lastOrNull()?.steps.orEmpty()
     private var planAfterUser = false
@@ -119,6 +120,101 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
         return state
     }
     internal fun hasConfirmedUser(id: String): Boolean = id in reconciledUsers
+
+    /** Native entry identity is retained independently of RPC generations and presentation groups. */
+    internal fun nativeEntryFeedIds(records: List<JsonObject>): Map<String, String> =
+        nativeEntryFeedAliases(records).mapValues { it.value.first() }
+
+    internal fun nativeEntryFeedAliases(records: List<JsonObject>): Map<String, List<String>> {
+        val unused = messages.entries.toMutableList()
+        val feed = allItems(state.feed).associateBy { it.id }
+        fun toolIds(callId: String): List<String> = listOfNotNull(askFeedByTool[callId],
+            "history:ask:$callId".takeIf { it in feed }, feed.keys.firstOrNull { it.endsWith(":tool:$callId") })
+        return buildMap {
+            records.forEach { entry ->
+                val message = entry["message"] as? JsonObject ?: return@forEach
+                val entryId = entry.string("id") ?: return@forEach
+                val explicit = entry.string("messageId")?.let(::wireMessage)
+                val match = unused.firstOrNull { it.key == explicit } ?: unused.firstOrNull { it.value == message }
+                if (match != null) {
+                    unused.remove(match)
+                    val id = userFeedIds[match.key] ?: match.key
+                    val targets = when (message.string("role")) {
+                        "assistant" -> message.array("content").orEmpty().flatMapIndexed { index, value ->
+                            val block = value as? JsonObject
+                            if (block?.string("type") == "toolCall") block.string("id")?.let(::toolIds).orEmpty()
+                            else listOf(blockId(id, index))
+                        }.sortedBy { if (feed[it] is AssistantMessageItem) 0 else if (feed[it] is AskCardItem) 1 else 2 }
+                        "toolResult" -> message.string("toolCallId")?.let(::toolIds).orEmpty()
+                        else -> listOf(id)
+                    }.filter { it in feed }.distinct()
+                    if (targets.isNotEmpty()) put(entryId, targets)
+                }
+            }
+        }
+    }
+
+    private val originalUserText = mutableMapOf<String, String>()
+    internal fun rememberUserText(feedId: String, text: String) { originalUserText[feedId] = text }
+    internal fun nativeUserText(records: List<JsonObject>): Map<String, String> = buildMap {
+        nativeEntryFeedIds(records).forEach { (entryId, feedId) -> originalUserText[feedId]?.let { put(entryId, it) } }
+    }
+
+    /** Rebuild only the selected ancestry; the caller journals the complete tree before applying. */
+    internal fun restoreNativeBranch(records: List<JsonObject>, leafId: String?) {
+        val previousIds = nativeEntryFeedIds(records)
+        val previousUsers = allItems(state.feed).filterIsInstance<UserMessageItem>().associateBy { it.id }
+        val byId = records.associateBy { it.string("id") }
+        val nativeCalls = records.asSequence().mapNotNull { it.obj("message") }
+            .flatMap { it.array("content").orEmpty().asSequence() }.mapNotNull { it as? JsonObject }
+            .filter { it.string("type") == "toolCall" }.associateBy { it.string("id").orEmpty() }
+        val branch = mutableListOf<JsonObject>()
+        val visited = hashSetOf<String>()
+        var cursor = leafId
+        while (cursor != null && visited.add(cursor)) {
+            val entry = byId[cursor] ?: break
+            branch.add(entry)
+            cursor = entry.string("parentId")
+        }
+        currentMessage = null; messageStack.clear(); messages.clear(); completedBlocks.clear()
+        blockStartedAt.clear(); usageByMessage.clear(); reconciledUsers.clear(); userFeedIds.clear()
+        userPositions.clear(); positionTails.clear(); tools.clear(); argumentDeltas.clear()
+        askFeedByTool.clear()
+        entries.clear(); records.forEach { record -> record.string("id")?.let { entries[it] = record } }
+        activeGroup = null; activeTitle = null; startedAt = null; runError = null; aborted = false
+        planId = null; planSteps = emptyList(); planAfterUser = false
+        state = state.copy(feed = emptyList(), compactedThroughId = null, status = SessionStatus.IDLE,
+            error = null, usage = UsageInfo(), addedLines = 0, removedLines = 0, actionText = "准备就绪")
+        branch.asReversed().forEach { entry ->
+            val message = entry.obj("message")
+            if (message != null) {
+                val entryId = entry.string("id").orEmpty()
+                val old = previousIds[entryId]
+                val messageId = when {
+                    entry.string("messageId") != null -> wireMessage(entry.string("messageId").orEmpty())
+                    message.string("role") == "user" && old != null -> old
+                    message.string("role") == "assistant" && old?.contains(":block:") == true -> old.substringBeforeLast(":block:")
+                    else -> "native:$entryId"
+                }
+                snapshot(messageId, message, true, historical = true)
+                if (message.string("role") == "user") {
+                    val user = item(messageId) as? UserMessageItem
+                    val previous = previousUsers[old]
+                    if (user != null) put(user.copy(attachments = previous?.attachments ?: nativeImageAttachments(message),
+                        timestamp = previous?.timestamp ?: user.timestamp))
+                }
+                nativeHistoricalAsk(entry, nativeCalls)?.let(::put)
+            } else when (entry.string("type")) {
+                "compaction", "branch_summary" -> entry.string("summary")?.let {
+                    put(AssistantMessageItem("native:${entry.string("id")}", it))
+                }
+            }
+        }
+        closeGroup(NodeStatus.OK)
+        leafEntryId = leafId
+        markCompactedBoundary()
+        state = state.copy(status = SessionStatus.IDLE, actionText = "准备就绪")
+    }
 
     internal fun currentUserPosition(): UserMessagePosition {
         val group = activeGroup?.let { item(it) as? StepGroupNodeItem }?.takeIf { state.isRunning && it.state == NodeStatus.RUNNING }
@@ -318,7 +414,7 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
                         val index = consumedQueue.indexOfFirst { it.text == text }
                         val queued = if (index >= 0) consumedQueue.removeAt(index) else null
                         val feedId = queued?.id ?: id
-                        put(UserMessageItem(feedId, text, attachments = queued?.attachments.orEmpty(),
+                        put(UserMessageItem(feedId, text, attachments = queued?.attachments?.takeIf { it.isNotEmpty() } ?: nativeImageAttachments(message),
                             timestamp = message.number("timestamp") ?: 0))
                         reconciledUsers.add(feedId)
                         userFeedIds[id] = feedId
@@ -627,6 +723,8 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
     }
 
     private fun askRequest(frame: JsonObject, id: String) {
+        val waitingTool = tools.values.singleOrNull { it.name.equals("ask", ignoreCase = true) && !it.finished }
+        if (waitingTool != null) askFeedByTool[waitingTool.id.substringAfterLast(":tool:")] = id
         val questions = frame.array("questions")?.mapNotNull { question ->
             val value = question.asObject() ?: return@mapNotNull null
             val questionId = value.string("id") ?: return@mapNotNull null

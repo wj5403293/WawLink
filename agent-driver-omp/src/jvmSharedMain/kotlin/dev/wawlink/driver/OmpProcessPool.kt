@@ -102,6 +102,38 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         return OmpSession(id, containerId, normalizeGuest(workspace), title, autoApprove).also { sessions[id] = it }
     }
 
+    @Synchronized
+    fun explorer(id: String): SessionExplorer {
+        check(!closed) { "进程池已关闭" }
+        return requireNotNull(sessions[id]) { "会话尚未打开：$id" }.explorer
+    }
+
+    /** Adopt a native independent fork into this application's owned session directory. */
+    suspend fun adoptFork(sourceId: String, newId: String, guestSessionFile: String, title: String): AgentSessionController = withContext(Dispatchers.IO) {
+        require(sourceId != newId) { "分支必须使用新的会话 ID" }
+        val source = synchronized(this@OmpProcessPool) { sessions[sourceId] } ?: loadExisting(sourceId)
+        require(!metadataFile(newId).exists()) { "分支会话已存在" }
+        val native = resolveWorkspace(source.containerId, guestSessionFile)
+        require(native.isFile && native.extension == "jsonl") { "原生分支文件不存在" }
+        val destination = ownedSessionDirectory(source.containerId, newId)
+        require(!destination.exists()) { "分支目标目录已存在" }
+        destination.mkdirs()
+        try {
+            val target = File(destination, native.name)
+            native.copyTo(target)
+            // Native fork writes sibling artifact directories beside its transcript.
+            val stem = native.nameWithoutExtension
+            native.parentFile.listFiles().orEmpty().filter { it.isDirectory && it.name == stem }
+                .forEach { copyOwnedTree(it, File(destination, it.name)) }
+            rewriteSessionHeader(target, source.workspace, title)
+            writeMetadata(newId, source.containerId, source.workspace, title, guestSessionDirectory(newId) + "/" + target.name)
+            session(newId, source.containerId, source.workspace, title, source.state.value.autoApprove)
+        } catch (failure: Throwable) {
+            deleteOwnedTree(destination)
+            throw failure
+        }
+    }
+
     suspend fun fork(sourceId: String, newId: String, containerId: String, workspace: String, title: String): AgentSessionController = withContext(Dispatchers.IO) {
         require(sourceId != newId) { "分支必须使用新的会话 ID" }
         val source = synchronized(this@OmpProcessPool) { sessions[sourceId] } ?: loadExisting(sourceId)
@@ -351,10 +383,21 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         private var hasModelPreference = false
         private var managementDefault: ManagedRole? = null
         private var hasExecutionPreference = false
+        @Volatile private var deferredExplorerQueue: List<QueuedPrompt> = emptyList()
         private var lastHeartbeatNanos = System.nanoTime()
         private var startedNanos = System.nanoTime()
         @Volatile var sessionFile: String? = null
             private set
+
+        val explorer: OmpSessionExplorer by lazy {
+            OmpSessionExplorer(id, containerId, workspace, sessionScope, state,
+                request = { op, parameters -> explorerRequest(op, parameters) },
+                synchronize = { history -> synchronizeNativeHistory(history) },
+                identities = { records -> stateMutex.withLock { reducer.nativeEntryFeedAliases(records) } },
+                originalTexts = { records -> stateMutex.withLock { reducer.nativeUserText(records) } },
+                prepareAttachments = { text, attachments, childWorkspace -> prepareAttachments(text, attachments, childWorkspace) },
+                files = { childWorkspace, path -> workspaceFiles(childWorkspace, path) })
+        }
 
         init {
             mutableState = MutableStateFlow(reducer.state)
@@ -493,11 +536,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             try {
                 if (cancelled()) return
                 val originalText = synchronized(presentationLock) { prompt.text }
+                local(buildJsonObject { put("action", "raw_input"); put("promptId", prompt.id); put("text", originalText) })
                 val prepared = prepareAttachments(originalText, prompt.attachments)
                 if (cancelled()) return
                 if (!backendState.isRunning && backendSettled &&
                     (restartRequired || (process != null && startedResolvConf != resolvConf?.value))) park()
                 ensureStarted()
+                restoreExplorerQueue()
                 if (cancelled()) return
                 val message = synchronized(presentationLock) {
                     if (prompt.id !in outgoingPrompts) return
@@ -555,8 +600,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
             submit {
                 val item = state.value.queuedPrompts.firstOrNull { it.id == id } ?: return@submit
-                if (process == null) {
+                local(buildJsonObject { put("action", "raw_input"); put("promptId", id); put("text", newText) })
+                if (process == null || deferredExplorerQueue.any { it.id == id }) {
                     val prepared = prepareAttachments(newText, item.attachments)
+                    deferredExplorerQueue = deferredExplorerQueue.map { if (it.id == id) it.copy(text = prepared.first, attachments = prepared.second) else it }
                     local(buildJsonObject {
                         put("action", "queue_edit"); put("queueId", id); put("text", prepared.first)
                         put("attachments", attachmentsJson(prepared.second))
@@ -582,7 +629,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
             submit {
                 val item = state.value.queuedPrompts.firstOrNull { it.id == id } ?: return@submit
-                if (process == null || removeNativeQueued(item.text)) local(buildJsonObject { put("action", "queue_remove"); put("queueId", id) })
+                val deferred = deferredExplorerQueue.any { it.id == id }
+                if (deferred) deferredExplorerQueue = deferredExplorerQueue.filterNot { it.id == id }
+                if (process == null || deferred || removeNativeQueued(item.text)) local(buildJsonObject { put("action", "queue_remove"); put("queueId", id) })
                 else error("该消息已开始执行，无法移除")
             }
         }
@@ -746,9 +795,11 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
         }
 
-        override fun listWorkspaceFiles(relativePath: String): Flow<List<WorkspaceFileItem>> = flow {
+        override fun listWorkspaceFiles(relativePath: String): Flow<List<WorkspaceFileItem>> = workspaceFiles(workspace, relativePath)
+
+        private fun workspaceFiles(project: String, relativePath: String): Flow<List<WorkspaceFileItem>> = flow {
             require(!File(relativePath).isAbsolute && relativePath.split('/').none { it == ".." }) { "目录不能越过工作区" }
-            val root = resolveWorkspace(containerId, workspace)
+            val root = resolveWorkspace(containerId, project)
             val directory = confined(root, relativePath)
             require(directory.isDirectory) { "目录不存在" }
             emit(directory.listFiles().orEmpty().mapNotNull { file ->
@@ -825,7 +876,68 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             } finally { requestFile.delete(); responseFile.delete() }
         }
 
-        private suspend fun ensureStarted() = lifecycleMutex.withLock {
+        private suspend fun explorerRequest(op: String, parameters: JsonObject): JsonObject {
+            // Startup alone is serialized with prompt admission; side-channel responses must not
+            // wait behind a running prompt which may itself be waiting for an explorer UI answer.
+            if (process?.isAlive != true) {
+                val emptyHistory = exclusive {
+                    if (op == "explorer_history" && newestHistory(ownedSessionDirectory(containerId, id)) == null && backendState.feed.isEmpty()) true
+                    else { ensureStarted(restoreQueuedPrompts = false); false }
+                }
+                if (emptyHistory) return buildJsonObject {
+                    put("success", true); put("sessionId", ""); put("entries", JsonArray(emptyList())); put("leafId", JsonNull)
+                }
+            }
+            val requestId = UUID.randomUUID().toString()
+            val directory = confined(ownedSessionDirectory(containerId, id), "management")
+            check(directory.isDirectory || directory.mkdirs())
+            val requestFile = File(directory, "request-$requestId.json")
+            val responseFile = File(directory, "response-$requestId.json")
+            try {
+                atomicWrite(requestFile, buildJsonObject {
+                    parameters.forEach { (key, value) -> put(key, value) }
+                    put("id", requestId); put("op", op)
+                    put("sessionId", (explorer.history.value.sessionId.takeIf { it.isNotBlank() }
+                        ?: explorer.hub.value.mainSessionId.takeIf { it.isNotBlank() })?.let(::JsonPrimitive) ?: JsonNull)
+                }.toString())
+                withTimeout(if (op == "explorer_navigate") 600_000 else 180_000) {
+                    while (!responseFile.exists()) { check(process?.isAlive == true) { "OMP 会话已退出" }; delay(25) }
+                }
+                val response = DriverJson.parseToJsonElement(responseFile.readText()).jsonObject
+                check(response["success"]?.jsonPrimitive?.booleanOrNull == true) { response.string("error", "原生会话操作失败") }
+                return response
+            } finally { requestFile.delete(); responseFile.delete() }
+        }
+
+        private suspend fun synchronizeNativeHistory(history: JsonObject) {
+            stateMutex.withLock {
+                recordLocal(buildJsonObject {
+                    put("action", "native_branch"); put("entries", history["entries"] ?: JsonArray(emptyList()))
+                    put("leafId", history["leafId"] ?: JsonNull)
+                })
+                requests.clear()
+            }
+            command("get_messages")
+            command("get_state")
+            command("get_session_stats")
+        }
+
+        private suspend fun restoreExplorerQueue() {
+            val queued = deferredExplorerQueue
+            for ((index, item) in queued.withIndex()) {
+                try {
+                    val prepared = prepareAttachments(item.text, item.attachments)
+                    enqueue(prepared.first, prepared.second, prepared.third, item.id)
+                    deferredExplorerQueue = queued.drop(index + 1)
+                } catch (failure: Throwable) {
+                    deferredExplorerQueue = queued.drop(index)
+                    mutate { it }
+                    throw failure
+                }
+            }
+        }
+
+        private suspend fun ensureStarted(restoreQueuedPrompts: Boolean = true) = lifecycleMutex.withLock {
             check(!disposed) { "会话已关闭" }
             if (process?.isAlive == true) return@withLock
             repairing = false
@@ -844,9 +956,11 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             prepareOmpConfiguration { agentDirectory(containerId) }
             confined(agentDirectory(containerId), "wawlink-model-payload.mjs")
             args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId)))
-            val managementExtension = confined(agentDirectory(containerId), "wawlink/management/session.mjs")
-            val managementSource = requireNotNull(javaClass.getResourceAsStream("/omp-management/session.mjs")).bufferedReader().use { it.readText() }
-            if (!managementExtension.exists() || managementExtension.readText() != managementSource) repoAtomicWrite(managementExtension, managementSource)
+            for (module in listOf("session.mjs", "diagnostics.mjs", "explorer.mjs", "explorer-runtime.mjs", "explorer-history.mjs")) {
+                val destination = confined(agentDirectory(containerId), "wawlink/management/$module")
+                val source = requireNotNull(javaClass.getResourceAsStream("/omp-management/$module")).bufferedReader().use { it.readText() }
+                if (!destination.exists() || destination.readText() != source) repoAtomicWrite(destination, source)
+            }
             args += listOf("--extension", "/root/.omp/agent/wawlink/management/session.mjs")
             managementDefault?.let { role ->
                 val provider = requireNotNull(role.providerId)
@@ -857,7 +971,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
             if (managementDefault?.thinking != null) args += listOf("--thinking", requireNotNull(managementDefault?.thinking))
             else if (hasThinkingPreference) args += listOf("--thinking", thinkingWire(state.value.thinkingLevel))
-            val restoredQueue = backendState.queuedPrompts.toList()
+            val restoredQueue = if (restoreQueuedPrompts) backendState.queuedPrompts.toList() else emptyList()
+            if (!restoreQueuedPrompts) deferredExplorerQueue = backendState.queuedPrompts.toList()
+            else deferredExplorerQueue = emptyList()
             val startupGeneration = stopGeneration.get()
             val startReady = CompletableDeferred<JsonObject>()
             ready = startReady
@@ -888,10 +1004,20 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 if (greeting["supportedProtocolVersions"]?.jsonArray?.any { it.jsonPrimitive.intOrNull == 2 } == true) command("negotiate_protocol", buildJsonObject { put("protocolVersion", 2) })
                 command("set_event_filter", buildJsonObject { put("events", JsonNull); put("messageUpdates", "delta") })
                 command("set_ask_dialog", buildJsonObject { put("enabled", true) })
-                command("set_session_name", buildJsonObject { put("name", state.value.title) })
+                if (restoreQueuedPrompts) command("set_session_name", buildJsonObject { put("name", state.value.title) })
                 command("get_state")
                 command("get_available_commands")
                 command("get_session_stats")
+                if (backendState.feed.isEmpty() && history != null) {
+                    val native = command("get_entries")["data"] as? JsonObject
+                    if (native != null) {
+                        local(buildJsonObject {
+                            put("action", "native_branch"); put("entries", native["entries"] ?: JsonArray(emptyList()))
+                            put("leafId", native["leafId"] ?: JsonNull)
+                        })
+                        command("get_state")
+                    }
+                }
                 for ((index, queued) in restoredQueue.withIndex()) {
                     if (startupGeneration != stopGeneration.get()) {
                         for (unsubmitted in restoredQueue.drop(index)) local(buildJsonObject {
@@ -1141,6 +1267,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         private fun publishState() = synchronized(presentationLock) {
+            if (deferredExplorerQueue.isNotEmpty()) reducer.update {
+                it.copy(queuedPrompts = (it.queuedPrompts + deferredExplorerQueue).distinctBy { queued -> queued.id })
+            }
             backendState = reducer.state
             backendUserPosition = reducer.currentUserPosition()
             presentState()
@@ -1207,6 +1336,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         private fun applyLocal(frame: JsonObject) {
             when (frame.string("action")) {
+                "raw_input" -> reducer.rememberUserText(frame.string("promptId"), frame.string("text"))
+                "native_branch" -> reducer.restoreNativeBranch((frame["entries"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }, frame["leafId"]?.jsonPrimitive?.contentOrNull)
                 "user" -> {
                     val position = frame["position"] as? JsonObject
                     reducer.addUserMessage(UserMessageItem(frame.string("localId"), frame.string("text"), parseAttachments(frame["attachments"]),
@@ -1331,7 +1462,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         private fun saveMetadata() = writeMetadata(id, containerId, workspace, reducer.state.title, sessionFile)
 
-        private suspend fun prepareAttachments(text: String, attachments: List<AttachmentFile>): Triple<String, List<AttachmentFile>, JsonArray> {
+        private suspend fun prepareAttachments(text: String, attachments: List<AttachmentFile>, workspace: String = this.workspace): Triple<String, List<AttachmentFile>, JsonArray> {
             if (attachments.isEmpty()) return Triple(text, emptyList(), JsonArray(emptyList()))
             var workspaceRoot: File? = null
             var containerFiles: ContainerFileService? = null
