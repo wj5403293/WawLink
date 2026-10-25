@@ -149,10 +149,10 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
 private fun SessionCard(session: HomeSession, container: String, open: Boolean, batch: Boolean, selected: Boolean, first: Boolean, last: Boolean, onExpand: () -> Unit, onLongPress: () -> Unit, onEnter: () -> Unit, onFork: () -> Unit, onEdit: () -> Unit, onSwitch: () -> Unit, onPin: () -> Unit, onArchive: () -> Unit, onDelete: () -> Unit, onApproval: (String, ApprovalDecision) -> Unit) {
     val s = session.state; val r = session.record
     var more by remember { mutableStateOf(false) }
-    val rounding by animateDpAsState(if (open || selected || first && last) 26.dp else 8.dp, tween(450, easing = EmphEasing))
+    val rounding by animateDpAsState(if (open || selected || first && last) 26.dp else 8.dp, tween(260, easing = EmphEasing))
     val shape = if (open || selected || first && last) RoundedCornerShape(rounding) else RoundedCornerShape(if (first) 24.dp else 8.dp, if (first) 24.dp else 8.dp, if (last) 24.dp else 8.dp, if (last) 24.dp else 8.dp)
-    val background by animateColorAsState(if (selected) MaterialTheme.colorScheme.primaryContainer else if (open) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerLow, tween(300))
-    Column(Modifier.fillMaxWidth().clip(shape).background(background).animateContentSize(tween(500, easing = EmphEasing))) {
+    val background by animateColorAsState(if (selected) MaterialTheme.colorScheme.primaryContainer else if (open) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerLow, tween(220))
+    Column(Modifier.fillMaxWidth().clip(shape).background(background)) {
         Row(Modifier.fillMaxWidth().semantics { if (batch) this.selected = selected }
             .combinedClickable(
                 role = if (batch) Role.Checkbox else Role.Button,
@@ -183,7 +183,7 @@ private fun SessionCard(session: HomeSession, container: String, open: Boolean, 
                 }
             }
         }
-        AnimatedVisibility(open, enter = expandVertically(tween(500, easing = EmphEasing)) + fadeIn(tween(380)), exit = shrinkVertically(tween(480, easing = EmphEasing)) + fadeOut(tween(240))) {
+        AnimatedVisibility(open, enter = expandVertically(tween(260, easing = EmphEasing)) + fadeIn(tween(160)), exit = shrinkVertically(tween(220, easing = EmphEasing)) + fadeOut(tween(120))) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 pendingApprovals(s.feed).forEach { approval ->
                     Column(Modifier.fillMaxWidth().background(Color(0xFFFFDCC1), RoundedCornerShape(18.dp)).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -203,7 +203,7 @@ private fun SessionCard(session: HomeSession, container: String, open: Boolean, 
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     HostAction("进入会话", "play_arrow", onEnter)
-                    HostAction("分支", "call_split", onFork, tonal = true)
+                    AgentIconButton("call_split", "创建分支", onFork)
                     AgentIconButton("edit", "重命名", onEdit)
                     Box { AgentIconButton("more_horiz", "更多", { more = true }); DropdownMenu(more, { more = false }) {
                         DropdownMenuItem({ Text(if (r.pinned) "取消置顶" else "置顶会话") }, { more = false; onPin() }, leadingIcon = { Symbol("push_pin") })
