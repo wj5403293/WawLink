@@ -3,6 +3,7 @@ package dev.wawlink.ui
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.selectable
@@ -164,13 +165,14 @@ private fun StreamingCaret() {
 @Composable
 private fun NodeFrame(nodeId: String, icon: String, lead: LeadStyle, open: Boolean, title: String,
     onToggle: (() -> Unit)?, status: @Composable RowScope.() -> Unit = {},
-    rail: @Composable ColumnScope.() -> Unit = {}, titleContent: (@Composable () -> Unit)? = null,
+    rail: @Composable ColumnScope.() -> Unit = {}, titleContent: (@Composable () -> Unit)? = null, onIconClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit) {
     val c = LocalAgentColors.current
     val bounds = LocalFeedBounds.current
     val root = LocalFeedRootCoordinates.current
     val onInteract = LocalFeedInteraction.current
     val toggle = onToggle?.let { action -> { onInteract(); action() } }
+    val iconClick = onIconClick?.let { action -> { onInteract(); action() } } ?: toggle
     DisposableEffect(nodeId, bounds, root) { onDispose { bounds?.remove(nodeId) } }
     val radius by animateDpAsState(if (open) 24.dp else 14.dp, tween(450, easing = EmphEasing))
     val colors = when (lead) {
@@ -192,8 +194,13 @@ private fun NodeFrame(nodeId: String, icon: String, lead: LeadStyle, open: Boole
     }, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.width(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(48.dp).clip(RoundedCornerShape(radius)).background(colors.first)
-                .then(if (toggle != null) Modifier.clickable(onClick = toggle) else Modifier), contentAlignment = Alignment.Center) {
-                Symbol(icon, size = 28.dp, tint = colors.second)
+                .then(if (iconClick != null) Modifier.clickable(
+                    interactionSource = remember(nodeId) { MutableInteractionSource() },
+                    indication = ripple(color = colors.second), role = Role.Button,
+                    onClickLabel = if (onIconClick != null) "全屏查看" else if (open) "收起" else "展开",
+                    onClick = iconClick) else Modifier), contentAlignment = Alignment.Center) {
+                Symbol(icon, size = 28.dp, tint = colors.second,
+                    contentDescription = if (onIconClick != null) "全屏查看${plainTitle(title)}" else null)
             }
             rail()
         }
@@ -231,9 +238,11 @@ private fun ThinkingNode(node: ThinkingNodeItem, expanded: MutableMap<String, Bo
     val expansion = remember(node.id) { MutableTransitionState(open) }
     expansion.targetState = open
     val text = streamedText(node.text, node.isStreaming, paused = !expansion.isIdle || LocalFeedExpansionInProgress.current)
+    val showDetail = { onDetail(FeedDetail(node.id, "思考", node.text, markdown = true)) }
     NodeFrame(node.id, "psychology", LeadStyle.SOFT, open, "思考", { expanded[node.id] = !open },
+        onIconClick = showDetail,
         status = { NodeStatusLabel(if (node.isStreaming) NodeStatus.RUNNING else NodeStatus.OK, node.elapsedSec, startedAtMillis = node.startedAtMillis) },
-        rail = { StagedRail(open, 0, "open_in_full", "全屏") { onDetail(FeedDetail(node.id, "思考", node.text, markdown = true)) } },
+        rail = { StagedRail(open, 0, "open_in_full", "全屏", showDetail) },
         titleContent = { if (node.isStreaming) ShimmerTitle("思考中") else Text("思考", fontSize = 19.sp, fontWeight = FontWeight.Bold) }) {
         Expand(!open) {
             ThoughtPreview(text, tail = node.isStreaming)
@@ -316,12 +325,14 @@ private fun Stat(icon: String, prefix: String, count: Int, suffix: String) {
 @Composable
 private fun ToolNode(node: ToolNodeItem, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     val open = expanded[node.id] ?: node.isExpanded
+    val showDetail = {
+        val text = node.codeText ?: node.fullSheetText.ifEmpty { toolDetailText(node.detailContent) }
+        onDetail(FeedDetail(node.id, plainTitle(node.titleHtml), text, inferCodeLanguage(node.codeLanguage?.takeUnless { it == "diff" }, node.codePath, text, node.codeInterpreter)))
+    }
     NodeFrame(node.id, node.icon, node.leadStyle, open, node.titleHtml, { expanded[node.id] = !open },
+        onIconClick = showDetail,
         status = { NodeStatusLabel(node.state, node.elapsedSec, startedAtMillis = node.startedAtMillis) }, rail = {
-            StagedRail(open, 0, "open_in_full", "详情") {
-                val text = node.codeText ?: node.fullSheetText.ifEmpty { toolDetailText(node.detailContent) }
-                onDetail(FeedDetail(node.id, plainTitle(node.titleHtml), text, inferCodeLanguage(node.codeLanguage?.takeUnless { it == "diff" }, node.codePath, text, node.codeInterpreter)))
-            }
+            StagedRail(open, 0, "open_in_full", "详情", showDetail)
             ToolCopyRail(node, open)
         }) {
         Expand(!open) { ToolPreviewContent(node) }
