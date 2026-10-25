@@ -21,7 +21,7 @@ internal class ContainerFeatureGateway(val upstreamPort: Int, private val token:
     val url = "$origin/?__wawlink_token=$token"
     private val cookie = "wawlink_${server.localPort}"
     private val appCookiePrefix = "wawlink_app_${server.localPort}_"
-    private val policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:${server.localPort}; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; sandbox allow-scripts allow-same-origin allow-forms"
+    private val policy = "default-src 'self' https: http://127.0.0.1:* http://localhost:* data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http://127.0.0.1:* http://localhost:* blob:; style-src 'self' 'unsafe-inline' https: http://127.0.0.1:* http://localhost:*; img-src 'self' https: http://127.0.0.1:* http://localhost:* data: blob:; font-src 'self' https: http://127.0.0.1:* http://localhost:* data:; connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
     init {
         pool.execute {

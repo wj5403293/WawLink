@@ -32,11 +32,11 @@ internal class FeatureAndroidLuaBridge(
     private val sessionLock = Any()
     private var session: FeatureAndroidLuaRuntime.Session? = null
 
-    fun install(css: String): Boolean {
+    fun install(initialization: String): Boolean {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) ||
             !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return false
         WebViewCompat.addWebMessageListener(webView, "__wawlinkNative", setOf(origin)) { _, message, source, mainFrame, reply ->
-            if (closed.get() || !mainFrame || source.toString().trimEnd('/') != origin) return@addWebMessageListener
+            if (closed.get() || !mainFrame || !featureSameOrigin(source.toString(), origin)) return@addWebMessageListener
             val request = runCatching { Json.parseToJsonElement(message.data ?: "").jsonObject }.getOrNull() ?: return@addWebMessageListener
             val token = (request["document"] as? JsonPrimitive)?.contentOrNull ?: return@addWebMessageListener
             val op = (request["op"] as? JsonPrimitive)?.contentOrNull ?: return@addWebMessageListener
@@ -70,7 +70,8 @@ internal class FeatureAndroidLuaBridge(
             worker.execute(task)
         }
         listenerInstalled = true
-        script = WebViewCompat.addDocumentStartJavaScript(webView, featureAndroidBootstrap() + ";" + featureWhenDocumentExists(containerFeatureThemeScript(css)), setOf(origin))
+        script = WebViewCompat.addDocumentStartJavaScript(webView,
+            "if(window===window.top){" + featureAndroidBootstrap() + ";" + initialization + "}", setOf(origin))
         return true
     }
 

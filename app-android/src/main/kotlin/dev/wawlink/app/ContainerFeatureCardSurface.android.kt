@@ -13,10 +13,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayInputStream
-import java.net.URI
 
 @Composable
-internal fun ContainerFeatureCardSurface(html: String, css: String, data: String, modifier: Modifier, onAction: (String) -> Unit, onError: (String) -> Unit) {
+internal fun ContainerFeatureCardSurface(html: String?, url: String?, css: String, data: String, modifier: Modifier, onAction: (String) -> Unit, onError: (String) -> Unit) {
+    require((html == null) != (url == null)) { "Exactly one of html and url is required" }
     var font by remember { mutableStateOf<FeatureWebFont?>(null) }
     val report by rememberUpdatedState(onError)
     LaunchedEffect(Unit) {
@@ -24,14 +24,15 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
         catch (failure: Exception) { report("图标字体加载失败：${failure.message}") }
     }
     font?.let { bytes ->
-        AndroidFeatureSurface(FEATURE_CARD_ORIGIN, FEATURE_CARD_URL, html, css, data, bytes, modifier, onAction, onError)
+        val documentUrl = url ?: FEATURE_CARD_URL
+        AndroidFeatureSurface(featureDocumentOrigin(documentUrl), documentUrl, html, css, data, bytes, true, modifier, onAction, onError)
     }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 internal fun AndroidFeatureSurface(
-    origin: String, url: String, html: String?, css: String, data: String?, font: FeatureWebFont?,
+    origin: String, url: String, html: String?, css: String, data: String?, font: FeatureWebFont?, rounded: Boolean,
     modifier: Modifier, onAction: ((String) -> Unit)?, onError: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -47,13 +48,9 @@ internal fun AndroidFeatureSurface(
     }
     DisposableEffect(holder) {
         val web = holder.view
-        fun allowed(value: String?): Boolean = try {
-            val actual = URI(value ?: "")
-            val expected = URI(origin)
-            actual.scheme == expected.scheme && actual.host == expected.host && actual.port == expected.port && actual.rawUserInfo == null
-        } catch (_: Exception) { false }
+        fun allowed(value: String?): Boolean = featureSameOrigin(value, origin)
         web.apply {
-            if (html != null) {
+            if (rounded) {
                 outlineProvider = object : ViewOutlineProvider() {
                     override fun getOutline(view: View, outline: Outline) { outline.setRoundRect(0, 0, view.width, view.height, 28 * density) }
                 }
@@ -61,14 +58,15 @@ internal fun AndroidFeatureSurface(
             }
             setBackgroundColor(android.graphics.Color.WHITE)
             settings.apply {
-                javaScriptEnabled = true; domStorageEnabled = html == null
+                javaScriptEnabled = true; domStorageEnabled = true
                 allowFileAccess = false; allowContentAccess = false
                 @Suppress("DEPRECATION")
                 allowFileAccessFromFileURLs = false
                 @Suppress("DEPRECATION")
                 allowUniversalAccessFromFileURLs = false
                 javaScriptCanOpenWindowsAutomatically = false; setSupportMultipleWindows(false)
-                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                // HTTPS static cards may fetch loopback HTTP. CSP and request interception restrict it to loopback.
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 cacheMode = WebSettings.LOAD_NO_CACHE; safeBrowsingEnabled = true
                 mediaPlaybackRequiresUserGesture = true; setGeolocationEnabled(false); defaultFontSize = 18
             }
@@ -80,8 +78,9 @@ internal fun AndroidFeatureSurface(
                 override fun shouldOverrideUrlLoading(view: WebView, value: String): Boolean = !allowed(value) || html != null
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                     val value = request.url.toString()
-                    if (html == null && allowed(value)) return null
-                    if (html != null && value.startsWith("data:")) return null
+                    if (request.isForMainFrame) {
+                        if (allowed(value)) return null
+                    } else if (featureResourceAllowed(value)) return null
                     return WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
                 }
                 override fun onPageStarted(view: WebView, value: String, favicon: Bitmap?) {
@@ -90,7 +89,7 @@ internal fun AndroidFeatureSurface(
                 }
                 override fun onPageFinished(view: WebView, value: String) {
                     if (allowed(value)) view.evaluateJavascript(
-                        currentData?.let { featureCardUpdateScript(currentCss, it) } ?: containerFeatureThemeScript(currentCss), null,
+                        (currentData?.let { featureCardUpdateScript(currentCss, it) } ?: containerFeatureThemeScript(currentCss)) + ";" + featureReadyScript(), null,
                     )
                 }
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -99,7 +98,9 @@ internal fun AndroidFeatureSurface(
                 override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
                     if (request.isForMainFrame) report("本地页面返回 HTTP ${response.statusCode}")
                 }
-                override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) { handler.cancel() }
+                override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
+                    handler.cancel(); report("页面 TLS 验证失败：${error.primaryError}")
+                }
             }
             webChromeClient = object : WebChromeClient() {
                 // Browser media prompts are not the Lua Java bridge; Lua can use Android's permission APIs directly.
@@ -109,7 +110,10 @@ internal fun AndroidFeatureSurface(
                 override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean { callback.onReceiveValue(null); return true }
             }
         }
-        val installed = runCatching { holder.bridge.install(css) }
+        val initialization = featureDocumentPolicyScript() + ";" +
+            (if (html == null) font?.let { featureDocumentFontScript(it) } ?: "" else "") + ";" +
+            featureWhenDocumentExists(data?.let { featureCardUpdateScript(css, it) } ?: containerFeatureThemeScript(css)) + ";" + featureReadyScript()
+        val installed = runCatching { holder.bridge.install(initialization) }
             .onFailure { report("原生桥初始化失败：${it.message}") }.getOrDefault(false)
         if (installed) {
             holder.installed = true

@@ -1,12 +1,86 @@
 package dev.wawlink.runtime
 
 import java.io.InputStream
+import java.io.ByteArrayOutputStream
+import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.Base64
 import kotlinx.serialization.json.*
 
 private const val MAX_CARD_HTML_BYTES = 256 * 1024
+
+internal fun parseFeatureLifecycle(manifest: JsonObject): ContainerFeatureLifecycle = when (val value = manifest["lifecycle"]) {
+    null -> ContainerFeatureLifecycle.PAGE
+    else -> {
+        require(value is JsonPrimitive && value.isString) { "lifecycle 必须为字符串" }
+        when (value.content) {
+            "page" -> ContainerFeatureLifecycle.PAGE
+            "manual" -> ContainerFeatureLifecycle.MANUAL
+            "container" -> ContainerFeatureLifecycle.CONTAINER
+            else -> error("lifecycle 只能为 page、manual 或 container")
+        }
+    }
+}
+
+internal fun parseFeatureCardUrl(manifest: JsonObject): String? = manifest["cardUrl"]?.let {
+    require(it is JsonPrimitive && it.isString && it.content.isNotBlank()) { "cardUrl 必须为非空字符串" }
+    require("card" !in manifest) { "card 和 cardUrl 不能同时声明" }
+    validateFeatureCardUrl(it.content)
+    it.content
+}
+
+private fun decodeFeatureUrl(value: String): String {
+    val bytes = ByteArrayOutputStream()
+    var index = 0
+    while (index < value.length) {
+        if (value[index] == '%') {
+            require(index + 2 < value.length) { "cardUrl 包含无效编码" }
+            val high = value[index + 1].digitToIntOrNull(16)
+            val low = value[index + 2].digitToIntOrNull(16)
+            require(high != null && low != null) { "cardUrl 包含无效编码" }
+            bytes.write(high * 16 + low)
+            index += 3
+        } else {
+            val end = value.indexOf('%', index).takeIf { it >= 0 } ?: value.length
+            val encoded = Charsets.UTF_8.newEncoder().onMalformedInput(CodingErrorAction.REPORT)
+                .encode(java.nio.CharBuffer.wrap(value, index, end))
+            while (encoded.hasRemaining()) bytes.write(encoded.get().toInt() and 255)
+            index = end
+        }
+    }
+    return Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes.toByteArray())).toString()
+}
+
+internal fun validateFeatureCardUrl(value: String) {
+    val uri = URI(value)
+    val decoded = decodeFeatureUrl(value)
+    require(decoded.none { it < ' ' || it == '\\' || it == '\u007f' }) { "cardUrl 包含无效字符" }
+    if (value.startsWith('/')) {
+        require(!value.startsWith("//") && !uri.isAbsolute && uri.rawAuthority == null && !uri.path.startsWith("//")) { "cardUrl 必须为单斜线开头的绝对路径" }
+    } else {
+        require(uri.scheme == "http" && uri.host in setOf("127.0.0.1", "localhost") && uri.port in 1..65535 &&
+            uri.rawUserInfo == null) { "cardUrl 只允许显式端口的 http://127.0.0.1 或 http://localhost 地址" }
+    }
+    require(uri.rawQuery.orEmpty().split('&').none { part ->
+        decodeFeatureUrl(part.substringBefore('=')).replace('+', ' ') == "__wawlink_token"
+    }) { "cardUrl 不能声明保留的 __wawlink_token 参数" }
+}
+
+/** Managed paths need a live gateway; explicit loopback URLs never receive its token. */
+fun resolveFeatureCardUrl(feature: ContainerFeature, session: ContainerFeatureSession?): String? {
+    val cardUrl = feature.cardUrl ?: return null
+    validateFeatureCardUrl(cardUrl)
+    if (!cardUrl.startsWith('/')) return cardUrl
+    val live = session ?: return null
+    val gateway = URI(live.url)
+    val card = URI(cardUrl)
+    val bootstrap = gateway.rawQuery.orEmpty().split('&').singleOrNull { it.substringBefore('=') == "__wawlink_token" }
+        ?: error("功能会话缺少访问令牌")
+    val query = card.rawQuery?.let { if (it.isEmpty()) bootstrap else "$it&$bootstrap" } ?: bootstrap
+    return "${gateway.scheme}://${gateway.rawAuthority}${card.rawPath}?$query" + (card.rawFragment?.let { "#$it" } ?: "")
+}
 
 internal fun parseFeatureCardSpan(manifest: JsonObject): Int = manifest["cardSpan"]?.let {
     require(it is JsonPrimitive && !it.isString && it.intOrNull?.let { span -> span in 1..2 } == true) { "cardSpan 必须为整数 1 或 2" }

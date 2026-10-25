@@ -1,6 +1,6 @@
 package dev.wawlink.runtime
 
-/** Native OMP Skill; intentionally installed only when absent, never replacing user edits. */
+/** Native OMP Skill; only exact known unmodified bundled versions may be upgraded. */
 internal val FEATURE_SKILL = """
 ---
 name: wawlink-functions
@@ -22,11 +22,11 @@ description: 仅当用户明确要求新增或创建 WawLink 功能页卡片时�
     ~/.wawlink/features/<id>/card.html  # 可选，功能页中的自定义卡片
     ~/.wawlink/features/<id>/stop.sh    # 可选
 
-id 只含字母、数字、下划线、短横线，首字符为字母或数字，长度 1–64。card.json 必须为 UTF-8 JSON 对象（不超过 64 KiB），必填 icon、title、description；icon 必须为真实 Google Material Symbols 的小写名称，不使用 emoji、图片或字母代替图标。title 与 description 使用清晰中文。旧清单无需迁移：可选 lifecycle 为 page 或 manual，省略即 page。
+id 只含字母、数字、下划线、短横线，首字符为字母或数字，长度 1–64。card.json 必须为 UTF-8 JSON 对象（不超过 64 KiB），必填 icon、title、description；icon 使用真实 Google Material Symbols 小写名称，title 与 description 使用清晰中文。lifecycle 为 page（默认）、manual 或 container；旧清单无需迁移。
 
-可选字段：color 是严格的 #RRGGBB 颜色字符串，未指定时使用应用主题；card 指定功能目录内的相对 HTML 文件路径，不能为绝对路径或含 . / .. 路径段；未指定时自动发现 card.html，文件不存在则使用原生卡片。cardHeight 为整数 dp，默认 172，原生限制到 80–480，旧清单显式设置的高度继续保留。cardSpan 为整数 1 或 2，默认 1；2 表示占满两列，原生及 HTML 卡片均支持。showStatus 与 showMemory 为 JSON 布尔值，默认 false，分别在原生卡片显示真实服务状态、真实监管进程组 RSS。RSS 不可读时显示不可用，不以手机总内存、宿主内存、容器总内存或假数代替。HTML 文件必须是 UTF-8、自包含且不超过 256 KiB；内联 CSS、JS、data URL 资源，不依赖服务已启动或网络 CDN。发现仍要求 card.json 和 start.sh 都存在，即使卡片只提供脚本或 Lua 动作，也必须提供实际服务所需的 start.sh，不能放入假启动脚本。
+可选字段：color 为 #RRGGBB；card 为功能目录内的相对 HTML 文件路径，不能绝对或含 . / ..，缺省自动发现 card.html。cardUrl 用于动态卡片，支持自身服务的 /card 等绝对路径，或 http://127.0.0.1:端口/路径、http://localhost:端口/路径；card 与 cardUrl 不同时声明，cardUrl 优先于自动发现 card.html。自身路径由宿主对接当前真实服务和随机端口，不写死 WAWLINK_PORT 或访问令牌；独立 loopback 地址用于已有服务，不附带本功能令牌，服务由实际所有者负责生命周期。cardHeight 是整数 dp，默认 172，范围 80–480；cardSpan 是 1（默认半宽）或 2（占满两列）。showStatus、showMemory 是布尔值，默认 false，显示真实服务状态、监管进程组 RSS，无法读取时不得伪造。静态 HTML 文件为不超过 256 KiB 的 UTF-8；无需强制把所有 CSS/JS 内联，可以使用外部 HTTPS API/CDN/图片，动态服务可以拆分同源文件、fetch、WebSocket/SSE 和常用框架。发现仍要求 card.json 和真实 start.sh，不放入假启动脚本。
 
-不要让目录、清单、HTML、脚本的符号链接逃出该功能目录或当前用户 HOME。启动约定永远是 start.sh，不在清单插入任意 shell 命令、固定端口、host 路径或凭据。原生扫描仅有界读取数据与文件存在性，绝不执行 start.sh/stop.sh、Lua 或卡片 JS；HTML 在卡片显示时才由 Web 渲染器执行，不为显示卡片启动后台服务。原生卡片是默认样式，HTML 卡片仅替换 Functions 页中该功能的卡片区域，不改变容器列表。用户在功能页长按多选、隐藏、排序及覆盖卡片颜色，在应用设置恢复隐藏项；不需要修改 APK、导航、rootfs 或重建容器。
+目录、清单、HTML 和脚本不得通过符号链接逃出功能目录或当前 HOME。托管服务的启动入口仍是 start.sh，不在清单插入任意 shell 命令或凭据；它监听宿主提供的动态端口。扫描只读取数据，不执行脚本、Lua 或 JS；只有显式操作或 lifecycle=container 的容器启动策略才运行服务。HTML 在显示时执行，不为显示卡片擅自启动 page/manual 服务。动态卡片等待服务时使用宿主的居中进度或启动入口，不伪造天气/服务器状态。用户可长按多选、隐藏、排序，隐藏不等于停止 container 服务；无需改 APK 或重建容器。
 
 原生卡片默认不附加启动、停止或其他按钮。可选 actions 数组最多三个，超过三个直接拒绝整个清单，不截断；省略或空数组保持无按钮。每个动作必须使用小写字段 id、title、icon、type：id 为 1–64 位小写字母、数字、下划线或短横线，首位为字母或数字，同一卡片不可重复；title 为清晰中文，icon 为真实小写 Material Symbols 名称。type 只能是小写 open（打开服务）、start（启动）、stop（停止）、toggle（按真实状态启停）、logs（查看真实输出）、script（容器脚本）或 lua（Android 原生 LuaJ）。script 动作额外填写 script 相对文件路径，不能绝对、含空路径段或 . / ..；lua 动作额外填写非空内联 lua 源码字符串。不要以按钮标题或 id 推断动作类型，也不要添加用户未要求的动作。
 
@@ -40,15 +40,15 @@ start.sh 通过 /bin/sh 运行（写 POSIX shell，或由脚本显式 exec 需�
 
 只监听 WAWLINK_HOST（固定为 127.0.0.1）与 WAWLINK_PORT（每次启动随机分配的空闲端口）；不要监听 0.0.0.0，不硬编码端口。WAWLINK_TOKEN 是每次启动的 256 位随机令牌。HTTP 请求携带 Authorization: Bearer <token> 与 X-WawLink-Token，服务必须验证令牌后才能提供数据或执行操作。令牌只能从环境读取，不打印、不写入仓库或 URL、不生成永久凭据。其余环境为 WAWLINK_FEATURE_ID、WAWLINK_FEATURE_DIR、WAWLINK_THEME_CSS。
 
-服务在 30 秒内对根路径 / 的带令牌 HTTP GET 返回 2xx/3xx；原生检测实际 HTTP 就绪，不以进程存在、固定 sleep 或伪造成功代替。错误和依赖问题输出 stderr，保留真实非零退出码。start.sh 在就绪后仍必须保持前台运行。启动失败在原生页面展示具体原因和真实输出。资源加载使用相对或同源 URL；允许同源 WebSocket。不要依赖任意外站 CDN、跨域跳转或宿主文件访问。普通 HTTP 响应/上传目前上限 32 MiB，功能应使用分页、分块应用协议而不是巨大单次响应。
+服务在 30 秒内对根路径 / 的带令牌 HTTP GET 返回 2xx/3xx；以真实 HTTP 就绪判断，不用固定 sleep 或假成功。启动后 start.sh 保持前台，错误保留真实 stderr/退出码。页面可以使用相对/同源 JS/CSS、图片、fetch、WebSocket、SSE，以及外部 HTTPS API/CDN、图片和 wss；遵守浏览器 CORS 与服务器实际认证，不绕过 TLS 校验。普通 HTTP 响应/上传上限 32 MiB，长列表分页、流式数据使用真实协议。
 
-默认 lifecycle=page：离开功能页面即执行可选 stop.sh 并停止整个服务进程组。只有用户需要跨页面持久运行时才设 lifecycle=manual；离页继续运行，用户在页面或卡片明确停止。两者在容器停止或应用关闭时都回收；不要声称关闭手机进程后还能永久运行。stop.sh 是可选、幂等的收尾，不应再启动服务，读取相同功能/端口/令牌环境；尽快完成。即使 stop.sh 失败，原生仍终止监管进程，并显示停止错误。不得绕开原生监管或重新启动已停止的容器。
+page 离开功能页后运行可选 stop.sh 并终止服务组；manual 离页继续，用户明确启停。container 在每次容器从停止变为运行时自动扫描并启动，不需要先进入功能页，离页/隐藏不停止，停止容器或关闭应用时回收。手动停止或失败后不因刷新、改名或切页反复拉起，下次容器启动再自动尝试；在已运行容器中新建卡片可手动启动，或下次容器启动自动运行。stop.sh 可选、幂等、尽快完成；应用正常停止功能时使用同一环境执行，容器已关闭则直接回收，失败也不遗留进程组。不承诺手机杀进程后永久后台运行，不擅自重新启动已停止容器。
 
 ## HTML 卡片与原生操作
 
-HTML 拥有整个卡片区域，不是原生图标标题下的一小块内容。原生不额外添加标题、描述、状态、内边距或动作栏；由 HTML 自行绘制所需信息与按钮。html、body 和根内容使用 width:100%;height:100%;margin:0;box-sizing:border-box，自行设置背景、内边距和布局；不要使用固定像素宽度或假设备边框。父容器负责圆角裁剪，HTML 应铺满到边，不添加外围空隙。cardHeight 决定实际高度，cardSpan 决定占一列或两列；HTML 内部不要自行模拟双卡网格。
+HTML 拥有整个卡片区域，宿主不额外叠加标题、描述、按钮或内边距。可自由组织 DOM、CSS、JS，使用合适的框架及真实网络数据，不要求复刻原生布局，不强制每一行样式或禁止 CDN；确保响应式铺满实际视口，cardHeight 决定高度，cardSpan 决定单双列。宿主负责圆角和编辑手势。保持大字号中文、可读对比度及非线性反馈，天气/状态样式可按用户设计使用自己的配色和图形，不伪造数据。
 
-HTML 卡片与服务的完整页面均可使用 window.wawlink。卡片初始化后读取 wawlink.card（对象字段 id、status、memoryBytes、containerRunning）；监听 window 的 wawlink-card-update 事件并读取 event.detail，以真实状态更新界面。memoryBytes 为整数或 null，status 为小写的 stopped、starting、running、stopping、failed；不要把 null 当作已测得的零。卡片显示不意味着服务已经启动，不能自行伪造 running。
+HTML 卡片可读取 window.wawlink.card（id、status、memoryBytes、containerRunning）并监听 wawlink-card-update。动态 URL 文档在宿主初始化完成后发送 wawlink-ready，初始化写成 if(window.wawlink&&wawlink.ready) init(); else window.addEventListener('wawlink-ready', init, {once:true})，不要假设桌面首个脚本已获得桥。memoryBytes 是整数或 null，status 为 stopped/starting/running/stopping/failed，不把 null 当测得零；自行 fetch 的天气、服务器指标来自真实 API，加载/失败须真实反映。数据和主题更新不重载文档。
 
 wawlink.action('open') 请求原生打开功能，wawlink.action('start') 请求启动，wawlink.action('stop') 请求停止；仅使用这三个动作，不通过假链接或启动脚本绕过原生生命周期。动作结果以真实状态更新和原生错误为准；不要假设点击即成功。原生设置提供确认卸载：先停止服务，再只删除经过验证的当前 HOME/.wawlink/features/<id>，不跟随链接、不删除宿主挂载或受保护根。
 
@@ -67,14 +67,14 @@ wawlink.lua 没有返回值时解析为 null；一个返回值为对应 JSON 值
 
 ## Web 来源与系统边界
 
-完整服务页面运行于原生令牌门控的随机 loopback 来源。Android 使用真正 WebView，桌面使用真正 Web 渲染器。普通页面资源、表单、网络、WebSocket 与导航遵循该功能的确切来源和原生 CSP，不依赖宿主文件访问、自动外跳、弹窗或 file:/content:/intent:/javascript: 导航；外部操作使用显式 wawlink 助手或可信 LuaJ API。HTTP/CSP 是 Web 层来源规则，不限制可信 LuaJ 的完整 Java 访问，也不是容器脚本安全沙箱。容器脚本仍具有配置用户权限，Android 调用仍受操作系统边界约束；不运行不可信脚本。
+服务页和动态卡片使用真实 loopback 来源，托管服务经过随机令牌网关。网页可加载本地 loopback 和 HTTPS 资源、外部接口及 WebSocket；外部依赖在受信主页面中执行时具有该页面的桥能力，只使用用户信任的依赖。主文档导航和 Android 原生桥仍限定当前受信来源，子框架及 object 不开放，file:/content: 宿主文件访问关闭；系统浏览器、分享、外部应用等使用显式 wawlink 助手或可信 LuaJ。保留 CORS、TLS、Android 系统权限边界；此桥不是不可信 HTML/Lua 的沙箱。
 
 ## 所有 UI 与文案要求（不可简化）
 
-- 遵循 WawLink 现有 Material 3 设计；白色主背景，大字号中文界面，足够大的触控目标（至少 48px），清晰层级、宽松留白、圆角卡片与分组，不做终端风、开发者占位界面或视觉简化。
+- 页面以现有 Material 3、白底大字号中文为默认，卡片可按用户需求自由布局和配色，使用合适的框架、图表或动画，不为了限制编写方式而拆减真实功能。
 - 所有标题、按钮、说明、设置、空状态、加载、就绪、错误、确认、删除、停止与重试文案必须是自然、清晰的中文。状态来自真实操作，不展示假记录、示例数据、硬编码数量、虚构健康状态或凭据。
 - 图标必须使用 Google Material Symbols，与 WawLink 的 Symbol 语义一致；不使用 emoji、字符画、图标替代品或未经授权的外部字体请求。原生为卡片和完整页面注入 Material Symbols 字体及主题，可使用 material-symbols-rounded 样式；不重复下载外部字体。服务页面也可使用同源 /__wawlink_native/material-symbols.ttf 字体资源。
-- 主色必须跟随应用当前主题的 primary、primaryContainer、onPrimary、onPrimaryContainer。原生注入 WAWLINK_THEME_CSS，同时页面的 :root 具有 --md-sys-color-primary、--md-sys-color-primary-container、--md-sys-color-on-primary、--md-sys-color-on-primary-container、--md-sys-color-surface、--md-sys-color-on-surface 等 CSS 变量。以 var(...) 使用这些值，白色背景保持 Material 3 视觉；禁止回退到经典 Material 紫色或自造固定紫色。原生主题变化会更新 CSS。
+- 原生提供 --md-sys-color-* 主题变量与 Material Symbols；需要跟随主题时直接使用，不覆盖作者明确指定的背景、渐变、颜色和图形。不要无意采用默认紫色；用户明确设计的配色按要求保留。
 - 动效必须非线性，采用 Material emphasized 风格 cubic-bezier(.2,0,0,1) 或更精确的 emphasized easing；页面切换、卡片展开、状态变化、按钮反馈应连贯自然，不使用线性滑动、瞬移或持续无意义动画。尊重 prefers-reduced-motion，提供减少动画方案。
 - 按照用户明确指定的全部界面、功能、布局、交互与文字逐项完成，不因本技能而缩减；若要求参考 ref-plan/plugin-management.html、skill-management.html 或其他设计，应准确保留对应视觉和交互，不用简化版取代。若请求还涉及插件/技能管理，Functions 入口只管理当前容器用户级对象，聊天会话弹窗入口只管理该会话工作区的项目级对象，不混用作用域。
 - 文件、规则、插件、技能和终端属于真实内置能力，不在自定义卡片中伪造它们的安装、启停、重载或会话状态。配置保存不等于当前 agent 已重载；需要重启就明确提示，不虚构 runtime reload。

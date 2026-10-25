@@ -8,13 +8,16 @@ import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
-enum class ContainerFeatureLifecycle { PAGE, MANUAL }
+enum class ContainerFeatureLifecycle { PAGE, MANUAL, CONTAINER }
 enum class ContainerFeatureActionType { OPEN, START, STOP, TOGGLE, LOGS, SCRIPT, LUA }
 data class ContainerFeatureAction(
     val id: String,
@@ -38,6 +41,7 @@ data class ContainerFeature(
     val showMemory: Boolean = false,
     val cardSpan: Int = 1,
     val actions: List<ContainerFeatureAction> = emptyList(),
+    val cardUrl: String? = null,
 )
 data class ContainerFeatureCatalog(val home: String, val features: List<ContainerFeature>, val errors: List<String>)
 data class ContainerFeatureSession(val containerId: String, val featureId: String, val url: String, val token: String)
@@ -47,51 +51,117 @@ data class ContainerFeatureState(val status: ContainerFeatureStatus = ContainerF
 /** Guest-owned cards. Discovery only reads data; processes always use the configured runtime identity. */
 class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val gate = Any()
     private val locks = ConcurrentHashMap<String, Mutex>()
-    private val active = ConcurrentHashMap<String, Running>()
-    private val starting = ConcurrentHashMap<String, Process>()
+    private val runs = mutableMapOf<String, ContainerRun>()
+    private val allRuns = mutableSetOf<ContainerRun>()
+    private val instances = ConcurrentHashMap<String, Instance>()
     private val scriptActions = ContainerFeatureScriptActions(runtime)
     private val _states = MutableStateFlow<Map<String, ContainerFeatureState>>(emptyMap())
     val states: StateFlow<Map<String, ContainerFeatureState>> = _states.asStateFlow()
+    private val _errors = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    val errors: StateFlow<Map<String, List<String>>> = _errors.asStateFlow()
     @Volatile private var closed = false
     @Volatile private var themeCss = DEFAULT_FEATURE_CSS
     @Volatile private var iconFont: ByteArray? = null
     fun setIconFont(bytes: ByteArray) { iconFont = bytes }
-    private class Running(val feature: ContainerFeature, val process: Process, val gateway: ContainerFeatureGateway, val identity: FeatureProcessIdentity?) {
+
+    private class ContainerRun(val containerId: String, val generation: Long, parent: Job) {
+        val job = SupervisorJob(parent)
+        val scope = CoroutineScope(job + Dispatchers.IO + FeatureRunningOnly)
+        val stoppedFeatures = mutableSetOf<String>()
+    }
+
+    private class Instance(val key: String, val feature: ContainerFeature, val run: ContainerRun, val startJob: Job) {
+        @Volatile var process: Process? = null
+        @Volatile var gateway: ContainerFeatureGateway? = null
+        @Volatile var identity: FeatureProcessIdentity? = null
         @Volatile var stopping = false
+        var port = 0
+        var token = ""
+        val reaping = AtomicBoolean()
+        val reaped = CompletableDeferred<Unit>()
     }
 
     init {
         scope.launch {
             runtime.containers.collect { containers ->
-                val running = containers.filter { it.running }.map { it.config.id }.toSet()
-                scriptActions.cancelStoppedContainers(running)
-                active.entries.filter { it.key.substringBefore('/') !in running }.forEach { (key, value) ->
-                    value.stopping = true
-                    value.gateway.close()
-                    value.process.destroy()
-                    active.remove(key, value)
-                    update(key) { it.copy(status = ContainerFeatureStatus.STOPPED, session = null, error = "容器已停止") }
+                val running = containers.filter { it.running }.associateBy { it.config.id }
+                synchronized(gate) {
+                    runs.filter { (id, run) -> running[id]?.runGeneration != run.generation }.keys.forEach { id ->
+                        runs.remove(id)?.job?.cancel(CancellationException("容器已停止或重新启动"))
+                        _errors.update { it - id }
+                    }
+                    if (!closed) running.values.forEach { attachLocked(it) }
                 }
+                scope.launch { scriptActions.cancelStoppedContainers(runtime.containers.value.filter { it.running }.map { it.config.id }.toSet()) }
             }
+        }
+    }
+
+    /** Metadata updates do not create a new epoch, rediscover, or retry a stopped/failed feature. */
+    private fun attachLocked(container: ContainerInfo): ContainerRun {
+        val containerId = container.config.id
+        runs[containerId]?.let { previous ->
+            if (previous.generation == container.runGeneration) return previous
+            runs.remove(containerId)
+            previous.job.cancel(CancellationException("容器已重新启动"))
+        }
+        return ContainerRun(containerId, container.runGeneration, scope.coroutineContext.job).also { run ->
+            runs[containerId] = run
+            allRuns += run
+            run.job.invokeOnCompletion { synchronized(gate) { allRuns.remove(run) } }
+            run.scope.launch {
+                try {
+                    val catalog = discover(containerId, run)
+                    catalog.features.filter { it.lifecycle == ContainerFeatureLifecycle.CONTAINER }.forEach { feature ->
+                        launch {
+                            try { startInRun(run, feature) }
+                            catch (cancelled: CancellationException) { throw cancelled }
+                            catch (_: Exception) { /* startInRun publishes the genuine failure. */ }
+                        }
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) { publishErrors(containerId, listOf("功能扫描失败：${failure.message}"), run) }
+            }
+        }
+    }
+
+    private fun current(run: ContainerRun): Boolean = !closed && runs[run.containerId] === run && run.job.isActive &&
+        runtime.containers.value.any { it.config.id == run.containerId && it.running && it.runGeneration == run.generation }
+
+    private fun publishErrors(containerId: String, errors: List<String>, run: ContainerRun? = null) {
+        synchronized(gate) {
+            if (!closed && (run == null || current(run))) _errors.update { it + (containerId to errors) }
         }
     }
 
     fun stateKey(containerId: String, featureId: String) = "$containerId/$featureId"
     fun setTheme(css: String) {
         themeCss = css
-        active.values.forEach { it.gateway.themeCss = css }
+        instances.values.forEach { it.gateway?.themeCss = css }
     }
     private fun update(key: String, change: (ContainerFeatureState) -> ContainerFeatureState) {
         _states.update { states -> states + (key to change(states[key] ?: ContainerFeatureState())) }
     }
-    private fun append(key: String, text: String) = update(key) { it.copy(output = (it.output + text).takeLast(32_768)) }
+    private fun append(instance: Instance, text: String) = synchronized(gate) {
+        if (instances[instance.key] === instance && current(instance.run)) update(instance.key) { it.copy(output = (it.output + text).takeLast(32_768)) }
+    }
 
     /** Also called before agent startup, so the real native Skill is discoverable without opening Functions. */
     suspend fun installSkill(containerId: String) = installContainerFeatureSkill(runtime, containerId)
 
-    suspend fun catalog(containerId: String): ContainerFeatureCatalog {
+    suspend fun catalog(containerId: String): ContainerFeatureCatalog = try {
+        discover(containerId)
+    } catch (cancelled: CancellationException) { throw cancelled }
+    catch (failure: Exception) {
+        publishErrors(containerId, listOf("功能扫描失败：${failure.message}"))
+        throw failure
+    }
+
+    private suspend fun discover(containerId: String, run: ContainerRun? = null): ContainerFeatureCatalog {
         check(!closed) { "功能服务已关闭" }
+        if (run != null) synchronized(gate) { check(current(run)) { "容器运行实例已变化" } }
         val errors = mutableListOf<String>()
         try { installSkill(containerId) } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { errors += "内置 Skill 注入失败：${failure.message}" }
@@ -137,11 +207,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                         fun required(name: String): String = value[name]?.jsonPrimitive?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: error("缺少字符串字段 $name")
                         val icon = required("icon")
                         require(icon.matches(Regex("[a-z][a-z0-9_]{0,79}"))) { "icon 必须是 Material Symbols 名称" }
-                        val lifecycle = when (value["lifecycle"]?.jsonPrimitive?.content ?: "page") {
-                            "page" -> ContainerFeatureLifecycle.PAGE
-                            "manual" -> ContainerFeatureLifecycle.MANUAL
-                            else -> error("lifecycle 只能为 page 或 manual")
-                        }
+                        val lifecycle = parseFeatureLifecycle(value)
                         val color = value["color"]?.let {
                             require(it is JsonPrimitive && it.isString && it.content.matches(Regex("#[0-9a-fA-F]{6}"))) { "color 必须为 #RRGGBB" }
                             it.content
@@ -158,34 +224,59 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                             require(it is JsonPrimitive && !it.isString && it.intOrNull != null) { "cardHeight 必须为整数 dp" }
                             it.int.coerceIn(80, 480)
                         } ?: 172
-                        val html = readFeatureCardHtml(runtime, containerId, directory, cardFile)
+                        val cardUrl = parseFeatureCardUrl(value)
+                        val html = if (cardUrl == null) readFeatureCardHtml(runtime, containerId, directory, cardFile) else null
                         features += ContainerFeature(id, required("title"), required("description"), icon, directory, lifecycle,
                             color, html, height, boolean("showStatus"), boolean("showMemory"),
-                            parseFeatureCardSpan(value), parseFeatureActions(value))
+                            parseFeatureCardSpan(value), parseFeatureActions(value), cardUrl)
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (failure: Exception) { errors += "$id：${failure.message}" }
                 }
                 else -> error("容器功能扫描返回无效数据")
             }
         }
+        publishErrors(containerId, errors, run)
         return ContainerFeatureCatalog(home, features.sortedBy { it.title }, errors)
     }
 
-    suspend fun start(containerId: String, feature: ContainerFeature): ContainerFeatureSession = withContext(Dispatchers.IO) {
-        val key = stateKey(containerId, feature.id)
-        locks.getOrPut(key) { Mutex() }.withLock {
+    suspend fun start(containerId: String, feature: ContainerFeature): ContainerFeatureSession {
+        check(!closed) { "功能服务已关闭" }
+        if (runtime.containers.value.none { it.config.id == containerId && it.running }) catalog(containerId)
+        val run = synchronized(gate) {
             check(!closed) { "功能服务已关闭" }
-            active[key]?.let { running ->
-                states.value[key]?.session?.takeIf { running.process.isAlive && !running.stopping }?.let { return@withLock it }
+            val container = runtime.containers.value.firstOrNull { it.config.id == containerId && it.running } ?: error("容器未运行")
+            attachLocked(container).also { it.stoppedFeatures.remove(feature.id) }
+        }
+        return run.scope.async { startInRun(run, feature, validate = true) }.await()
+    }
+
+    private suspend fun startInRun(run: ContainerRun, feature: ContainerFeature, validate: Boolean = false): ContainerFeatureSession {
+        val containerId = run.containerId
+        val key = stateKey(containerId, feature.id)
+        return locks.getOrPut(key) { Mutex() }.withLock {
+            synchronized(gate) {
+                check(current(run)) { "容器已停止" }
+                if (feature.id in run.stoppedFeatures) throw CancellationException("功能已停止")
+                instances[key]?.let { instance ->
+                    states.value[key]?.session?.takeIf { instance.run === run && instance.process?.isAlive == true && !instance.stopping }
+                        ?.let { return@withLock it }
+                }
             }
-            update(key) { ContainerFeatureState(status = ContainerFeatureStatus.STARTING) }
-            var child: Process? = null
-            var gateway: ContainerFeatureGateway? = null
+            val instance = Instance(key, feature, run, currentCoroutineContext().job)
+            synchronized(gate) {
+                check(current(run) && feature.id !in run.stoppedFeatures) { "功能已停止" }
+                instances[key] = instance
+                update(key) { ContainerFeatureState(status = ContainerFeatureStatus.STARTING) }
+            }
             try {
-                val current = catalog(containerId).features.firstOrNull { it.id == feature.id } ?: error("功能已移除或清单无效")
-                require(current == feature) { "功能清单已变化，请返回功能页刷新后重试" }
+                if (validate) {
+                    val current = catalog(containerId).features.firstOrNull { it.id == feature.id } ?: error("功能已移除或清单无效")
+                    require(current == feature) { "功能清单已变化，请返回功能页刷新后重试" }
+                }
                 val port = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
                 val token = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it.toInt() and 255) }
+                instance.port = port
+                instance.token = token
                 val identityMarker = "WAWLINK_PROCESS_${java.util.UUID.randomUUID()}"
                 val processIdentity = CompletableDeferred<FeatureProcessIdentity?>()
                 val groupScript = """
@@ -204,7 +295,10 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                     fi
                     exec /bin/sh ./start.sh
                 """.trimIndent()
-                child = runtime.openProcess(containerId, listOf("/bin/sh", "-c", """
+                val process = withContext(NonCancellable) {
+                    instance.startJob.ensureActive()
+                    synchronized(gate) { check(current(run) && !instance.stopping) { "容器或功能已停止" } }
+                    runtime.openRunningProcess(containerId, listOf("/bin/sh", "-c", """
                     set -eu
                     dir=${'$'}1
                     expected=${'$'}2
@@ -248,25 +342,24 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                     code=${'$'}?
                     printf '\n功能启动进程退出（%s）；start.sh 必须以前台方式运行服务。\n' "${'$'}code" >&2
                     exit "${'$'}code"
-                """.trimIndent(), "wawlink-feature", current.directory, current.directory), "/", mapOf(
+                """.trimIndent(), "wawlink-feature", feature.directory, feature.directory), "/", mapOf(
                     "WAWLINK_HOST" to "127.0.0.1", "WAWLINK_PORT" to port.toString(), "WAWLINK_TOKEN" to token,
-                    "WAWLINK_FEATURE_ID" to feature.id, "WAWLINK_FEATURE_DIR" to current.directory,
+                    "WAWLINK_FEATURE_ID" to feature.id, "WAWLINK_FEATURE_DIR" to feature.directory,
                     "WAWLINK_THEME_CSS" to themeCss,
-                ))
-                val process = child
-                starting[key] = process
-                check(!closed) { "功能服务已关闭" }
+                    )).also { instance.process = it }
+                }
+                currentCoroutineContext().ensureActive()
                 listOf(process.inputStream, process.errorStream).forEachIndexed { index, stream ->
-                    scope.launch {
+                    run.scope.launch {
                         try {
                             if (index == 0) processIdentity.complete(readFeatureIdentity(stream, identityMarker))
                             stream.bufferedReader().use { reader ->
                                 val buffer = CharArray(2048)
-                                while (true) { val count = reader.read(buffer); if (count < 0) break; append(key, String(buffer, 0, count)) }
+                                while (true) { val count = reader.read(buffer); if (count < 0) break; append(instance, String(buffer, 0, count)) }
                             }
                         } catch (failure: Exception) {
                             if (index == 0) processIdentity.completeExceptionally(failure)
-                            if (process.isAlive) append(key, "\n读取功能输出失败：${failure.message}\n")
+                            if (process.isAlive) append(instance, "\n读取功能输出失败：${failure.message}\n")
                         }
                     }
                 }
@@ -279,28 +372,35 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                     }
                     identity
                 }
-                check(!closed) { "功能服务已关闭" }
-                gateway = ContainerFeatureGateway(port, token, themeCss) { iconFont }
+                instance.identity = identity
+                currentCoroutineContext().ensureActive()
+                val gateway = ContainerFeatureGateway(port, token, themeCss) { iconFont }
+                instance.gateway = gateway
                 val session = ContainerFeatureSession(containerId, feature.id, gateway.url, token)
-                val running = Running(current, process, gateway, identity)
-                active[key] = running
-                starting.remove(key, process)
-                check(!closed) { "功能服务已关闭" }
-                update(key) { it.copy(status = ContainerFeatureStatus.RUNNING, session = session, error = null) }
-                scope.launch {
-                    val exit = process.waitFor()
-                    if (!running.stopping && active.remove(key, running)) {
-                        running.gateway.close()
-                        update(key) { it.copy(status = ContainerFeatureStatus.FAILED, session = null, error = "服务进程已退出（$exit）") }
+                synchronized(gate) {
+                    check(current(run) && !instance.stopping && instances[key] === instance) { "容器或功能已停止" }
+                    update(key) { it.copy(status = ContainerFeatureStatus.RUNNING, session = session, error = null) }
+                }
+                run.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    try {
+                        // Install cancellation cleanup before returning; dispatch the blocking wait off the startup lock.
+                        yield()
+                        val exit = runInterruptible(Dispatchers.IO) { process.waitFor() }
+                        reap(instance, ContainerFeatureStatus.FAILED, "服务进程已退出（$exit）", stopHook = false)
+                    } finally {
+                        reap(instance, ContainerFeatureStatus.STOPPED, stopHook = true)
                     }
                 }
                 session
             } catch (failure: Throwable) {
-                starting.remove(key)
-                active.remove(key)?.stopping = true
-                gateway?.close()
-                child?.let(::finishProcess)
-                update(key) { it.copy(status = ContainerFeatureStatus.FAILED, session = null, error = if (failure is TimeoutCancellationException) "30 秒内未就绪：服务须监听 WAWLINK_HOST/WAWLINK_PORT，并对根路径返回 HTTP 2xx/3xx" else failure.message ?: "启动失败") }
+                val cancelled = (failure is CancellationException && failure !is TimeoutCancellationException) || instance.stopping ||
+                    synchronized(gate) { !current(run) }
+                val error = when {
+                    cancelled -> null
+                    failure is TimeoutCancellationException -> "30 秒内未就绪：服务须监听 WAWLINK_HOST/WAWLINK_PORT，并对根路径返回 HTTP 2xx/3xx"
+                    else -> failure.message ?: "启动失败"
+                }
+                reap(instance, if (cancelled) ContainerFeatureStatus.STOPPED else ContainerFeatureStatus.FAILED, error, stopHook = cancelled)
                 throw failure
             }
         }
@@ -321,21 +421,48 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
 
     suspend fun stop(containerId: String, featureId: String) = withContext(Dispatchers.IO) {
         val key = stateKey(containerId, featureId)
+        cancelStarting(containerId, featureId, key)
         locks.getOrPut(key) { Mutex() }.withLock { stopLocked(containerId, featureId, key) }
     }
 
+    private suspend fun cancelStarting(containerId: String, featureId: String, key: String) {
+        val starting = synchronized(gate) {
+            runs[containerId]?.stoppedFeatures?.add(featureId)
+            instances[key]?.also { it.stopping = true }?.startJob?.takeIf { it.isActive }
+        }
+        starting?.cancel(CancellationException("功能已停止"))
+        starting?.join()
+    }
+
     private suspend fun stopLocked(containerId: String, featureId: String, key: String) {
-            scriptActions.cancelFeature(containerId, featureId)
-            val running = active[key] ?: return
-            running.stopping = true
-            update(key) { it.copy(status = ContainerFeatureStatus.STOPPING) }
-            running.gateway.close()
-            var failure: String? = null
-            try {
-                if (runtime.containers.value.any { it.config.id == containerId && it.running }) {
+        scriptActions.cancelFeature(containerId, featureId)
+        instances[key]?.let { reap(it, ContainerFeatureStatus.STOPPED, stopHook = true) }
+    }
+
+    /** Every path uses the guest supervisor's control pipe before any host-wrapper fallback. */
+    private suspend fun reap(instance: Instance, status: ContainerFeatureStatus, error: String? = null, stopHook: Boolean): Unit = withContext(NonCancellable + Dispatchers.IO + FeatureRunningOnly) {
+        if (!instance.reaping.compareAndSet(false, true)) {
+            instance.reaped.await()
+            return@withContext
+        }
+        instance.stopping = true
+        val containerId = instance.run.containerId
+        val featureId = instance.feature.id
+        var failure = error
+        try {
+            synchronized(gate) {
+                if (instances[instance.key] === instance && (runs[containerId] === instance.run || runs[containerId] == null)) {
+                    update(instance.key) { it.copy(status = ContainerFeatureStatus.STOPPING, session = null) }
+                }
+            }
+            instance.gateway?.close()
+            val canRunHook = synchronized(gate) { runs[containerId] === instance.run } &&
+                runtime.containers.value.any { it.config.id == containerId && it.running && it.runGeneration == instance.run.generation }
+            if (stopHook && instance.process != null && canRunHook) {
+                try {
                     val output = command(containerId, """
                         set -eu
-                        expected=${shellQuote(running.feature.directory)}
+                        expected=${shellQuote(instance.feature.directory)}
                         actual=${'$'}(readlink -f -- "${'$'}expected")
                         [ "${'$'}actual" = "${'$'}expected" ] || { echo '功能目录已变化，未执行 stop.sh' >&2; exit 1; }
                         cd -- "${'$'}actual"
@@ -345,30 +472,41 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                             command -v timeout >/dev/null || { echo '缺少 timeout，请安装 coreutils' >&2; exit 127; }
                             timeout -k 1 15 /bin/sh ./stop.sh
                         fi
-                    """.trimIndent(), mapOf("WAWLINK_FEATURE_ID" to featureId, "WAWLINK_FEATURE_DIR" to running.feature.directory,
-                        "WAWLINK_TOKEN" to (states.value[key]?.session?.token ?: ""),
-                        "WAWLINK_PORT" to running.gateway.upstreamPort.toString(), "WAWLINK_HOST" to "127.0.0.1"))
-                    if (output.isNotEmpty()) append(key, output.toString(Charsets.UTF_8))
-                }
-            } catch (_: TimeoutCancellationException) {
-                failure = "停止脚本超时（20 秒），已强制回收服务"
-                append(key, "\n$failure\n")
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (problem: Exception) { failure = "停止脚本失败：${problem.message}"; append(key, "\n$failure\n") }
-            finally {
-                finishProcess(running.process)
-                active.remove(key, running)
-                update(key) { it.copy(status = if (failure == null) ContainerFeatureStatus.STOPPED else ContainerFeatureStatus.FAILED, session = null, error = failure) }
+                    """.trimIndent(), mapOf("WAWLINK_FEATURE_ID" to featureId, "WAWLINK_FEATURE_DIR" to instance.feature.directory,
+                        "WAWLINK_TOKEN" to instance.token,
+                        "WAWLINK_PORT" to instance.port.toString(), "WAWLINK_HOST" to "127.0.0.1"))
+                    if (output.isNotEmpty()) append(instance, output.toString(Charsets.UTF_8))
+                } catch (_: TimeoutCancellationException) {
+                    failure = "停止脚本超时（20 秒），已强制回收服务"
+                } catch (problem: Exception) { failure = "停止脚本失败：${problem.message}" }
             }
+        } finally {
+            try {
+                instance.process?.let(::finishProcess)
+            } catch (problem: Exception) {
+                failure = "回收功能进程失败：${problem.message}"
+            } finally {
+                synchronized(gate) {
+                    if (instances.remove(instance.key, instance) && (runs[containerId] === instance.run || runs[containerId] == null)) {
+                        update(instance.key) { it.copy(status = if (failure != null) ContainerFeatureStatus.FAILED else status, session = null, error = failure) }
+                        if (failure != null && current(instance.run)) {
+                            val message = "${instance.feature.id}：$failure"
+                            _errors.update { errors -> errors + (containerId to (errors[containerId].orEmpty() + message).distinct()) }
+                        }
+                    }
+                }
+                instance.reaped.complete(Unit)
+            }
+        }
     }
 
     /** Sum of supervised guest process-group RSS; null means unavailable, never host/container RAM. */
     suspend fun memoryBytes(containerId: String, featureId: String): Long? = withContext(Dispatchers.IO) {
         val key = stateKey(containerId, featureId)
         locks.getOrPut(key) { Mutex() }.withLock {
-            val running = active[key] ?: return@withLock null
+            val running = instances[key] ?: return@withLock null
             val identity = running.identity ?: return@withLock null
-            if (running.stopping || !running.process.isAlive || runtime.containers.value.none { it.config.id == containerId && it.running }) return@withLock null
+            if (running.stopping || running.process?.isAlive != true || runtime.containers.value.none { it.config.id == containerId && it.running }) return@withLock null
             try { readFeatureMemoryBytes(runtime, containerId, identity) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { null }
@@ -378,6 +516,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     /** Deletes only the exact verified guest HOME feature directory, using no-follow file operations. */
     suspend fun uninstall(containerId: String, feature: ContainerFeature) = withContext(Dispatchers.IO) {
         val key = stateKey(containerId, feature.id)
+        cancelStarting(containerId, feature.id, key)
         locks.getOrPut(key) { Mutex() }.withLock {
             check(!closed) { "功能服务已关闭" }
             require(feature.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,63}"))) { "功能 ID 无效" }
@@ -403,8 +542,8 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
 
     suspend fun leave(containerId: String, featureId: String) {
         scriptActions.cancelFeature(containerId, featureId, pageOnly = true)
-        val running = active[stateKey(containerId, featureId)]
-        if (running != null && running.feature.lifecycle != ContainerFeatureLifecycle.MANUAL) stop(containerId, featureId)
+        val running = instances[stateKey(containerId, featureId)]
+        if (running?.feature?.lifecycle == ContainerFeatureLifecycle.PAGE) stop(containerId, featureId)
     }
 
     /** Composition disposal cannot depend on a cancelled composition CoroutineScope. */
@@ -417,6 +556,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
         if (!process.waitFor(2500, TimeUnit.MILLISECONDS)) {
             process.destroy()
             if (!process.waitFor(1000, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+            process.waitFor(1000, TimeUnit.MILLISECONDS)
         }
     }
 
@@ -434,19 +574,22 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     } catch (_: java.io.IOException) { false }
 
     override fun close() {
-        if (closed) return
-        closed = true
+        val jobs = synchronized(gate) {
+            if (closed) return
+            closed = true
+            allRuns.map { it.job }.also { jobs -> jobs.forEach { it.cancel(CancellationException("功能服务已关闭")) } }
+        }
         scriptActions.close()
         runBlocking(Dispatchers.IO) {
-            starting.values.toList().map { process -> async { finishProcess(process) } }.awaitAll()
-            starting.clear()
-            active.keys.toList().map { key -> async { runCatching { stop(key.substringBefore('/'), key.substringAfter('/')) } } }.awaitAll()
+            jobs.joinAll()
+            instances.values.toList().map { instance -> async { reap(instance, ContainerFeatureStatus.STOPPED, stopHook = true) } }.awaitAll()
+            synchronized(gate) { runs.clear() }
         }
         scope.cancel()
     }
 }
 
-/** Install before native agent spawn; an existing Skill, including user changes, is never overwritten. */
+/** Upgrade only the exact pristine prior bundle; preserve user-authored or modified Skills. */
 suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId: String) {
     featureCommand(runtime, containerId, """
         set -eu
@@ -459,25 +602,60 @@ suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId:
         dir="${'$'}root/wawlink-functions"
         if [ -L "${'$'}dir" ]; then exit 0; fi
         mkdir -p -- "${'$'}dir"
-        if [ -e "${'$'}dir/SKILL.md" ] || [ -L "${'$'}dir/SKILL.md" ]; then exit 0; fi
+        file="${'$'}dir/SKILL.md"
+        previous=a669ee3b065497efb0962e8fb1ea68a0f183e876bf283fa8e1ef4358d941600c
+        if [ -L "${'$'}file" ]; then exit 0; fi
+        upgrade=false
+        if [ -e "${'$'}file" ]; then
+            [ -f "${'$'}file" ] && command -v sha256sum >/dev/null 2>&1 || exit 0
+            digest=${'$'}(sha256sum -- "${'$'}file")
+            [ "${'$'}{digest%% *}" = "${'$'}previous" ] || exit 0
+            upgrade=true
+        fi
         tmp=${'$'}(mktemp "${'$'}dir/.wawlink-skill.XXXXXX")
         trap 'rm -f -- "${'$'}tmp"' 0
         printf '%s' ${shellQuote(Base64.getEncoder().encodeToString(FEATURE_SKILL.toByteArray()))} | base64 -d > "${'$'}tmp"
-        ln -- "${'$'}tmp" "${'$'}dir/SKILL.md" 2>/dev/null || [ -f "${'$'}dir/SKILL.md" ]
+        if [ "${'$'}upgrade" = true ]; then
+            [ ! -L "${'$'}file" ] && [ -f "${'$'}file" ] || exit 0
+            digest=${'$'}(sha256sum -- "${'$'}file")
+            [ "${'$'}{digest%% *}" = "${'$'}previous" ] || exit 0
+            chmod --reference="${'$'}file" -- "${'$'}tmp"
+            mv -f -- "${'$'}tmp" "${'$'}file"
+        else
+            ln -- "${'$'}tmp" "${'$'}file" 2>/dev/null || [ -f "${'$'}file" ]
+        fi
     """.trimIndent())
 }
 
-internal suspend fun featureCommand(runtime: ContainerRuntime, containerId: String, script: String, environment: Map<String, String> = emptyMap()): ByteArray = coroutineScope {
-    val process = runtime.openProcess(containerId, listOf("/bin/sh", "-c", script), "/", environment)
-    process.outputStream.close()
-    val stdout = async(Dispatchers.IO) { process.inputStream.use { featureReadBounded(it, 4 * 1024 * 1024) } }
-    val stderr = async(Dispatchers.IO) { process.errorStream.use { featureReadBounded(it, 32_768).toString(Charsets.UTF_8) } }
+private object FeatureRunningOnly : AbstractCoroutineContextElement(Key) {
+    object Key : CoroutineContext.Key<FeatureRunningOnly>
+}
+
+internal suspend fun featureCommand(runtime: ContainerRuntime, containerId: String, script: String, environment: Map<String, String> = emptyMap(), runningOnly: Boolean = false): ByteArray = coroutineScope {
+    val owner = currentCoroutineContext().job
+    val requireRunning = runningOnly || currentCoroutineContext()[FeatureRunningOnly.Key] != null
+    var child: Process? = null
     try {
+        val process = withContext(NonCancellable) {
+            owner.ensureActive()
+            (if (requireRunning) runtime.openRunningProcess(containerId, listOf("/bin/sh", "-c", script), "/", environment)
+            else runtime.openProcess(containerId, listOf("/bin/sh", "-c", script), "/", environment)).also { child = it }
+        }
+        currentCoroutineContext().ensureActive()
+        process.outputStream.close()
+        val stdout = async(Dispatchers.IO) { process.inputStream.use { featureReadBounded(it, 4 * 1024 * 1024) } }
+        val stderr = async(Dispatchers.IO) { process.errorStream.use { featureReadBounded(it, 32_768).toString(Charsets.UTF_8) } }
         withTimeout(20_000) { runInterruptible(Dispatchers.IO) { process.waitFor() } }
         val output = stdout.await(); val error = stderr.await()
         check(process.exitValue() == 0) { "容器功能命令失败（${process.exitValue()}）：$error${output.toString(Charsets.UTF_8).takeLast(32_768)}" }
         output
-    } finally { if (process.isAlive) process.destroy() }
+    } finally {
+        child?.let { process ->
+            if (process.isAlive) process.destroy()
+            process.inputStream.close()
+            process.errorStream.close()
+        }
+    }
 }
 
 internal const val DEFAULT_FEATURE_CSS = ":root{--md-sys-color-primary:#0b57d0;--md-sys-color-primary-container:#d3e3fd;--md-sys-color-on-primary:#ffffff;--md-sys-color-on-primary-container:#041e49;--md-sys-color-surface:#ffffff;--md-sys-color-on-surface:#1f1f1f;--wawlink-motion:cubic-bezier(.2,0,0,1);color-scheme:light}body{background:#fff;color:#1f1f1f;font-family:system-ui,'Noto Sans CJK SC',sans-serif;font-size:18px}button,input,textarea,select{font:inherit}button{transition:background-color .3s var(--wawlink-motion),transform .45s var(--wawlink-motion)}button:active{transform:scale(.96)}"

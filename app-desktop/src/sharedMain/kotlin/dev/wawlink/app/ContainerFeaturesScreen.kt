@@ -56,6 +56,8 @@ private data class CardEntry(val key: String, val builtin: FeatureBuiltin? = nul
     val description get() = builtin?.description ?: feature!!.description
     val icon get() = builtin?.icon ?: feature!!.icon
 }
+
+private val ContainerFeature.isHtmlCard: Boolean get() = cardHtml != null || cardUrl != null
 private data class CardDrag(val key: String, val pointer: Offset, val grab: Offset, val itemOffset: Offset, val size: IntSize)
 
 @Composable
@@ -70,6 +72,7 @@ internal fun ContainerFeaturesScreen(
 ) {
     val containers by app.runtime.containers.collectAsState()
     val states by service.states.collectAsState()
+    val lifecycleErrors by service.errors.collectAsState()
     val preferences by app.featureCards.state.collectAsState()
     val preferenceError by app.featureCards.error.collectAsState()
     val container = containers.firstOrNull { it.config.id == containerId }
@@ -168,7 +171,7 @@ internal fun ContainerFeaturesScreen(
         grid.layoutInfo.visibleItemsInfo.firstOrNull { item ->
             item.key in displayed && point.x >= item.offset.x && point.x <= item.offset.x + item.size.width &&
                 point.y >= item.offset.y && point.y <= item.offset.y + item.size.height
-        }?.let { (it.key as String) to (byKey[it.key]?.feature?.let { feature -> feature.cardHtml != null || feature.actions.isNotEmpty() } == true) }
+        }?.let { (it.key as String) to (byKey[it.key]?.feature?.let { feature -> feature.isHtmlCard || feature.actions.isNotEmpty() } == true) }
     }
     val selectionMode by rememberUpdatedState(editing)
     val onTap by rememberUpdatedState<(String) -> Unit> { key ->
@@ -256,7 +259,7 @@ internal fun ContainerFeaturesScreen(
                         selected = emptySet()
                     }
                 }, enabled = !working && selected.isNotEmpty())
-                AgentIconButton("palette", "卡片颜色", { colorDialog = true }, enabled = !working && selected.isNotEmpty() && selected.none { byKey[it]?.feature?.cardHtml != null })
+                AgentIconButton("palette", "卡片颜色", { colorDialog = true }, enabled = !working && selected.isNotEmpty() && selected.none { byKey[it]?.feature?.isHtmlCard == true })
                 AgentIconButton("delete", "卸载所选功能", { uninstallDialog = true }, enabled = !working && selected.isNotEmpty() && customSelection.size == selected.size)
                 IconButton({ clearSelection() }, enabled = !working, modifier = Modifier.size(48.dp)) { Symbol("check", tint = MaterialTheme.colorScheme.primary, contentDescription = "完成编辑") }
             } else {
@@ -312,12 +315,12 @@ internal fun ContainerFeaturesScreen(
                     onDispose { handle?.release() }
                 }
                 val color = layout.colors[key] ?: feature?.color
-                val htmlHeight = if (feature?.cardHtml != null) {
+                val htmlHeight = if (feature != null && feature.isHtmlCard) {
                     val cells = grid.layoutInfo.visibleItemsInfo
                     val cell = cells.firstOrNull { it.key == key }
                     val peer = cell?.let { current -> cells.firstOrNull { it.key != key && it.row == current.row && it.key in byKey } }
                     val peerFeature = byKey[peer?.key]?.feature
-                    maxOf(feature.cardHeight, if (peerFeature?.cardHtml != null) peerFeature.cardHeight else peer?.size?.height?.let { (it / density).toInt() } ?: 0)
+                    maxOf(feature.cardHeight, if (peerFeature?.isHtmlCard == true) peerFeature.cardHeight else peer?.size?.height?.let { (it / density).toInt() } ?: 0)
                 } else 0
                 val itemScale by animateFloatAsState(if (editing && key !in selected) .97f else 1f, tween(350, easing = EmphEasing))
                 val itemAlpha by animateFloatAsState(if (key in layout.hidden) { if (key in selected) .75f else .45f } else 1f, tween(300, easing = EmphEasing))
@@ -360,7 +363,7 @@ internal fun ContainerFeaturesScreen(
                 )
                 }
             }
-            (listOfNotNull(error, preferenceError) + catalog?.errors.orEmpty()).distinct().forEachIndexed { index, message ->
+            (listOfNotNull(error, preferenceError) + catalog?.errors.orEmpty() + lifecycleErrors[containerId].orEmpty()).distinct().forEachIndexed { index, message ->
                 item(key = "error/$index", span = { GridItemSpan(2) }) { FeatureCardError(message) }
             }
         }
@@ -463,7 +466,6 @@ private fun FeatureCardTile(
 ) {
     val feature = entry.feature
     var memory by remember(containerId, feature?.id) { mutableStateOf<Long?>(null) }
-    var htmlError by remember(feature?.cardHtml) { mutableStateOf<String?>(null) }
     LaunchedEffect(containerId, feature?.id, feature?.showMemory, state.status, containerRunning) {
         memory = null
         if (containerId != null && feature?.showMemory == true && containerRunning && state.status == ContainerFeatureStatus.RUNNING) {
@@ -484,29 +486,35 @@ private fun FeatureCardTile(
     val selectionColor = customForeground ?: MaterialTheme.colorScheme.primary
     val shape = RoundedCornerShape(28.dp)
     val html = feature?.cardHtml
+    val htmlCard = feature?.isHtmlCard == true
+    val url = if (containerRunning && state.status != ContainerFeatureStatus.STARTING && state.status != ContainerFeatureStatus.STOPPING) feature?.let { resolveFeatureCardUrl(it, state.session) } else null
+    var htmlError by remember(containerId, html, url, state.session) { mutableStateOf<String?>(null) }
     val failure = htmlError ?: state.error
     val actions = feature?.actions.orEmpty()
     val wide = feature?.cardSpan == 2
-    Box(modifier.heightIn(min = (if (html != null) htmlHeight else feature?.cardHeight ?: 172).dp).clip(shape).background(background)
-        .clickable(enabled = html == null && actions.isNotEmpty() && !selectionMode, onClick = onClick)
-        .semantics(mergeDescendants = (html == null && actions.isEmpty()) || selectionMode) {
+    Box(modifier.heightIn(min = (if (htmlCard) htmlHeight else feature?.cardHeight ?: 172).dp).clip(shape).background(background)
+        .clickable(enabled = !htmlCard && actions.isNotEmpty() && !selectionMode, onClick = onClick)
+        .semantics(mergeDescendants = (!htmlCard && actions.isEmpty()) || selectionMode) {
             contentDescription = entry.title
             if (selectionMode) this.selected = selected
             onClick(label = if (selectionMode) "选择${entry.title}" else "打开${entry.title}") { onClick(); true }
             onLongClick(label = "选择${entry.title}") { onSelect(); true }
         }) {
-        if (html != null) {
+        if (htmlCard) {
             val data = buildJsonObject {
-                put("id", feature.id); put("status", state.status.name.lowercase()); put("containerRunning", containerRunning)
+                put("id", requireNotNull(feature).id); put("status", state.status.name.lowercase()); put("containerRunning", containerRunning)
                 put("memoryBytes", memory?.let(::JsonPrimitive) ?: JsonNull)
             }.toString()
             val cardCss = remember(css, background, foreground) {
                 fun Color.hex() = "#%06x".format(toArgb() and 0xffffff)
                 "$css\n:root{--wawlink-card-color:${background.hex()};--wawlink-card-foreground:${foreground.hex()}}:where(html,body){margin:0;width:100%;height:100%;overflow:hidden;background:var(--wawlink-card-color);color:var(--wawlink-card-foreground)}:where(button,input,select,textarea){color:inherit}"
             }
-            CompositionLocalProvider(LocalFeatureCardNativeGestures provides nativeGestures) {
-                ContainerFeatureCardSurface(html, cardCss, data,
+            if (html != null || url != null) CompositionLocalProvider(LocalFeatureCardNativeGestures provides nativeGestures) {
+                ContainerFeatureCardSurface(html, url, cardCss, data,
                     Modifier.fillMaxWidth().height(htmlHeight.dp), onAction, { message -> htmlError = message; onError(message) })
+            } else Box(Modifier.fillMaxWidth().height(htmlHeight.dp), contentAlignment = Alignment.Center) {
+                if (state.status == ContainerFeatureStatus.STARTING || state.status == ContainerFeatureStatus.STOPPING) CircularProgressIndicator()
+                else AgentIconButton("play_arrow", "启动${entry.title}", { onAction("start") }, enabled = !selectionMode)
             }
             if (selectionMode) Box(Modifier.matchParentSize().pointerInput(Unit) {
                 // Become the hit target instead of the embedded platform view; ancestors own gestures.
@@ -574,7 +582,7 @@ private fun FeatureCardTile(
         if (selectionAlpha > 0f) Box(Modifier.align(Alignment.TopEnd).padding(12.dp).size(32.dp).graphicsLayer { scaleX = selectionScale; scaleY = selectionScale; alpha = selectionAlpha }.background(if (selected) selectionColor else MaterialTheme.colorScheme.surface.copy(alpha = .85f), CircleShape), contentAlignment = Alignment.Center) {
             if (selected) Symbol("check", size = 22.dp, tint = if (customBackground != null) background else MaterialTheme.colorScheme.onPrimary)
         }
-        if (html != null && failure != null) Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), color = MaterialTheme.colorScheme.errorContainer) {
+        if (htmlCard && failure != null) Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), color = MaterialTheme.colorScheme.errorContainer) {
             Text(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
         }
     }

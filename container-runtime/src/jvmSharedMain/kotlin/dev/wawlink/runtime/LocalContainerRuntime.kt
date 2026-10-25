@@ -15,6 +15,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,6 +60,8 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     private val configurations = linkedMapOf<String, ContainerConfig>()
     private val processes = mutableMapOf<String, MutableList<TrackedProcess>>()
     private val keepers = mutableMapOf<String, TrackedProcess>()
+    private val runGenerations = mutableMapOf<String, Long>()
+    private var nextRunGeneration = 0L
     private val errors = mutableMapOf<String, String>()
     private val dnsErrors = mutableMapOf<String, String>()
     private val sizes = mutableMapOf<String, Long>()
@@ -126,7 +129,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         return RootfsArchives.size(root, excluded)
     }
     private fun publish() {
-        _containers.value = configurations.values.map { ContainerInfo(it, keepers[it.id]?.process?.isAlive == true, sizes[it.id] ?: 0, errors[it.id] ?: dnsErrors[it.id]) }
+        _containers.value = configurations.values.map { ContainerInfo(it, keepers[it.id]?.process?.isAlive == true, sizes[it.id] ?: 0, errors[it.id] ?: dnsErrors[it.id], runGenerations[it.id] ?: 0) }
     }
     private fun persist() {
         val temp = File(paths.dataDir, "containers.json.tmp")
@@ -191,6 +194,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             check(health.exitValue() == 0) { "容器引擎启动失败：${output.trim()}" }
             val keeper = launchLocked(config, listOf("/bin/sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait \$!; done"), "/", emptyMap(), true, true)
             keepers[id] = keeper
+            runGenerations[id] = ++nextRunGeneration
             errors.remove(id)
             publish()
         } catch (failure: Throwable) {
@@ -220,6 +224,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         check(owned.none { it.hasLiveProcesses() }) { "容器仍有已跟踪进程未退出，已保留挂载以保护文件系统" }
         processes.remove(id)
         keepers.remove(id)
+        runGenerations.remove(id)
         try { engines.unmount(id); errors.remove(id) }
         catch (failure: Throwable) { errors[id] = failure.message.orEmpty(); publish(); throw failure }
         publish()
@@ -404,6 +409,16 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
 
     override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = withContext(Dispatchers.IO) {
         mutex.withLock { ensureOpen(); startLocked(id); idleJobs.remove(id)?.cancel(); launchLocked(config(id), arguments, cwd, environment, false, false).process }
+    }
+
+    override suspend fun openRunningProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            currentCoroutineContext().ensureActive()
+            ensureOpen()
+            check(keepers[id]?.process?.isAlive == true) { "容器已停止" }
+            idleJobs.remove(id)?.cancel()
+            launchLocked(config(id), arguments, cwd, environment, false, false).process
+        }
     }
 
     private fun launchLocked(config: ContainerConfig, arguments: List<String>, cwd: String, environment: Map<String, String>, merge: Boolean, keeper: Boolean, pty: Boolean = false): TrackedProcess {

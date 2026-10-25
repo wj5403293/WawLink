@@ -12,6 +12,9 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import dev.wawlink.ui.LocalAgentAppearance
+import com.sun.javafx.webkit.Accessor
+import com.sun.webkit.PolicyClient
+import com.sun.webkit.WebPage
 import javafx.application.Platform
 import javafx.animation.PauseTransition
 import javafx.scene.input.MouseButton
@@ -29,11 +32,13 @@ import org.w3c.dom.events.EventListener
 import org.w3c.dom.events.EventTarget
 import java.awt.Color
 import javafx.scene.shape.Rectangle
+import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** A real WebKit document. Only DOM action events cross to the host; no Java objects enter JS. */
 @Composable
-internal fun ContainerFeatureCardSurface(html: String, css: String, data: String, modifier: Modifier, onAction: (String) -> Unit, onError: (String) -> Unit) {
+internal fun ContainerFeatureCardSurface(html: String?, url: String?, css: String, data: String, modifier: Modifier, onAction: (String) -> Unit, onError: (String) -> Unit) {
+    require((html == null) != (url == null)) { "Exactly one of html and url is required" }
     val report by rememberUpdatedState(onError)
     val action by rememberUpdatedState(onAction)
     val currentCss by rememberUpdatedState(css)
@@ -46,7 +51,7 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
         catch (failure: Exception) { report("图标字体加载失败：${failure.message}") }
     }
     val loadedFont = font ?: return
-    val holder = remember(html) { DesktopFeatureCard() }
+    val holder = remember(html, url) { DesktopFeatureCard() }
     val covered by rememberUpdatedState(LocalFeatureCardCovered.current)
     var frame by remember(holder) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(covered, holder) {
@@ -148,20 +153,24 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
                         web.addEventFilter(KeyEvent.ANY) { if (gestures?.selectionMode == true) it.consume() }
                         val engine = web.engine
                         engine.isJavaScriptEnabled = true
+                        installDesktopCardPolicy(web, url, report)
                         engine.createPopupHandler = javafx.util.Callback { null }
                         engine.confirmHandler = javafx.util.Callback { false }
                         engine.promptHandler = javafx.util.Callback { null }
                         engine.setOnAlert { }
                         engine.setOnError { report("卡片渲染失败：${it.message}") }
-                        engine.locationProperty().addListener { _, _, location ->
-                            if (!holder.disposed.get() && location.isNotEmpty() && location != "about:blank") {
-                                engine.loadWorker.cancel(); report("HTML 卡片必须使用自包含资源，不能导航到外部页面")
+                        fun trustedDocument(): Boolean = if (url == null) engine.location.isNullOrEmpty() || engine.location == "about:blank"
+                            else featureSameOrigin(engine.location, featureDocumentOrigin(url))
+                        engine.locationProperty().addListener { _, _, _ ->
+                            if (!holder.disposed.get() && !trustedDocument()) {
+                                engine.loadWorker.cancel(); report("已阻止离开当前功能来源的导航")
                             }
                         }
                         engine.loadWorker.stateProperty().addListener { _, _, state ->
                             if (holder.disposed.get()) return@addListener
                             when (state) {
-                                Worker.State.SUCCEEDED -> {
+                                Worker.State.SCHEDULED -> holder.detach()
+                                Worker.State.SUCCEEDED -> if (trustedDocument()) {
                                     holder.detach()
                                     val document = engine.document
                                     fun consume(element: Element) {
@@ -183,8 +192,11 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
                                     val queued = document.getElementsByTagName("button")
                                     (0 until queued.length).mapNotNull { queued.item(it) as? Element }
                                         .filter { it.hasAttribute("data-wawlink-native-action") }.forEach(::consume)
-                                    runCatching { engine.executeScript(featureCardUpdateScript(currentCss, currentData)) }
-                                        .onFailure { report("卡片数据更新失败：${it.message}") }
+                                    val initialization = featureDesktopBootstrap() + ";" + featureDocumentPolicyScript() + ";" +
+                                        (if (url != null) featureDocumentFontScript(loadedFont) else "") + ";" + symbols + ";" +
+                                        featureCardUpdateScript(currentCss, currentData) + ";" + featureReadyScript()
+                                    runCatching { engine.executeScript(initialization) }
+                                        .onFailure { report("卡片初始化失败：${it.message}") }
                                     if (covered) runCatching { frame = holder.captureFrame() }
                                         .onFailure { report("卡片合成失败：${it.message}") }
                                 }
@@ -193,7 +205,8 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
                             }
                         }
                         scene = Scene(web).apply { fill = javafx.scene.paint.Color.WHITE }
-                        engine.loadContent(featureCardDocument(html, currentCss, currentData, loadedFont, featureDesktopBootstrap() + ";" + symbols), "text/html")
+                        if (url != null) engine.load(url)
+                        else engine.loadContent(featureCardDocument(requireNotNull(html), currentCss, currentData, loadedFont, featureDesktopBootstrap() + ";" + symbols), "text/html")
                     } catch (failure: Throwable) { report("无法初始化桌面 WebKit：${failure.message}") }
                 }
             }
@@ -205,7 +218,9 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
                             fontScale = density.fontScale.toDouble()
                             (clip as? Rectangle)?.let { outline -> outline.arcWidth = 56.0 * density.density / nativeScale; outline.arcHeight = outline.arcWidth }
                         }
-                    if (engine.loadWorker.state == Worker.State.SUCCEEDED) {
+                    val trusted = if (url == null) engine.location.isNullOrEmpty() || engine.location == "about:blank"
+                        else featureSameOrigin(engine.location, featureDocumentOrigin(url))
+                    if (trusted && engine.loadWorker.state == Worker.State.SUCCEEDED) {
                         runCatching { engine.executeScript(featureCardUpdateScript(css, data)) }
                             .onFailure { report("卡片数据更新失败：${it.message}") }
                     }
@@ -215,6 +230,32 @@ internal fun ContainerFeatureCardSurface(html: String, css: String, data: String
     }
     }
     }
+}
+
+/** JavaFX 21 has no public pre-navigation veto. Install before the first load and fail closed if unavailable. */
+private fun installDesktopCardPolicy(web: WebView, url: String?, report: (String) -> Unit) {
+    val page = Accessor.getPageFor(web.engine)
+    val origin = url?.let(::featureDocumentOrigin)
+    val policy = object : PolicyClient {
+        private fun initialStatic(target: URL?): Boolean = origin == null && web.engine.document == null &&
+            (target == null || target.toExternalForm() == "about:blank")
+        private fun navigate(frame: Long, target: URL?): Boolean {
+            val allowed = frame == page.mainFrame && (initialStatic(target) ||
+                (origin != null && featureSameOrigin(target?.toExternalForm(), origin)))
+            if (!allowed && frame == page.mainFrame) report("已阻止离开当前功能来源的导航")
+            return allowed
+        }
+        override fun permitNavigateAction(sourceID: Long, url: URL?): Boolean = navigate(sourceID, url)
+        override fun permitRedirectAction(sourceID: Long, url: URL?): Boolean = navigate(sourceID, url)
+        override fun permitSubmitDataAction(sourceID: Long, url: URL?, httpMethod: String?): Boolean = navigate(sourceID, url)
+        override fun permitResubmitDataAction(sourceID: Long, url: URL?, httpMethod: String?): Boolean = navigate(sourceID, url)
+        override fun permitAcceptResourceAction(sourceID: Long, url: URL?): Boolean =
+            sourceID == page.mainFrame && (initialStatic(url) || (url != null && featureResourceAllowed(url.toExternalForm())))
+        override fun permitEnableScriptsAction(sourceID: Long, url: URL?): Boolean = sourceID == page.mainFrame
+        override fun permitNewPageAction(sourceID: Long, url: URL?): Boolean = false
+        override fun permitClosePageAction(sourceID: Long): Boolean = false
+    }
+    WebPage::class.java.getDeclaredField("policyClient").apply { isAccessible = true }.set(page, policy)
 }
 
 // Accessed only on the JavaFX application thread. WebKit does not load embedded data fonts reliably.

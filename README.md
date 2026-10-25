@@ -164,7 +164,9 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 }
 ```
 
-`icon`、`title`、`description` 必填；图标使用 Google Material Symbols 小写名称，标题和描述使用中文。`lifecycle` 省略为 `page`，离开该功能即停止；`manual` 离页继续运行，用户在功能页或卡片明确停止。两者在停止容器或关闭应用时回收，不承诺 Android 杀进程后继续运行。
+`icon`、`title`、`description` 必填；图标使用 Google Material Symbols 小写名称，标题和描述使用中文。`lifecycle` 省略为 `page`，离开该功能即停止；`manual` 离页继续运行，由用户明确启停；新增 `container`，每次启动容器时自动发现并启动，不必先打开功能页，离页或隐藏卡片不停止。三者均在停止容器或关闭应用时回收，不承诺 Android 杀进程后继续运行。
+
+`container` 每个真实运行代次只自动尝试一次，单个功能失败不阻塞其他功能或容器；扫描、启动及进程退出错误会真实提示。手动停止或失败后不会因刷新、切页或元数据更新反复拉起，下次容器启动再尝试；运行中新增的卡片可手动启动，或下次容器启动时自动运行。快速重启即使合并了中间的停止状态，也按新的运行代次处理；等待服务就绪时停止容器同样回收进程组，不反向启动已停止容器。
 
 功能页以 `ref-plan/feature-cards.html` 为视觉基准，自定义卡片紧随五个内置功能。半宽原生卡片图标位于标题上方，整行卡片图标与标题/状态并排；不默认附加任何按钮。`cardSpan` 为整数 `1`（默认，半宽）或 `2`（占满两列，原生和 HTML 均支持）。长按进入顶部编辑栏，零选择仍保持编辑；可隐藏/显示、调色和卸载，只有全部选中自定义功能时才允许卸载。隐藏项在编辑模式底部和应用设置均可恢复。拖动保留原有抬起、跟手、边缘滚动和非线性换位，顺序、隐藏与原生颜色按容器持久化。顶部胶囊切换全局当前容器，功能清单沿用既有客体进程读取和按需启动语义，状态来自真实运行时。
 
@@ -192,11 +194,22 @@ Desktop 的编辑和模态弹层期间使用当前 WebView 的固定合成快照
 
 #### HTML 卡片
 
-在功能目录放置可选 `card.html` 即完整替换卡片区域，亦可用 `card` 指定目录内的相对 HTML 文件。`cardHeight` 为 80–480 dp，默认 172 dp，半宽 HTML 会至少填满同一行相邻卡片的高度。HTML 是不超过 256 KiB 的 UTF-8 自包含文档，使用内联 CSS/JS 和 data URL，不依赖已启动服务或网络 CDN；宿主不增加图标、标题、描述、按钮或内边距，仅裁剪 28 dp 圆角并提供选择遮罩。目录扫描不执行 HTML、Lua 或脚本，显示卡片才执行 JS，不为渲染卡片启动服务。
+在功能目录放置可选 `card.html` 即完整替换卡片区域，亦可用 `card` 指定目录内的相对 HTML 文件。静态 HTML 为不超过 256 KiB 的 UTF-8，可以内联，也可使用 HTTPS 资源、接口与 CDN，不再强制所有 CSS/JS 自包含。`cardHeight` 为 80–480 dp，默认 172 dp，半宽 HTML 至少填满同一行相邻卡片的高度。宿主不增加图标、标题、描述、按钮或内边距，仅裁剪 28 dp 圆角并提供选择遮罩。目录扫描不执行 HTML、Lua 或功能脚本，显示卡片才执行 JS；只有用户操作或 `container` 启动策略会启动服务。
 
-卡片首个脚本执行前即可读取 `window.wawlink.card`，字段为 `id`、`status`、`memoryBytes`（整数或 `null`）、`containerRunning`。状态值为 `stopped`、`starting`、`running`、`stopping`、`failed`；监听 `wawlink-card-update` 并读取 `event.detail` 获取真实增量，更新数据不会重载 HTML。调用 `wawlink.action('open' | 'start' | 'stop')` 可放置自己的打开、启停按钮；错误仍由原生真实结果反馈。HTML 卡片和完整功能页面均注入主题变量及离线 Material Symbols，可使用 `material-symbols-rounded`；桌面自动将符号名称解析为打包索引中的字形。
+静态卡片首个脚本即可读取 `window.wawlink.card`，字段为 `id`、`status`、`memoryBytes`（整数或 `null`）、`containerRunning`。动态 URL 文档等待原生初始化：`if (window.wawlink?.ready) init(); else addEventListener('wawlink-ready', init, {once:true});`。状态为 `stopped`、`starting`、`running`、`stopping`、`failed`；监听 `wawlink-card-update` 并读取 `event.detail` 获取真实增量，主题/数据更新不会重载文档。调用 `wawlink.action('open' | 'start' | 'stop')` 可放置自己的打开、启停按钮；错误仍由原生真实结果反馈。卡片和完整功能页面均注入主题变量及离线 Material Symbols，可使用 `material-symbols-rounded`；桌面自动将名称解析为打包字形。
 
-推荐天气类使用 `cardSpan: 2`、`cardHeight: 176`，由 HTML 自行绘制整幅渐变、前景及天气图形；专注类使用半宽卡片，在完整视口中居中计时器。`html, body` 使用 `width:100%; height:100%; margin:0; overflow:hidden`，不要再嵌套一张有边距的卡片。需要主题配色时主动使用上述 CSS 变量，明确设置的颜色、渐变和非线性动画不会被宿主重写。天气信息须从真实来源读取，不能把原型温度、位置或模拟状态当实测数据；卡片普通网络请求仍受自包含策略限制，Android 可显式通过可信 LuaJ 获取所需数据并处理错误。
+动态卡片使用 `cardUrl`，与显式 `card` 互斥，且优先于自动发现的 `card.html`：
+
+```json
+{
+  "icon": "monitoring", "title": "服务器状态", "description": "查看当前服务",
+  "lifecycle": "container", "cardUrl": "/card/index.html", "cardSpan": 2, "cardHeight": 220
+}
+```
+
+`/card/index.html` 等单斜线绝对路径指向该功能真实服务，宿主在就绪后接入随机端口和访问令牌，保留查询与片段；不把端口或令牌写死在清单。页面按真实 URL 加载，保留相对脚本、样式、图片、`fetch` 和 WebSocket 的基址。亦支持带显式端口的 `http://127.0.0.1:端口/路径`、`http://localhost:端口/路径`，直接加载已有本地服务，不附带本功能令牌；该服务由实际所有者管理，不因卡片显示而伪造启动或接管生命周期。禁止清单自填保留的 `__wawlink_token` 参数。自身路径在服务停止后显示启动入口，等待启停时仅显示居中进度。
+
+推荐天气类使用 `cardSpan: 2`、`cardHeight: 176`，由 HTML 自行绘制整幅渐变、前景及天气图形；专注类使用半宽卡片，在完整视口中居中计时器。`html, body` 使用 `width:100%; height:100%; margin:0; overflow:hidden`，不要再嵌套一张有边距的卡片。需要主题配色时主动使用上述 CSS 变量，明确设置的颜色、渐变和非线性动画不会被宿主重写。天气、服务器指标必须来自真实接口；可以使用本地服务、外部 HTTPS API、WebSocket、常用前端框架或 Android 可信 LuaJ，正确处理网络失败、CORS 及系统权限，不把原型数据当实测数据。
 
 以下是可独立运行的专注卡片正文（放入 `card.html`，`cardSpan` 省略或设 `1`），计时使用实际截止时间，不因回调延迟漂移；不预装到用户容器：
 
@@ -261,9 +274,9 @@ const sdk = await wawlink.lua(`
 | `WAWLINK_FEATURE_ID` / `WAWLINK_FEATURE_DIR` | 当前功能身份与客体目录 |
 | `WAWLINK_THEME_CSS` | 当前 Material 3 配色；页面使用注入的 `--md-sys-color-*` CSS 变量 |
 
-服务须在 30 秒内对根路径的带令牌 GET 返回 2xx/3xx；实际 HTTP 就绪后才打开 WebUI。Android 使用 WebView，Desktop 使用 JavaFX WebView，普通 Web 资源及导航均限制为该功能的确切随机 loopback 来源，关闭宿主 file/content 访问；Android 可信 Lua/系统助手是显式的宿主操作入口，不是 Web 跨域导航。支持同源资源、表单与 WebSocket；普通 HTTP 单次请求/响应上限 32 MiB，上传不接受 HTTP 分块传输。UI 使用纯白背景、中文大字号、Material 3、Google Material Symbols 与非线性动画，跟随主题色，不依赖外站 CDN。脚本及可信 Lua 不是运行不可信代码的安全沙箱。
+服务须在 30 秒内对根路径的带令牌 GET 返回 2xx/3xx；实际 HTTP 就绪后才打开 WebUI。Android 使用 WebView，Desktop 使用 JavaFX WebView。主文档导航和原生桥限定当前受信来源；资源与连接允许 loopback HTTP/WS、外部 HTTPS/WSS、接口及 CDN，仍遵守浏览器 CORS 和服务自身更严格的 CSP。关闭宿主 file/content 访问、子框架和 object；Android 可信 Lua/系统助手是显式宿主入口，不是 Web 跨域导航。外部脚本在受信页面内执行时拥有该页面桥能力，仅使用用户信任的依赖。网关支持同源资源、表单与 WebSocket；普通 HTTP 单次请求/响应上限 32 MiB，上传不接受 HTTP 分块传输。页面默认沿用白底、中文大字号、Material 3、离线 Material Symbols 与非线性动画，卡片按用户设计自由布局和配色。脚本及可信 Lua 不是不可信代码安全沙箱。
 
-应用在原生 Agent 启动前或进入功能页时，仅在缺失时注入 `~/.omp/agent/skills/wawlink-functions/SKILL.md`，保留已有文件及用户修改。该 Skill 写明完整清单、服务、安全与 WebUI 设计契约，**仅在用户明确要求“添加 WawLink 功能页卡片”或等价新增请求时触发**，不会因普通网页开发、脚本、安装插件/技能或笼统功能请求自动创建卡片。不预装示例卡片，不复制开发机认证。
+应用在原生 Agent 启动前或进入功能页时注入 `~/.omp/agent/skills/wawlink-functions/SKILL.md`；缺失时安装，精确匹配上一版未修改内置文件的 SHA-256 时原子升级，其他已有内容及用户修改保持不变。新 Skill 包含 `container`、动态 `cardUrl`、外部接口/依赖及初始化时序契约，不再强制 HTML 仅用内联资源。它**仅在用户明确要求“添加 WawLink 功能页卡片”或等价新增请求时触发**，普通网页、脚本、插件/技能或笼统功能请求不创建卡片。不预装示例卡片，不复制开发机认证。
 
 ## 独立嵌入 UI
 

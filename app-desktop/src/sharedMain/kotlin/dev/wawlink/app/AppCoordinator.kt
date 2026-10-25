@@ -138,6 +138,18 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
                 }
             }
         }
+        scope.launch {
+            var previous = emptyMap<String, List<String>>()
+            features.errors.collect { failures ->
+                failures.forEach { (id, messages) ->
+                    val name = runtime.containers.value.firstOrNull { it.config.id == id }?.config?.name ?: id
+                    messages.filterNot { it in previous[id].orEmpty() }.forEach { message ->
+                        showError(IllegalStateException("$name：$message"))
+                    }
+                }
+                previous = failures
+            }
+        }
     }
     fun report(text: String) { notices.update { it + HostNotice(text = text) } }
     fun showError(error: Throwable) { notices.update { it + HostNotice(text = error.message ?: error.toString(), error = true) } }
