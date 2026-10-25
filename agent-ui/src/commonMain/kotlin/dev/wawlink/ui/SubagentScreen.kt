@@ -143,12 +143,17 @@ private class FocusedComposerController(
     private val canSetModel: () -> Boolean,
     private val onUnsupported: (String) -> Unit,
 ) : AgentSessionController by child {
-    override fun sendPrompt(text: String, attachments: List<AttachmentFile>) {
+    override fun sendPrompt(text: String, attachments: List<AttachmentFile>) = submitPrompt(text, attachments, mode())
+    override fun enqueuePrompt(text: String, attachments: List<AttachmentFile>) = submitPrompt(text, attachments, RuntimeAgentPromptBehavior.FOLLOW_UP)
+    private fun submitPrompt(text: String, attachments: List<AttachmentFile>, behavior: RuntimeAgentPromptBehavior) {
         onAttempt(RestoredSessionPrompt(text, attachments))
         if (text.trimStart().startsWith("!")) { onMainRequired("Shell / Python 执行需要回到主会话；没有执行这段输入"); return }
-        if (canSend()) child.sendAgentPrompt(text, attachments, mode()) else onBlocked()
+        if (canSend()) child.sendAgentPrompt(text, attachments, behavior) else onBlocked()
     }
-    override fun enqueuePrompt(text: String) = sendPrompt(text, emptyList())
+    override suspend fun takeQueuedPrompt(id: String): RestoredSessionPrompt {
+        check(canSend()) { "当前子代理只读，不能撤回消息" }
+        return child.takeQueuedPrompt(id)
+    }
     override fun stopExecution() { if (canSend()) onStop() else onBlocked() }
     override fun respondAsk(nodeId: String, answers: List<AskAnswer>) { if (canSend()) child.respondAsk(nodeId, answers) else onBlocked() }
     override fun respondApproval(nodeId: String, decision: ApprovalDecision) { if (canSend()) child.respondApproval(nodeId, decision) else onBlocked() }

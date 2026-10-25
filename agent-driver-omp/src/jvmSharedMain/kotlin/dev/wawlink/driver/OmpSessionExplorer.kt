@@ -227,6 +227,7 @@ internal class OmpSessionExplorer(
         private var valid = true
         private val uiRequests = linkedMapOf<String, JsonObject>()
         private var queueMetadata = emptyMap<String, JsonObject>()
+        private val queuedInputs = mutableMapOf<String, RestoredSessionPrompt>()
         init {
             scope.launch {
                 mutable.subscriptionCount.collectLatest { count ->
@@ -275,6 +276,7 @@ internal class OmpSessionExplorer(
             }
             result.objects("requests").forEach { event -> uiRequests[event.string("id")] = event; reducer.reduce(event) }
             queueMetadata = result.objects("queue").associateBy { it.string("id") }
+            if (queuedInputs.isNotEmpty()) queuedInputs.keys.retainAll(queueMetadata.values.mapTo(mutableSetOf()) { it.string("text") })
             reducer.update { current -> current.copy(workspace = result.optional("workspace") ?: current.workspace,
                 providerId = result.optional("providerId") ?: current.providerId, modelId = result.optional("modelId") ?: current.modelId,
                 thinkingLevel = parseThinking(result.optional("thinking"), current.thinkingLevel), modelLoading = false,
@@ -285,7 +287,9 @@ internal class OmpSessionExplorer(
                     else -> current.status
                 }, error = result.optional("error") ?: current.error,
                 queuedPrompts = if (result["queue"] is JsonArray) result.objects("queue").map { queued ->
-                    QueuedPrompt(queued.string("id"), queued.string("text"), nativeImageAttachments(queued))
+                    QueuedPrompt(queued.string("id"), queued.string("text"),
+                        queuedInputs[queued.string("text")]?.attachments ?: nativeImageAttachments(queued),
+                        if (queued.string("queue") == PromptQueue.STEERING.wireName) PromptQueue.STEERING else PromptQueue.FOLLOW_UP)
                 } else current.queuedPrompts) }
             cursor = result["cursor"] ?: cursor
             entryFeedIds = reducer.nativeEntryFeedIds(nativeEntries.values.toList())
@@ -299,7 +303,7 @@ internal class OmpSessionExplorer(
             }
         }
         override fun sendPrompt(text: String, attachments: List<AttachmentFile>) = sendAgentPrompt(text, attachments, RuntimeAgentPromptBehavior.PROMPT)
-        override fun enqueuePrompt(text: String) = sendAgentPrompt(text, emptyList(), RuntimeAgentPromptBehavior.FOLLOW_UP)
+        override fun enqueuePrompt(text: String, attachments: List<AttachmentFile>) = sendAgentPrompt(text, attachments, RuntimeAgentPromptBehavior.FOLLOW_UP)
         override fun sendAgentPrompt(text: String, attachments: List<AttachmentFile>, behavior: RuntimeAgentPromptBehavior) {
             if (text.isBlank() && attachments.isEmpty()) return
             if (text.trimStart().startsWith("/") || text.trimStart().startsWith("!")) {
@@ -326,7 +330,11 @@ internal class OmpSessionExplorer(
                         val existingId = response.optional("entryId")?.let { entryFeedIds[it] }
                         val acceptedId = existingId ?: response.optional("messageId") ?: response.optional("entryId") ?: pendingId
                         reducer.update { it.copy(feed = it.feed.withoutFeed(pendingId), error = null) }
-                        if (response["queued"]?.jsonPrimitive?.booleanOrNull == true) reducer.update { it.copy(queuedPrompts = it.queuedPrompts + QueuedPrompt(acceptedId, prepared.first, prepared.second)) }
+                        if (response["queued"]?.jsonPrimitive?.booleanOrNull == true) {
+                            queuedInputs[prepared.first] = RestoredSessionPrompt(text, prepared.second)
+                            reducer.update { it.copy(queuedPrompts = it.queuedPrompts + QueuedPrompt(acceptedId, prepared.first, prepared.second,
+                                if (behavior == RuntimeAgentPromptBehavior.FOLLOW_UP) PromptQueue.FOLLOW_UP else PromptQueue.STEERING)) }
+                        }
                         else if (existingId == null) reducer.addUserMessage(UserMessageItem(acceptedId, prepared.first, prepared.second, System.currentTimeMillis(), accepted = true))
                         mutable.value = reducer.state
                     }
@@ -340,14 +348,35 @@ internal class OmpSessionExplorer(
         }
         override fun stopExecution() { launchOperation { controlAgent(agent.instanceKey, RuntimeAgentOperation.STOP) } }
         private fun queueOperation(queueId: String, text: String?) = launchOperation {
-            val queued = queueMetadata[queueId] ?: error("排队消息已失效，请刷新后重试")
+            val (queued, item) = mutex.withLock {
+                (queueMetadata[queueId] ?: error("排队消息已失效，请刷新后重试")) to
+                    (reducer.state.queuedPrompts.firstOrNull { it.id == queueId } ?: error("排队消息已开始执行"))
+            }
             childCall("explorer_agent_control", buildJsonObject {
                 put("operation", if (text == null) "remove_queue" else "update_queue"); put("queueId", queueId)
                 put("queue", queued.string("queue")); put("originalText", queued.string("text")); text?.let { put("text", it) }
-            }); refresh()
+            })
+            if (text != null) mutex.withLock { queuedInputs[text] = RestoredSessionPrompt(text, item.attachments) }
+            refresh()
         }
         override fun updateQueuedPrompt(id: String, newText: String) { if (newText.isNotBlank()) queueOperation(id, newText) }
         override fun removeQueuedPrompt(id: String) { queueOperation(id, null) }
+        override suspend fun takeQueuedPrompt(id: String): RestoredSessionPrompt = withContext(NonCancellable) {
+            mutex.withLock {
+                val item = reducer.state.queuedPrompts.firstOrNull { it.id == id } ?: error("排队消息已开始执行，无法撤回")
+                val queued = queueMetadata[id] ?: error("排队消息已变化，请稍后重试")
+                val input = queuedInputs[item.text] ?: RestoredSessionPrompt(item.text, item.attachments)
+                childCall("explorer_agent_control", buildJsonObject {
+                    put("operation", "remove_queue"); put("queueId", id)
+                    put("queue", queued.string("queue")); put("originalText", queued.string("text"))
+                })
+                reducer.update { it.copy(queuedPrompts = it.queuedPrompts.filterNot { prompt -> prompt.id == id }) }
+                queueMetadata = queueMetadata - id
+                if (reducer.state.queuedPrompts.none { it.text == item.text }) queuedInputs.remove(item.text)
+                mutable.value = reducer.state
+                input
+            }
+        }
         override fun selectModel(providerId: String, modelId: String) { launchOperation {
             childCall("explorer_agent_model", buildJsonObject { put("providerId", providerId); put("modelId", modelId) }); refresh()
         } }

@@ -717,7 +717,7 @@ class OmpEventReducerTest {
 
     @Test fun queueAndStateSnapshotsReconcileExistingQueueIdsAndModel() {
         val reducer = reducer()
-        reducer.update { it.copy(queuedPrompts = listOf(QueuedPrompt("local-queue", "next"))) }
+        reducer.update { it.copy(queuedPrompts = listOf(QueuedPrompt("local-queue", "next", queue = PromptQueue.STEERING))) }
         reducer.accept("""{"type":"queue_update","steering":["next"],"followUp":["later"],"liveSteered":0}""")
         assertEquals("local-queue", reducer.state.queuedPrompts.first().id)
         reducer.accept("""{"type":"response","command":"get_state","success":true,"data":{"model":{"provider":"anthropic","id":"claude","contextWindow":200000},"thinkingLevel":"high","isStreaming":false,"queuedMessages":{"steering":[],"followUp":["later"]},"todoPhases":[],"contextUsage":{"tokens":500,"contextWindow":200000}}}""")
@@ -773,7 +773,7 @@ class OmpEventReducerTest {
     @Test fun withdrawnQueueRestoresDuplicateOccurrencesWithOriginalAttachments() {
         val reducer = reducer()
         val attachment = AttachmentFile("attachment", "file", "/workspace/file")
-        reducer.update { it.copy(queuedPrompts = listOf(QueuedPrompt("a", "next", listOf(attachment)), QueuedPrompt("b", "next"))) }
+        reducer.update { it.copy(queuedPrompts = listOf(QueuedPrompt("a", "next", listOf(attachment), PromptQueue.STEERING), QueuedPrompt("b", "next"))) }
         reducer.accept("""{"type":"queue_update","steering":[],"followUp":[]}""")
         reducer.accept("""{"type":"response","command":"abort_and_restore_queue","success":true,"data":{"steering":[{"text":"next"}],"followUp":[{"text":"next"}]}}""")
         assertEquals(listOf("a", "b"), reducer.state.queuedPrompts.map { it.id })

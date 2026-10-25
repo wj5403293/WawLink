@@ -6,9 +6,13 @@ import kotlinx.coroutines.flow.StateFlow
 /** Host-neutral contracts. The only runtime dependency is Kotlin coroutines for observable state. */
 interface AgentSessionController {
     val state: StateFlow<ChatSessionUiState>
+    /** Starts a turn when idle; steers the current execution when running. */
     fun sendPrompt(text: String, attachments: List<AttachmentFile> = emptyList())
     fun stopExecution()
-    fun enqueuePrompt(text: String)
+    /** Queues a follow-up behind the current execution, including its attachments. */
+    fun enqueuePrompt(text: String, attachments: List<AttachmentFile> = emptyList())
+    /** Withdraws a queued message only after native removal succeeds; failures leave it untouched. */
+    suspend fun takeQueuedPrompt(id: String): RestoredSessionPrompt
     fun updateQueuedPrompt(id: String, newText: String)
     fun removeQueuedPrompt(id: String)
     fun selectModel(providerId: String, modelId: String)
@@ -59,7 +63,9 @@ data class AttachmentFile(
     val source: AttachmentSource = AttachmentSource.LOCAL,
 )
 data class WorkspaceFileItem(val name: String, val relativePath: String, val isDirectory: Boolean, val sizeBytes: Long = 0)
-data class QueuedPrompt(val id: String, val text: String, val attachments: List<AttachmentFile> = emptyList())
+enum class PromptQueue(val wireName: String) { STEERING("steering"), FOLLOW_UP("followUp") }
+data class QueuedPrompt(val id: String, val text: String, val attachments: List<AttachmentFile> = emptyList(),
+    val queue: PromptQueue = PromptQueue.FOLLOW_UP)
 data class AgentSlashCommand(val name: String, val source: String, val aliases: List<String> = emptyList())
 data class UsageInfo(
     val inputTokens: Long = 0,

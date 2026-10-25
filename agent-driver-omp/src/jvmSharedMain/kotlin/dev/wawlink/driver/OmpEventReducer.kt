@@ -167,6 +167,7 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
 
     private val originalUserText = mutableMapOf<String, String>()
     internal fun rememberUserText(feedId: String, text: String) { originalUserText[feedId] = text }
+    internal fun originalUserText(feedId: String): String? = originalUserText[feedId]
     internal fun nativeUserText(records: List<JsonObject>): Map<String, String> = buildMap {
         nativeEntryFeedIds(records).forEach { (entryId, feedId) -> originalUserText[feedId]?.let { put(entryId, it) } }
     }
@@ -771,15 +772,20 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
     }
 
     private fun queue(frame: JsonObject) {
-        val texts = (frame.array("steering").orEmpty() + frame.array("followUp").orEmpty())
-            .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
         val remaining = state.queuedPrompts.toMutableList()
         if (state.queuedPrompts.isNotEmpty()) withdrawnQueue = state.queuedPrompts
-        state = state.copy(queuedPrompts = texts.map { text ->
-            val index = remaining.indexOfFirst { it.text == text }
-            if (index >= 0) remaining.removeAt(index) else QueuedPrompt(generated("queue"), text)
-        })
+        state = state.copy(queuedPrompts = reconcileQueuedPrompts(frame, remaining))
         remaining.forEach { removed -> if (consumedQueue.none { it.id == removed.id }) consumedQueue.add(removed) }
+    }
+
+    private fun reconcileQueuedPrompts(frame: JsonObject, available: MutableList<QueuedPrompt>): List<QueuedPrompt> = buildList {
+        for (kind in PromptQueue.entries) {
+            for (value in frame.array(kind.wireName).orEmpty()) {
+                val text = (value as? JsonPrimitive)?.contentOrNull ?: value.asObject()?.string("text") ?: continue
+                val index = available.indexOfFirst { it.queue == kind && it.text == text }
+                add(if (index >= 0) available.removeAt(index) else QueuedPrompt(generated("queue"), text, queue = kind))
+            }
+        }
     }
 
     private fun response(frame: JsonObject) {
@@ -801,11 +807,7 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
             }
             "abort_and_restore_queue" -> {
                 val available = (state.queuedPrompts + withdrawnQueue + consumedQueue).distinctBy { it.id }.toMutableList()
-                val restored = (data.array("steering").orEmpty() + data.array("followUp").orEmpty()).mapNotNull { value ->
-                    val text = value.asObject()?.string("text") ?: return@mapNotNull null
-                    val index = available.indexOfFirst { it.text == text }
-                    if (index >= 0) available.removeAt(index) else QueuedPrompt(generated("queue"), text)
-                }
+                val restored = reconcileQueuedPrompts(data, available)
                 state = state.copy(queuedPrompts = restored)
                 withdrawnQueue = restored
                 val restoredIds = restored.mapTo(mutableSetOf()) { it.id }

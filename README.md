@@ -90,6 +90,7 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - 两页使用当前蓝色、系统配色或自定义主题，不写入原型演示状态。OMP 18.12.6 发行版未向扩展导出实时 IRC 邮箱计数时显示未测量，不冒充零条；模型不可用、记录缺失、失效实例和原生操作失败保留实际错误。需要模型的摘要、续写或恢复仍要求容器自身配置和认证，不使用开发机凭据。
 - 历史树首屏仅传完整轻量节点索引，不携带全部正文、预览 Feed、原始 JSON 或复制块；大索引使用固定快照分页，刷新只应用节点/标签/叶子增量。预览、原始记录、复制与历史 Ask 按节点读取，详情按会话身份、节点和版本缓存，拒绝过期响应。Hub 实例首屏不依赖主会话历史或全部子会话正文，持久实例与活动摘要异步补齐；首次打开仍需启动当前容器内的 OMP。
 - 会话输入与排队消息编辑支持多行，Enter 和软键盘回车用于换行，不发送或保存；使用发送按钮提交、勾选按钮保存。Slash 菜单使用 Tab 或点击选择，不拦截回车。
+- 主会话运行中点按追加使用 OMP 原生 `steer` 干预当前执行，长按使用原生 `followUp` 等待后续处理，均支持附件。主输入框为空时点击队列编辑，在确认撤出队列后将原始文字和附件放回输入框；已有草稿则保留行内编辑，不覆盖输入。队列种类贯穿本地预览、编辑及停止恢复，撤回失败显示实际原因。
 - 容器独立文件管理按 WawSSH 对齐列表、图标操作栏、面包屑、路径编辑、筛选/排序、多选、复制/粘贴、重命名、属性、书签与导入导出；路径、更多、下载、新建、书签及同类操作面板使用全宽简洁图标列表，不叠加卡片背景、重复标题和取消行。支持系统打开图片、Android APK 安装、单文件下载及目录/多选 ZIP 下载。删除确认后可递归删除非空目录，先检查整批对象及子树，拒绝符号链接、特殊文件、宿主绑定路径及其祖先，不先删掉部分再因边界错误中断；不覆盖已有目标。文件操作通过客体进程执行，不直接读写宿主 Rootfs。失效历史会显示实际错误，但不会重新入栈，仍可继续返回或退出。
 - 聊天加号菜单保留项目文件，并提供可跨目录选择的“容器文件”；取消保留草稿及已有附件，容器附件使用真实客体绝对路径，不复制到宿主后伪造工作区路径。
 - 会话发送过消息后，用量条持续显示，运行、空闲、继续下一轮及执行出错时均不再隐藏；项目文件展开子目录后使用独立列表行，不再叠放。
@@ -292,6 +293,8 @@ Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/
 导航、文件选择、认证和 Agent 实现由宿主负责。协议使用 `StateFlow` / `Flow`；UI 只消费状态与控制契约，没有对具体驱动或容器的引用。
 
 `AgentSessionController.loadSlashCommands()` 负责按需加载目录，`ChatSessionUiState.slashCommands`/`slashCommandsError` 提供命令元数据与加载错误；目录不会作为历史重放。`respondAsk(nodeId, answers: List<AskAnswer>)` 一次接收同一原生请求的完整答案，以 `questionId` 对齐，不再按每道题分别调用。
+
+`AgentSessionController.sendPrompt()` 在运行中发送原生 steer；`enqueuePrompt(text, attachments)` 发送原生 follow-up。`takeQueuedPrompt(id)` 挂起到对应队列消息成功撤出后，返回可重新编辑的 `RestoredSessionPrompt`；已消费或移除失败则抛出原因，不先假移除。`QueuedPrompt.queue` 保留 steering/followUp 种类。
 
 `AgentChatScreen` 的 `onPickFiles` 与 `onPickContainerFiles` 均由宿主提供；容器选择返回 `source = AttachmentSource.CONTAINER` 的 `AttachmentFile`，`path` 必须是当前容器的真实绝对路径。驱动在容器内校验普通文件并读取图像字节，消息与历史保留附件来源；不把工作区之外的容器附件伪装成项目文件。
 

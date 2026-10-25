@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -40,9 +41,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.*
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.*
 
 @Composable
@@ -100,8 +105,9 @@ private val AttachmentDraftSaver = listSaver<SnapshotStateList<AttachmentFile>, 
 
 internal class ComposerDraftState(val textState: MutableState<String>, val attachments: SnapshotStateList<AttachmentFile>) {
     val hasContent: Boolean get() = textState.value.isNotEmpty() || attachments.isNotEmpty()
+    var takingQueuedPrompt by mutableStateOf(false)
     fun restore(prompt: RestoredSessionPrompt, replaceExisting: Boolean) {
-        if (!replaceExisting && hasContent) return
+        if (takingQueuedPrompt || (!replaceExisting && hasContent)) return
         textState.value = prompt.text
         attachments.clear()
         attachments.addAll(prompt.attachments)
@@ -115,7 +121,7 @@ internal fun rememberComposerDraft(sessionId: String): ComposerDraftState {
     return remember(sessionId, text, attachments) { ComposerDraftState(text, attachments) }
 }
 
-@OptIn(ExperimentalAnimationApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalAnimationApi::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun ComposerArea(controller: AgentSessionController, state: ChatSessionUiState, providerRepository: ProviderConfigRepository, modelRepository: AgentManagementRepository,
     onOpenProviderSettings: () -> Unit, onPickFiles: suspend () -> List<AttachmentFile>, onPickContainerFiles: suspend () -> List<AttachmentFile>,
@@ -125,6 +131,16 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     val appearance = LocalAgentAppearance.current
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val inputFocus = remember(draft) { FocusRequester() }
+    val currentDraft by rememberUpdatedState(draft)
+    var restoredPromptCount by remember(draft) { mutableIntStateOf(0) }
+    LaunchedEffect(draft, restoredPromptCount) {
+        if (restoredPromptCount > 0) {
+            inputFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
     val providers by providerRepository.providers.collectAsState()
     val selectedProvider = providers.firstOrNull { it.id == state.providerId }
     val selectedModel = selectedProvider?.models?.firstOrNull { it.id == state.modelId }
@@ -164,6 +180,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
         }
     }
     fun pickSlash(command: ComposerSlashCommand) {
+        if (draft.takingQueuedPrompt) return
         when (localSlashAction("/${command.name}")) {
             LocalSlashAction.MODEL -> { text = ""; menu = "model" }
             LocalSlashAction.COST -> { text = ""; usageSheet = true }
@@ -171,7 +188,8 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
         }
         slashIndex = 0
     }
-    fun submit() {
+    fun submit(followUp: Boolean = false) {
+        if (draft.takingQueuedPrompt) return
         val prompt = text.trim()
         if (prompt.isEmpty() && attachments.isEmpty()) { if (state.isRunning) controller.stopExecution(); return }
         if (prompt.startsWith("/") && attachments.isEmpty()) {
@@ -186,14 +204,40 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
         } else {
             usageStarted = true
             onPromptSubmitted()
-            if (state.isRunning && attachments.isEmpty()) controller.enqueuePrompt(prompt)
+            if (state.isRunning && followUp) controller.enqueuePrompt(prompt, attachments.toList())
             else controller.sendPrompt(prompt, attachments.toList())
         }
         text = ""; attachments.clear(); focusManager.clearFocus()
     }
+    fun restoreQueuedPrompt(prompt: QueuedPrompt): Boolean {
+        if (draft.takingQueuedPrompt) return true
+        if (draft.hasContent || picking || workspacePicker) return false
+        if (controller.state.value.queuedPrompts.none { it.id == prompt.id }) return true
+        draft.takingQueuedPrompt = true
+        menu = null
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    try {
+                        val restored = controller.takeQueuedPrompt(prompt.id)
+                        // Unlock and restore without suspending so no other draft writer can interleave.
+                        draft.takingQueuedPrompt = false
+                        draft.restore(restored, replaceExisting = true)
+                    } finally {
+                        draft.takingQueuedPrompt = false
+                    }
+                }
+                if (currentDraft === draft) restoredPromptCount++
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (currentDraft === draft) pickerError = e.message ?: "无法取回排队消息"
+            }
+        }
+        return true
+    }
     Column(modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(c.surface.copy(alpha = 0f), c.surface, c.surface), endY = 90f))
         .padding(horizontal = 12.dp).padding(top = 24.dp, bottom = 12.dp)) {
-        PromptQueueList(state.queuedPrompts, controller)
+        PromptQueueList(state.queuedPrompts, controller, { !draft.takingQueuedPrompt }, ::restoreQueuedPrompt)
         AnimatedVisibility(slashMode, enter = expandVertically(tween(450, easing = EmphEasing)) + fadeIn(tween(300, easing = EmphDecelEasing)) + slideInVertically(tween(500, easing = EmphDecelEasing)) { 10 },
             exit = shrinkVertically(tween(400, easing = EmphEasing)) + fadeOut(tween(200, easing = EmphAccelEasing))) {
             Surface(color = c.surface, shape = RoundedCornerShape(24.dp), shadowElevation = 6.dp, modifier = Modifier.padding(bottom = 8.dp)) {
@@ -244,7 +288,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                     }
                 }
                 if (attachments.isNotEmpty()) FlowRow(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    attachments.forEach { file -> InputChip(selected = true, onClick = { attachments.remove(file) },
+                    attachments.forEach { file -> InputChip(selected = true, onClick = { if (!draft.takingQueuedPrompt) attachments.remove(file) }, enabled = !draft.takingQueuedPrompt,
                         label = { Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         leadingIcon = { Symbol("attach_file", size = 18.dp) }, trailingIcon = { Symbol("close", size = 18.dp) }) }
                 }
@@ -252,41 +296,46 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                     Text(error, Modifier.weight(1f), color = c.error, fontSize = 14.sp)
                     AgentIconButton("close", "关闭错误", { pickerError = null })
                 } }
-                BasicTextField(text, { text = it; slashIndex = 0 }, Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 160.dp)
+                BasicTextField(text, { if (!draft.takingQueuedPrompt) { text = it; slashIndex = 0 } }, Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 160.dp)
                     .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 6.dp)
+                    .focusRequester(inputFocus)
                     .onFocusChanged { inputFocused = it.isFocused }
                     .onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown) false else when {
+                        if (draft.takingQueuedPrompt || event.type != KeyEventType.KeyDown) false else when {
                             suggestions.isNotEmpty() && event.key == Key.DirectionDown -> { slashIndex = (selectedIndex + 1) % suggestions.size; true }
                             suggestions.isNotEmpty() && event.key == Key.DirectionUp -> { slashIndex = (selectedIndex - 1 + suggestions.size) % suggestions.size; true }
                             suggestions.isNotEmpty() && event.key == Key.Tab -> { pickSlash(suggestions[selectedIndex]); true }
                             suggestions.isNotEmpty() && event.key == Key.Escape -> { text = ""; true }
                             else -> false
                         }
-                    }, textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.onSurface, fontSize = 18.sp, lineHeight = 27.sp),
+                    }, readOnly = draft.takingQueuedPrompt, textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.onSurface, fontSize = 18.sp, lineHeight = 27.sp),
                     cursorBrush = SolidColor(c.primary),
                     decorationBox = { inner -> Box { if (text.isEmpty()) Text("描述你的任务", color = c.onSurfaceVariant, fontSize = 18.sp); inner() } })
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Box {
-                        ComposerButton("更多附件", menu == "more", { menu = if (menu == "more") null else "more" }) { if (picking) AgentProgressIndicator() else Symbol("add") }
+                        ComposerButton("更多附件", menu == "more", { menu = if (menu == "more") null else "more" }, enabled = !draft.takingQueuedPrompt && !picking) { if (picking) AgentProgressIndicator() else Symbol("add") }
                         ComposerMenu(menu == "more", { menu = null }) {
                             PopupRow("文件", "attach_file") {
-                                menu = null; picking = true
-                                scope.launch {
-                                    try { attachments.addAll(onPickFiles().filter { incoming -> attachments.none { it.path == incoming.path } }) }
-                                    catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; pickerError = e.message ?: "无法选择文件" }
-                                    finally { picking = false }
+                                if (!draft.takingQueuedPrompt && !picking) {
+                                    menu = null; picking = true
+                                    scope.launch {
+                                        try { attachments.addAll(onPickFiles().filter { incoming -> attachments.none { it.path == incoming.path } }) }
+                                        catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; pickerError = e.message ?: "无法选择文件" }
+                                        finally { picking = false }
+                                    }
                                 }
                             }
                             PopupRow("容器文件", "folder_managed") {
-                                menu = null; picking = true
-                                scope.launch {
-                                    try { attachments.addAll(onPickContainerFiles().filter { incoming -> attachments.none { it.path == incoming.path && it.source == incoming.source } }) }
-                                    catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; pickerError = e.message ?: "无法选择容器文件" }
-                                    finally { picking = false }
+                                if (!draft.takingQueuedPrompt && !picking) {
+                                    menu = null; picking = true
+                                    scope.launch {
+                                        try { attachments.addAll(onPickContainerFiles().filter { incoming -> attachments.none { it.path == incoming.path && it.source == incoming.source } }) }
+                                        catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; pickerError = e.message ?: "无法选择容器文件" }
+                                        finally { picking = false }
+                                    }
                                 }
                             }
-                            PopupRow("项目文件", "folder_open") { menu = null; workspacePicker = true }
+                            PopupRow("项目文件", "folder_open") { if (!draft.takingQueuedPrompt && !picking) { menu = null; workspacePicker = true } }
                         }
                     }
                     Box {
@@ -335,8 +384,12 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                     val radius by animateDpAsState(if (stopping) 24.dp else 16.dp, agentSpring())
                     val color by animateColorAsState(if (stopping) c.onSurface else c.primary, tween(300, easing = EmphEasing))
                     val mode = if (stopping) "stop" else if (state.isRunning) "playlist_add" else "arrow_upward"
-                    Box(Modifier.size(48.dp).clip(RoundedCornerShape(radius)).background(color).clickable(enabled = state.isRunning || hasInput) { submit() }
-                        .semantics { contentDescription = if (stopping) "停止" else if (state.isRunning) "加入队列" else "发送" }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(48.dp).clip(RoundedCornerShape(radius)).background(color).combinedClickable(
+                        enabled = !draft.takingQueuedPrompt && (state.isRunning || hasInput),
+                        onClick = { submit() },
+                        onLongClick = if (state.isRunning && hasInput) ({ submit(followUp = true) }) else null,
+                        onLongClickLabel = if (state.isRunning && hasInput) "加入后续队列" else null,
+                    ).semantics { contentDescription = if (stopping) "停止" else if (state.isRunning) "追加" else "发送" }, contentAlignment = Alignment.Center) {
                         AnimatedContent(mode, transitionSpec = { (fadeIn(tween(300, easing = EmphDecelEasing)) + scaleIn(agentSpring())) togetherWith fadeOut(tween(150)) }) { Symbol(it, tint = if (stopping) c.surface else c.onPrimary, filled = true) }
                     }
                 }
@@ -350,11 +403,11 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
 }
 
 @Composable
-private fun ComposerButton(description: String, active: Boolean, onClick: () -> Unit, lit: Boolean = false, content: @Composable () -> Unit) {
+private fun ComposerButton(description: String, active: Boolean, onClick: () -> Unit, lit: Boolean = false, enabled: Boolean = true, content: @Composable () -> Unit) {
     val c = LocalAgentColors.current
     val radius by animateDpAsState(if (active) 14.dp else 22.dp, agentSpring())
     val background by animateColorAsState(if (active) c.primaryContainer else Color.Transparent, tween(300, easing = EmphEasing))
-    Box(Modifier.size(44.dp).clip(RoundedCornerShape(radius)).background(background).clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
+    Box(Modifier.size(44.dp).clip(RoundedCornerShape(radius)).background(background).clickable(enabled = enabled, onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
         CompositionLocalProvider(LocalContentColor provides if (active) c.onPrimaryContainer else if (lit) c.primary else c.onSurfaceVariant) { content() }
     }
 }
@@ -421,7 +474,7 @@ private fun PopupRow(label: String, icon: String = "", selected: Boolean = false
 }
 
 @Composable
-private fun PromptQueueList(prompts: List<QueuedPrompt>, controller: AgentSessionController) {
+private fun PromptQueueList(prompts: List<QueuedPrompt>, controller: AgentSessionController, canEdit: () -> Boolean, onRestore: (QueuedPrompt) -> Boolean) {
     val displayed = remember(controller) { mutableStateListOf<QueuedPrompt>() }
     val present = remember(controller) { mutableStateMapOf<String, Boolean>() }
     LaunchedEffect(prompts) {
@@ -443,30 +496,30 @@ private fun PromptQueueList(prompts: List<QueuedPrompt>, controller: AgentSessio
             AnimatedVisibility(visible,
                 enter = expandVertically(tween(450, easing = EmphEasing)) + fadeIn(tween(350, 80, EmphDecelEasing)) + slideInVertically(tween(500, easing = EmphDecelEasing)) { 12 },
                 exit = shrinkVertically(tween(450, easing = EmphEasing)) + fadeOut(tween(250, easing = EmphAccelEasing))) {
-                QueueRow(prompt, controller)
+                QueueRow(prompt, controller, { present[prompt.id] == true && canEdit() }, onRestore)
             }
         } }
     }
 }
 
 @Composable
-private fun QueueRow(prompt: QueuedPrompt, controller: AgentSessionController) {
+private fun QueueRow(prompt: QueuedPrompt, controller: AgentSessionController, canEdit: () -> Boolean, onRestore: (QueuedPrompt) -> Boolean) {
     var editing by rememberSaveable(prompt.id) { mutableStateOf(false) }
     var draft by rememberSaveable(prompt.id, prompt.text) { mutableStateOf(prompt.text) }
     val c = LocalAgentColors.current
     val focus = remember { FocusRequester() }
-    fun save() { if (draft.isBlank()) controller.removeQueuedPrompt(prompt.id) else controller.updateQueuedPrompt(prompt.id, draft.trim()); editing = false }
+    fun save() { if (!canEdit()) return; if (draft.isBlank()) controller.removeQueuedPrompt(prompt.id) else controller.updateQueuedPrompt(prompt.id, draft.trim()); editing = false }
     LaunchedEffect(editing) { if (editing) focus.requestFocus() }
     val radius by animateDpAsState(if (editing) 28.dp else 20.dp, tween(400, easing = EmphEasing))
     val background by animateColorAsState(if (editing) c.primaryContainer else c.surfaceContainer, tween(300, easing = EmphEasing))
     Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(radius)).background(background).heightIn(min = 56.dp).padding(start = 16.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Symbol("schedule", size = 22.dp, tint = c.onSurfaceVariant)
-        if (editing) BasicTextField(draft, { draft = it }, Modifier.weight(1f).heightIn(max = 160.dp).focusRequester(focus).padding(vertical = 8.dp),
-            textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.onSurface))
+        if (editing) BasicTextField(draft, { if (canEdit()) draft = it }, Modifier.weight(1f).heightIn(max = 160.dp).focusRequester(focus).padding(vertical = 8.dp),
+            readOnly = !canEdit(), textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.onSurface))
         else Text(prompt.text.ifBlank { "${prompt.attachments.size} 个附件" }, Modifier.weight(1f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        AgentIconButton(if (editing) "check" else "edit", if (editing) "保存" else "编辑", { if (editing) save() else editing = true }, Modifier.size(44.dp))
-        AgentIconButton("close", "移除排队消息", { controller.removeQueuedPrompt(prompt.id) }, Modifier.size(44.dp))
+        AgentIconButton(if (editing) "check" else "edit", if (editing) "保存" else "编辑", { if (canEdit()) { if (editing) save() else if (!onRestore(prompt)) editing = true } }, Modifier.size(44.dp), enabled = canEdit())
+        AgentIconButton("close", "移除排队消息", { if (canEdit()) controller.removeQueuedPrompt(prompt.id) }, Modifier.size(44.dp), enabled = canEdit())
     }
 }
 

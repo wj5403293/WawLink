@@ -340,7 +340,6 @@ class OmpPromptDeliveryTest {
             controller.executeSlashCommand("todo", "help")
             val slash = transport.request()
             assertEquals("prompt", slash.string("type"))
-            assertEquals("followUp", slash.string("streamingBehavior"))
             assertEquals(SessionStatus.WAITING, controller.state.value.status)
             transport.respond(slash, data = buildJsonObject { put("agentInvoked", false) })
             val preserved = awaitState { it.queuedPrompts.isEmpty() }
@@ -682,7 +681,7 @@ class OmpPromptDeliveryTest {
                 buffer.reset()
                 if (request["op"] != null) { check(managementRequests.trySend(request).isSuccess); return }
                 when (request.string("type")) {
-                    "prompt", "follow_up" -> check(requests.trySend(request).isSuccess)
+                    "prompt", "steer", "follow_up" -> check(requests.trySend(request).isSuccess)
                     "extension_ui_response" -> check(uiResponses.trySend(request).isSuccess)
                     "get_state" -> respond(request, data = buildJsonObject {
                         put("isStreaming", running); put("isSettled", !running)
