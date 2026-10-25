@@ -93,7 +93,7 @@
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - 同目录的 `OmpEventReducer.kt` 在归并器内部按稳定 ID 定位当前节点，只复制变更节点的祖先兄弟列表，外部整体替换自动失效索引；重复终态与工具输出的冗余渲染被消除。完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考归属。`OmpProcessPool.kt` 的事件日志逐条写入并关闭缓冲 UTF-8 writer，不额外构造整条换行字符串及其 UTF-8 字节数组。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
-  - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生轻量历史索引与独立运行实例接入 Kotlin 状态流，按会话、节点与版本缓存所选详情，保留完整快照分页与增量刷新。`omp-management/session.mjs` 加载 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs`，分别负责原生操作分发、完整树索引/按需详情及注册表首屏/异步持久发现/增量活动摘要；有状态模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖完整匹配快照、过期详情拒绝、正文复制边界、Hub 与历史解耦、分支返回及稳定消息身份。
+  - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生轻量历史索引与独立运行实例接入 Kotlin 状态流，按会话、节点与版本缓存所选详情，保留完整快照分页与增量刷新。`omp-management/session.mjs` 以会话生命周期内的顺序定时扫描处理原子请求，不依赖 Proroot 未翻译的原始 inotify 路径；通道状态按原生进程实例隔离，初始化/排空错误交给调用页，本地超时不冒充页面取消。它加载的 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs` 分别负责原生操作分发、完整树索引/按需详情及注册表首屏/异步持久发现/增量活动摘要；原生模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖完整匹配快照、过期详情拒绝、正文复制边界、Hub 与历史解耦、分支返回及稳定消息身份。
   - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。
   - 同资源目录的 `clawhub.ts`、`clawhub-http.ts`、`clawhub-source.ts` 提供独立 ClawHub 公开目录、精确版本与完整资源校验、受限联网及作用域安装；`.wawlink-clawhub.json` 只记录安装来源，不认证后续本地编辑内容。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpInstallation.kt` 提供容器内安装自检与终端命令，`src/jvmSharedMain/resources/omp-install.sh` 固定 OMP/Bun 来源和完整依赖，分阶段校验真实原生模块与 RPC 后切换安装；缺少 CA 的 APT 基础镜像先通过保留签名校验的临时 HTTP 源安装证书，不修改原软件源或关闭 TLS 校验。`OmpProcessPool.kt` 聚合会话及管理进程故障并暂停/恢复修复关联进程，`src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpInstallationTest.kt` 覆盖引擎故障与缺失安装的区分及自检协议边界。
@@ -141,6 +141,7 @@
 - 聊天性能回归修复按用户当前要求不运行桌面端或移动端测试、性能基准及界面验收，只做静态排查与 APK 构建，由用户真机复测；未获重新授权前不得用桌面测试代替手机表现，也不得把构建通过写成卡顿或闪退已验证修复。
 - 历史树与 Agent Hub 加载改造按用户当前要求不再运行 Desktop 测试或界面验收，只构建 APK 交由用户真机验证，并关闭本轮 Desktop 验证进程；不得把构建或此前的桌面观察写成 Android 真机验收结论。
 - 每次修改完成并通过必要验证后，必须为本次修改创建 Git commit，提交仅包含本次任务的变更。
+- APK 交付统一使用 Gradle 默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`；后续更新覆盖这个产物，不再为每次任务复制或新增命名 APK。
 - 已确认：Rootfs 完整预装功能优先，不将 150–220 MB 作为硬上限；必须报告实际解压体积和归档体积。
 - 已确认：依上游真实能力提供引擎；Proroot 仅 Android arm64，桌面使用 PRoot/QEMU 或 chroot；强制只读绑定仅 chroot 支持，其他引擎必须明确拒绝，禁止静默变为可写。
 - 真实模型验收仅使用用户确认的 `oc/deepseek-v4.1-flash`；不得将开发机认证复制进代码、Rootfs、APK 或交付报告。

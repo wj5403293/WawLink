@@ -5,9 +5,7 @@ import { setImmediate } from 'node:timers/promises';
 import { AgentRegistry, MAIN_AGENT_ID } from '@oh-my-pi/pi-coding-agent/registry/agent-registry';
 import { AgentLifecycleManager } from '@oh-my-pi/pi-coding-agent/registry/agent-lifecycle';
 import { registerPersistedSubagents, sessionFileBelongsToRoot } from '@oh-my-pi/pi-coding-agent/registry/persisted-agents';
-import { AgentActivityIndex } from '/opt/omp/src/activity/index.ts';
-// Not an exported host module: this native parser owns only per-instance file
-// caches, never a registry/lifecycle singleton. Stateful imports use host aliases.
+import { AgentActivityIndex } from '@oh-my-pi/pi-coding-agent/activity/index';
 import { loadSessionFile, resolveBlobRefsInEntries } from '@oh-my-pi/pi-coding-agent/session/session-loader';
 import { EPHEMERAL_MODEL_CHANGE_ROLE, resolveSessionLeafId } from '@oh-my-pi/pi-coding-agent/session/session-entries';
 import { assistantTurnProducedOutput } from '@oh-my-pi/pi-coding-agent/session/messages';

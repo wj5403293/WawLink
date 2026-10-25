@@ -43,6 +43,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.first
 
 /** Browsing and selecting never changes the native leaf. Only explicitly confirmed actions do. */
 @Composable
@@ -239,11 +240,12 @@ fun SessionHistorySheet(
             else selectedId?.let { focus(it, true) }
         }
     }
-    LaunchedEffect(focusChatItemId, copyFocusedMessage, historyRead, history.nodes, history.loading) {
-        if (historyRead && !history.loading && !focusApplied && focusChatItemId != null) {
+    LaunchedEffect(explorer, session.id, focusChatItemId, copyFocusedMessage) {
+        if (!focusApplied && focusChatItemId != null) {
+            snapshotFlow { historyRead && !history.loading && history.error == null }.first { it }
             try {
                 val entryId = explorer.entryIdForChatItem(focusChatItemId)
-                val node = history.nodes.firstOrNull { it.id == entryId }
+                val node = explorer.history.value.nodes.firstOrNull { it.id == entryId }
                 if (node != null) {
                     initialized = true
                     focusApplied = true

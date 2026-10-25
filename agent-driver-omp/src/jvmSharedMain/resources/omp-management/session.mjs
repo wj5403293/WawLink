@@ -1,4 +1,3 @@
-import { watch } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createSessionExplorer, explorerError } from './explorer.mjs';
@@ -6,8 +5,10 @@ import { createSessionExplorer, explorerError } from './explorer.mjs';
 /** Native-session control, isolated by an app-owned request directory and acknowledged by that session. */
 export default function managementSessionExtension(pi) {
   const directory = process.env.WAWLINK_MANAGEMENT_DIRECTORY;
-  if (!directory) return;
-  let watcher;
+  const instance = process.env.WAWLINK_MANAGEMENT_INSTANCE;
+  if (!directory || !instance) return;
+  let poller;
+  let generation = 0;
   let context;
   const explorer = createSessionExplorer(pi, () => context);
   async function respond(request, response) {
@@ -15,7 +16,11 @@ export default function managementSessionExtension(pi) {
     await writeFile(destination + '.tmp', JSON.stringify(response), { mode: 0o600 });
     await rename(destination + '.tmp', destination);
   }
-  let chain = Promise.resolve();
+  async function channelState(ready, error) {
+    const destination = join(directory, 'channel.json');
+    await writeFile(destination + '.tmp', JSON.stringify({ instance, ready, error }), { mode: 0o600 });
+    await rename(destination + '.tmp', destination);
+  }
   async function drain() {
     if (!context) return;
     for (const name of await readdir(directory)) {
@@ -63,12 +68,42 @@ export default function managementSessionExtension(pi) {
       await respond(request, response);
     }
   }
+  async function poll(currentGeneration) {
+    if (currentGeneration !== generation || !context) return;
+    try {
+      await drain();
+    } catch (error) {
+      if (currentGeneration === generation) await channelState(false, explorerError(error));
+      return;
+    }
+    if (currentGeneration === generation && context) {
+      // Bun uses raw inotify syscalls which Proroot does not translate. Schedule
+      // only after this scan finishes, without overlapping or queuing scans.
+      poller = setTimeout(() => {
+        void poll(currentGeneration).catch(error => {
+          process.stderr.write(`Session management channel failed: ${explorerError(error)}\n`);
+        });
+      }, 100);
+      poller.unref();
+    }
+  }
   pi.on('session_start', async (_event, ctx) => {
+    const currentGeneration = ++generation;
+    clearTimeout(poller);
     context = ctx;
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    watcher?.close();
-    watcher = watch(directory, { persistent: false }, () => { chain = chain.then(drain, drain); });
-    await drain();
+    try {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await channelState(true);
+      await poll(currentGeneration);
+    } catch (error) {
+      await channelState(false, explorerError(error));
+      throw error;
+    }
   });
-  pi.on('session_shutdown', () => { watcher?.close(); watcher = undefined; context = undefined; });
+  pi.on('session_shutdown', () => {
+    ++generation;
+    clearTimeout(poller);
+    poller = undefined;
+    context = undefined;
+  });
 }

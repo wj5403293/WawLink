@@ -188,8 +188,10 @@ internal class OmpSessionExplorer(
             mutableHub.value = AgentHubState(mainSessionId = mainId, agents = agents, activity = activities,
                 activityLimit = (response["activityLimit"] as? JsonPrimitive)?.intOrNull ?: activityLimit, connected = response.bool("connected") == true,
                 discovering = response.bool("discovering") == true, discoveryError = response.optional("discoveryError"))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (failure: Exception) {
-            mutableHub.update { it.copy(connected = false, error = failure.message) }; throw failure
+            mutableHub.update { it.copy(connected = false, discovering = false, error = failure.message) }; throw failure
         } finally { mutableHub.update { it.copy(loading = false) } }
     }
 

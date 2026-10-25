@@ -338,6 +338,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
     private class ChatAttempt(val generation: Long) {
         val reported = AtomicBoolean()
+        val managementInstance = UUID.randomUUID().toString()
+        @Volatile var managementFailure: String? = null
         @Volatile var intentional = false
         @Volatile var nativeReady = false
     }
@@ -860,9 +862,44 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
         }
 
+        private suspend fun awaitManagementResponse(attempt: ChatAttempt, directory: File, responseFile: File, timeoutMs: Long) {
+            val channel = File(directory, "channel.json")
+            var channelStamp = 0L
+            var channelSize = 0L
+            var channelReady = false
+            val received = withTimeoutOrNull(timeoutMs) {
+                while (true) {
+                    if (activeAttempt !== attempt || attempt.intentional) throw OmpProcessStoppedException()
+                    check(process?.isAlive == true) { "OMP 会话已退出" }
+                    attempt.managementFailure?.let { error(it) }
+                    if (responseFile.exists()) break
+                    val stamp = channel.lastModified()
+                    val size = channel.length()
+                    if (stamp != 0L && (stamp != channelStamp || size != channelSize)) {
+                        val status = DriverJson.parseToJsonElement(channel.readText()).jsonObject
+                        if (status.string("instance") == attempt.managementInstance) {
+                            check(status["ready"]?.jsonPrimitive?.booleanOrNull == true) {
+                                status.string("error", "OMP 会话管理通道初始化失败")
+                            }
+                            channelReady = true
+                        }
+                        channelStamp = stamp
+                        channelSize = size
+                    }
+                    delay(25)
+                }
+                true
+            } ?: false
+            check(received) {
+                if (channelReady) "OMP 会话管理请求超时，请重试"
+                else "OMP 会话管理扩展未就绪，历史树与 Agent Hub 暂不可用"
+            }
+        }
+
         suspend fun managementControl(op: String, provider: String? = null, accountId: String? = null): JsonObject = exclusive {
             check(process?.isAlive == true) { "Runtime account management requires a running session" }
             require(op == "pins" || (!state.value.isRunning && backendSettled)) { "Session is busy" }
+            val attempt = activeAttempt ?: error("OMP 进程未启动")
             val requestId = UUID.randomUUID().toString()
             val directory = confined(ownedSessionDirectory(containerId, id), "management")
             check(directory.isDirectory || directory.mkdirs())
@@ -870,7 +907,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val responseFile = File(directory, "response-$requestId.json")
             try {
                 atomicWrite(requestFile, buildJsonObject { put("id", requestId); put("op", op); provider?.let { put("provider", it) }; put("accountId", accountId?.let(::JsonPrimitive) ?: JsonNull) }.toString())
-                withTimeout(15_000) { while (!responseFile.exists()) { check(process?.isAlive == true) { "Session exited" }; delay(30) } }
+                awaitManagementResponse(attempt, directory, responseFile, 15_000)
                 val response = DriverJson.parseToJsonElement(responseFile.readText()).jsonObject
                 check(response["success"]?.jsonPrimitive?.booleanOrNull == true) { "Session is busy or account capability is unavailable" }
                 response
@@ -890,6 +927,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     put("sessionFile", JsonNull); put("revision", ""); put("reset", true); put("removedIds", JsonArray(emptyList())); put("nextCursor", JsonNull)
                 }
             }
+            val attempt = activeAttempt ?: error("OMP 进程未启动")
             val requestId = UUID.randomUUID().toString()
             val directory = confined(ownedSessionDirectory(containerId, id), "management")
             check(directory.isDirectory || directory.mkdirs())
@@ -902,9 +940,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     put("sessionId", (explorer.history.value.sessionId.takeIf { it.isNotBlank() }
                         ?: explorer.hub.value.mainSessionId.takeIf { it.isNotBlank() })?.let(::JsonPrimitive) ?: JsonNull)
                 }.toString())
-                withTimeout(if (op == "explorer_navigate") 600_000 else 180_000) {
-                    while (!responseFile.exists()) { check(process?.isAlive == true) { "OMP 会话已退出" }; delay(25) }
-                }
+                awaitManagementResponse(attempt, directory, responseFile, if (op == "explorer_navigate") 600_000 else 180_000)
                 val response = DriverJson.parseToJsonElement(responseFile.readText()).jsonObject
                 check(response["success"]?.jsonPrimitive?.booleanOrNull == true) { response.string("error", "原生会话操作失败") }
                 return response
@@ -985,7 +1021,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             // Bun snapshots DNS servers; resume a fresh process on the next idle send after a network change.
             startedResolvConf = resolvConf?.value
             val child = try {
-                runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1", "WAWLINK_MANAGEMENT_DIRECTORY" to "${guestSessionDirectory(id)}/management"))
+                runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1",
+                    "WAWLINK_MANAGEMENT_DIRECTORY" to "${guestSessionDirectory(id)}/management",
+                    "WAWLINK_MANAGEMENT_INSTANCE" to attempt.managementInstance))
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 reportChatFailure(attempt, inspectInstallation = true)
@@ -1132,6 +1170,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         private suspend fun receive(frame: JsonObject) {
             val type = frame.string("type")
+            if (type == "extension_error" && frame.string("extensionPath") == "/root/.omp/agent/wawlink/management/session.mjs") {
+                activeAttempt?.managementFailure = "OMP 会话管理扩展加载或初始化失败，历史树与 Agent Hub 暂不可用"
+            }
             if (type == "agent_start") { startedNanos = System.nanoTime(); backendSettled = false }
             if (type == "session_settled") backendSettled = true
             if (type == "prompt_result") frame["sessionSettled"]?.jsonPrimitive?.booleanOrNull?.let { backendSettled = it }

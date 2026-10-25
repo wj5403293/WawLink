@@ -57,7 +57,7 @@ Agent 设置先加载运行配置、Agent 与文件来源，再异步读取模�
 ./gradlew :app-android:assembleDebug
 ```
 
-输出：`app-android/build/outputs/apk/debug/app-android-debug.apk`。该任务不要求 Rootfs 归档存在，不会启动模拟器。预置原生命令作为可执行 `.so` 随 APK 安装，仅打包 arm64-v8a，保留上游二进制原始字节；新增终端 PTY 的 `libtermux.so` 从移植的 JNI 源码构建。
+输出：`app-android/build/outputs/apk/debug/app-android-debug.apk`。后续更新始终覆盖这个 Gradle 默认产物，不再按任务复制或另存新命名 APK。该任务不要求 Rootfs 归档存在，不会启动模拟器。预置原生命令作为可执行 `.so` 随 APK 安装，仅打包 arm64-v8a，保留上游二进制原始字节；新增终端 PTY 的 `libtermux.so` 从移植的 JNI 源码构建。
 
 Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA256 文件到 `build/outputs/`。首次安装后，将独立归档复制到手机，在“容器 → 导入 rootfs”选择文件并完成导入；应用启动不再从 APK 解包环境。以后覆盖安装同签名 APK 即可保留已有容器和会话，不需要重新下载或导入未变化的 Rootfs，也不要为更新而卸载应用。
 
@@ -397,4 +397,14 @@ OMP 安装引导本轮通过 182 项 Kotlin 回归（容器 32、驱动 121、�
 用户随后要求停止 Desktop 验证，已关闭本轮应用和隔离显示进程，此后不再启动桌面验收。以上回归和桌面观察均发生在该要求之前；最终交付 APK 由用户真机验证。
 
 本轮交付 APK：`app-android/build/outputs/apk/debug/wawlink-session-explorer-loading-debug.apk`，56,413,507 bytes；SHA-256：`b9f1c312530e6b392dfed86e1d5666819740df42f07aa8836d83de4e3c81ec23`。APK v2 签名验证通过，5 份管理桥与源码逐字节匹配，仅含 arm64-v8a 原生库、不含 Rootfs。更新 APK 即可继续使用已有容器，无需重新导入 Rootfs。
+
+### 小会话历史树与 Hub 管理通道修复（2026-10-25）
+
+静态排查发现管理扩展在首次排空请求前调用 `fs.watch`，而固定 Bun 的 Linux 实现直接使用原始 `inotify_add_watch` syscall；当前固定 Proroot runtime 的路径翻译表未覆盖该 syscall。[INFERENCE] 这可导致扩展初始化失败、聊天 RPC 却仍正常，与只有一句“你好”也无法加载历史树或 Hub 的现象吻合；尚无真机日志确认本次设备的具体断点。
+
+管理请求改为会话生命周期内的顺序定时扫描，每轮完成后再调度下一轮，不叠加扫描或依赖文件通知；保留原子请求/响应和 Explorer 并发处理。通道就绪及排空错误使用原生进程实例身份隔离，已知管理扩展错误不再被聊天 RPC 存活状态掩盖。本地等待超时改为普通操作失败，保留真实页面取消传播；Hub 读取失败结束发现进度，历史消息定位不再被周期性 loading 翻转反复取消。活动索引改用原生规范包导入，不硬编码安装目录。
+
+本轮仅做静态排查、两份管理桥的 `node --check` 与 Android APK 构建；`./gradlew :app-android:assembleDebug --console=plain` 在 43 秒内成功，未运行测试、Desktop 应用或 Android 模拟器。APK 签名验证通过，两份变更后的管理桥与源码逐字节一致。`adb devices -l` 未发现已连接设备，加载耗时、流畅度与本次故障是否消除仍由用户真机验证，不能以构建成功替代。
+
+交付覆盖默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`，58,308,296 bytes；SHA-256：`048d72d7eb9780935fca41f6df27cdafd8548ad09136bed1f69fd02310b431c6`。未创建新命名 APK，更新现有应用即可保留容器与会话，无需重新导入 Rootfs。
 
