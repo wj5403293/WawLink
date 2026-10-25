@@ -441,6 +441,12 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
             }
             AgentPaletteSettings(appearance) { app.updateAppearance(it) }
             HostRow("深色主题", icon = "dark_mode") { Switch(appearance.darkTheme, { app.updateAppearance(appearance.copy(darkTheme = it)) }) }
+            if (app.isAndroid) {
+                val keepScreenOn by app.keepScreenOn.collectAsState()
+                HostRow("屏幕常亮", icon = "light_mode") {
+                    Switch(keepScreenOn, app::updateKeepScreenOn, modifier = Modifier.semantics { contentDescription = "屏幕常亮" })
+                }
+            }
             HostRow("色觉辅助模式", icon = "visibility") { Switch(appearance.colorVisionAssist, { app.updateAppearance(appearance.copy(colorVisionAssist = it)) }) }
             HostRow("平滑流式输出", icon = "animation") { Switch(appearance.smoothStreaming, { app.updateAppearance(appearance.copy(smoothStreaming = it)) }) }
             HostRow("常驻显示词元用量", icon = "token") { Switch(appearance.alwaysShowUsage, { app.updateAppearance(appearance.copy(alwaysShowUsage = it)) }) }

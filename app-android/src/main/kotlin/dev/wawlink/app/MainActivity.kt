@@ -14,6 +14,7 @@ import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
@@ -27,6 +28,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import dev.wawlink.protocol.AttachmentFile
 import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
@@ -34,6 +38,7 @@ import java.io.File
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 
 class MainActivity : ComponentActivity(), HostFiles {
     private val navigation = HostNavigation()
@@ -65,6 +70,18 @@ class MainActivity : ComponentActivity(), HostFiles {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val app = (application as WawLinkApplication).coordinator
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                try {
+                    app.keepScreenOn.collect { enabled ->
+                        if (enabled) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                } finally {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (navigation.onBack?.invoke() != true) {

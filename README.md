@@ -34,6 +34,8 @@ Agent 设置先加载运行配置、Agent 与文件来源，再异步读取模�
 
 “应用设置 → 主题配色”支持默认蓝色、系统配色和自定义主色；自定义通过 Material Color Utilities 的 HCT 色调生成明暗两套 Material 3 角色，可选择预设或输入六位 HEX，设置跨重启保留。Android 12+ 直接读取系统莫奈调色板，旧版 Android 与 Desktop 的系统选项明确回退默认蓝色；默认界面的背景保持纯白，分段选择器及其他控件统一使用主题色，不残留默认紫色。完整上游许可随 UI 资源打包。
 
+Android“应用设置 → 外观与显示 → 屏幕常亮”默认关闭，开关状态跨重启保留。开启后主页、聊天、终端和其他应用页面在前台可见时均保持亮屏；关闭或切到后台恢复系统自动熄屏，终端不再单独强制常亮。仅使用当前窗口的常亮标志，不修改系统熄屏时间，也不申请唤醒锁权限。
+
 ## 构建与运行
 
 构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35 与 Android NDK（编译终端 JNI）、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。

@@ -19,6 +19,7 @@
 - popup menu 使用“图标 + 标题”结构。聊天右上角设置使用锚定 popup menu，不使用 bottom sheet，保留模型服务、Agent 设置及框架设置三个入口。
 - Agent 设置的作用域、选择项及新建入口使用原型中的锚定 popup menu，不改成对话框；提示与空态以原型为准，不额外堆叠说明卡片。确认删除、覆盖及舍弃修改仍使用对应确认对话框。
 - 应用默认密度统一校准到原型，主页、聊天和所有设置页共用同一缩放，不在嵌套主题中重复缩放；应用设置提供持久化的“整体缩放”和恢复默认，保留系统字体缩放。当前基线以旧版 115% 为新版 100%；已有 115% 设置迁移为 100%，不得在升级或重启后重复放大。
+- Android 应用设置提供“屏幕常亮”开关，默认关闭并持久化；开启后整个应用在前台可见时保持亮屏，关闭或进入后台恢复系统熄屏策略，终端不再独立强制常亮。
 - 启动及容器列表更新只读取会话元数据，打开某个会话时才恢复其正文与控制器；主页继续观察已打开的会话，不批量恢复未打开的历史。
 - 未命名会话使用首条用户问题作为标题，过长时截断展示，不覆盖手动命名；主页会话列表长按进入多选。会话内右上角新建直接沿用当前容器与工作区，不弹配置表单且不预设名称。
 - 主页会话卡片展开与收起使用轻快的非线性动画，不叠加高度动画；展开后的分支按钮仅显示 Material Symbols 图标，保留中文无障碍说明和足够点击区域，减少操作栏换行与遮挡。
@@ -121,7 +122,7 @@
   - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、当前单容器持久化、直接新建与空会话清理、持久化整体缩放与配色，以及 OMP 安装修复提示去重和一次性授权，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。
-  - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载、APK 安装及主机挂载目录选择，按 Android 版本处理共享储存授权与本机储存卷路径；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。
+  - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载、APK 安装及主机挂载目录选择，按 Android 版本处理共享储存授权与本机储存卷路径，并按前台生命周期应用屏幕常亮偏好；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。
   - `src/main/kotlin/dev/wawlink/app/FeatureAndroidLuaBridge.kt` 提供来源限定的网页桥；`FeatureAndroidLuaRuntime.kt` 统一标准 LuaJ/Java、Android UI 调度、Intent 助手及 JSON 转换，`FeatureNativeLuaExecutor.android.kt` 提供无 WebView 的后台原生按钮执行。导航/销毁取消旧任务，LuaJ 与 AndroidX WebKit 显式依赖，不开放无来源限制的 `addJavascriptInterface`。
 - `terminal-emulator/`、`terminal-view/`：从 Love2Droid 固定提交移植的 Android Termux 终端解析器、JNI PTY 与视图，仅构建 arm64-v8a；`terminal-emulator/NOTICE` 记录上游来源及修改，许可同时保存在模块 assets 与 `licenses/`。
 - `licenses/`：Termux 终端、JediTerm、pty4j、Love2Droid/r2droid、Maple Mono 及 LuaJ 的完整上游许可及来源；`LUAJ-LICENSE.txt` 同时随 `app-android/src/main/assets/licenses/` 打包。
@@ -148,6 +149,7 @@
 - Debug Gradle 任务仅用于本地测试与编译，不允许据此启动模拟器。
 - 聊天性能回归修复按用户当前要求不运行桌面端或移动端测试、性能基准及界面验收，只做静态排查与 APK 构建，由用户真机复测；未获重新授权前不得用桌面测试代替手机表现，也不得把构建通过写成卡顿或闪退已验证修复。
 - 历史树与 Agent Hub 加载改造按用户当前要求不再运行 Desktop 测试或界面验收，只构建 APK 交由用户真机验证，并关闭本轮 Desktop 验证进程；不得把构建或此前的桌面观察写成 Android 真机验收结论。
+- 屏幕常亮开关本轮按用户要求不运行测试、模拟器或界面验收；修改后直接构建默认路径 Debug APK，交由用户真机验证。
 - 每次修改完成并通过必要验证后，必须为本次修改创建 Git commit，提交仅包含本次任务的变更。
 - APK 交付统一使用 Gradle 默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`；后续更新覆盖这个产物，不再为每次任务复制或新增命名 APK。
 - 已确认：Rootfs 完整预装功能优先，不将 150–220 MB 作为硬上限；必须报告实际解压体积和归档体积。

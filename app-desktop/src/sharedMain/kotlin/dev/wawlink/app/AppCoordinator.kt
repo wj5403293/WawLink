@@ -68,6 +68,8 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     val appearance: StateFlow<AgentAppearance> = _appearance.asStateFlow()
     private val _defaultAutoApprove = MutableStateFlow(true)
     val defaultAutoApprove: StateFlow<Boolean> = _defaultAutoApprove.asStateFlow()
+    private val _keepScreenOn = MutableStateFlow(false)
+    val keepScreenOn: StateFlow<Boolean> = _keepScreenOn.asStateFlow()
     private val notices = MutableStateFlow<List<HostNotice>>(emptyList())
     val notice: StateFlow<HostNotice?> = notices.map { it.firstOrNull() }.stateIn(scope, SharingStarted.Eagerly, null)
     private val ompSetupLock = Any()
@@ -110,6 +112,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
                 customColor = p.getProperty("customColor")?.toLongOrNull()?.takeIf { it in 0xFF000000L..0xFFFFFFFFL } ?: 0xFF0B57D0L,
             )
             _defaultAutoApprove.value = flag("defaultAutoApprove", true)
+            _keepScreenOn.value = flag("keepScreenOn", false)
             val metadata = Properties()
             File(dataDir, "sessions.properties").takeIf { it.exists() }?.inputStream()?.use(metadata::load)
             records.value = metadata.getProperty("ids", "").split(',').filter { it.isNotBlank() }.map { id ->
@@ -440,6 +443,10 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         _defaultAutoApprove.value = enabled
         launch { persistPreferences() }
     }
+    fun updateKeepScreenOn(enabled: Boolean) {
+        _keepScreenOn.value = enabled
+        launch { persistPreferences() }
+    }
     private fun persistPreferences() = synchronized(persistenceLock) {
         val current = _appearance.value
         val p = Properties()
@@ -447,6 +454,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         p["smooth"] = current.smoothStreaming.toString(); p["usage"] = current.alwaysShowUsage.toString()
         p["hideTools"] = current.hideToolCalls.toString(); p["collapse"] = current.collapseCompacted.toString()
         p["defaultAutoApprove"] = _defaultAutoApprove.value.toString()
+        p["keepScreenOn"] = _keepScreenOn.value.toString()
         p["uiScalePercent"] = current.effectiveUiScalePercent.toString()
         p["uiScaleBaseline"] = AgentAppearance.UI_SCALE_BASELINE_PERCENT.toString()
         p["colorSource"] = current.colorSource.name

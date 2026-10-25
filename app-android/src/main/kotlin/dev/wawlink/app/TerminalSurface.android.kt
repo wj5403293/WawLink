@@ -84,7 +84,6 @@ private class AndroidTerminalController(context: Context, private val transport:
         view.setBackgroundColor(Color.BLACK)
         applyFontSize()
         view.setTypeface(typeface)
-        view.keepScreenOn = true
         view.setTerminalCursorBlinkerRate(500)
         view.attachSession(emulator)
         host.orientation = LinearLayout.VERTICAL
@@ -196,7 +195,6 @@ private class AndroidTerminalController(context: Context, private val transport:
         disposed = true
         view.removeOnAttachStateChangeListener(attachListener)
         if (view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnWindowFocusChangeListener(windowFocusListener)
-        view.keepScreenOn = false
         view.stopTextSelectionMode()
         view.setTerminalCursorBlinkerState(false, false)
         input.hideSoftInputFromWindow(view.windowToken, 0)
