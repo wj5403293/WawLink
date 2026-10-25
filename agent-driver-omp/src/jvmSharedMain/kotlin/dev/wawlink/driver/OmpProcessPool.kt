@@ -390,11 +390,12 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             private set
 
         val explorer: OmpSessionExplorer by lazy {
-            OmpSessionExplorer(id, containerId, workspace, sessionScope, state,
+            OmpSessionExplorer(id, containerId, workspace, sessionScope,
                 request = { op, parameters -> explorerRequest(op, parameters) },
                 synchronize = { history -> synchronizeNativeHistory(history) },
                 identities = { records -> stateMutex.withLock { reducer.nativeEntryFeedAliases(records) } },
                 originalTexts = { records -> stateMutex.withLock { reducer.nativeUserText(records) } },
+                messageForChatItem = { chatId -> stateMutex.withLock { reducer.nativeMessageForFeedItem(chatId) } },
                 prepareAttachments = { text, attachments, childWorkspace -> prepareAttachments(text, attachments, childWorkspace) },
                 files = { childWorkspace, path -> workspaceFiles(childWorkspace, path) })
         }
@@ -885,7 +886,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     else { ensureStarted(restoreQueuedPrompts = false); false }
                 }
                 if (emptyHistory) return buildJsonObject {
-                    put("success", true); put("sessionId", ""); put("entries", JsonArray(emptyList())); put("leafId", JsonNull)
+                    put("success", true); put("sessionId", ""); put("nodes", JsonArray(emptyList())); put("leafId", JsonNull)
+                    put("sessionFile", JsonNull); put("revision", ""); put("reset", true); put("removedIds", JsonArray(emptyList())); put("nextCursor", JsonNull)
                 }
             }
             val requestId = UUID.randomUUID().toString()

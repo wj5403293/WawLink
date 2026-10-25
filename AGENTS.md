@@ -11,6 +11,7 @@
 - 不得擅自修改既有显示样式；主页、聊天与框架设置的视觉及非线性动画以 `ref-plan/ref-home.html`、`ref-plan/ref-coding-agent-ui.html`、`ref-plan/ref-agent-setting.html` 为准，新增 Agent 设置以 `ref-plan/agent-settings.html` 为准，功能遵循 `ref-plan/plan.md`。
 - 插件与技能管理分别严格遵循 `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 的布局、控件和非线性交互，不做视觉简化；原型紫色替换为当前主题色，演示数据、模拟加载与假重载不进入实现。
 - Session 历史树与运行时 Agent Hub 分别严格遵循 `ref-plan/session-history.html`、`ref-plan/agent-hub.html` 的布局、控件、状态与非线性交互，不做视觉简化；聊天 AppBar 设置按钮左侧保留历史树和 Hub 两个图标入口，配色使用当前应用主题，不引入演示数据。历史预览不改变续写位置，切换、回退、独立分支、标签与历史 Ask 使用原生身份；子代理正文、审批、提问、消息、模型和生命周期操作隔离到具体运行实例，不转发为主会话操作。
+- 历史树首屏仅传当前原生会话的完整轻量索引，不传全部正文、预览 Feed、原始记录或复制块；分页固定同一快照，刷新按版本增量更新，详情按会话、节点 ID 与版本按需读取。Hub 首屏独立读取注册表，不等待主会话历史或全部子会话正文，持久实例发现和活动摘要随后补齐；不以截断历史或删减原型交互换取加载速度。
 - 技能市场默认浏览独立的 ClawHub 公开目录，保留官方 Skillshare 来源及包、账号和发布管理；官方空库不得伪装为全市场无技能。第三方内容固定发布者、技能和精确版本，安装完整资源并校验大小与哈希，不覆盖已有目录、不改写原始 frontmatter、不执行脚本，不将扫描 clean 或 OpenClaw 声明当作 OMP 兼容或安全保证。
 - 页面进入保留既有的右侧滑入与非线性曲线；返回时当前页向右滑出、上一级从左侧恢复，不能沿用进入方向。主页底栏固定按“会话、功能、容器”排列，功能位于中间、容器左边；按位置定向切换，向右侧页面切换时向左、向左侧页面切换时向右。
 - Android 聊天页状态栏与 AppBar 使用同一背景色并同步滚动变色动画；保留明暗主题的图标对比度和顶部安全区，不重复添加顶部留白。
@@ -71,7 +72,7 @@
 - `agent-protocol/`：独立 Kotlin 领域模型、会话控制、模型服务与设置契约；仅使用协程状态流，不依赖驱动或容器。
   - `src/commonMain/kotlin/dev/wawlink/protocol/AgentManagement.kt` 定义作用域、来源、Agent、顾问、角色、认证、原始配置与原生管理仓库契约。
   - 同目录的 `AgentResources.kt` 定义按当前容器、配置档与项目上下文执行原生插件/技能操作的 `AgentResourceRepository`，不依赖模型 SDK。
-  - 同目录的 `SessionExplorer.kt` 定义原生历史树、消息复制片段、恢复草稿、运行实例、活动、产物、后台任务及按实例隔离的会话探索契约。
+  - 同目录的 `SessionExplorer.kt` 定义完整轻量历史索引、分种类按需详情、消息复制片段、恢复草稿、运行实例、活动、产物、后台任务及按实例隔离的会话探索契约。
 - `agent-ui/`：独立 Compose Multiplatform UI，聊天、输入区、模型服务与 Schema 设置页；`src/commonMain/kotlin/dev/wawlink/ui/ModelIcon.kt` 统一离线品牌图标与 ID 字母标识，`src/commonMain/composeResources/files/model-icons/` 保存来源/许可，`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ModelIconTest.kt`、`FeedExpansionStateTest.kt` 和 `MarkdownTest.kt` 覆盖字母标识/颜色区分、展开状态和 Markdown 边界。
   - 同目录的 `AgentPalette.kt`、`AgentPaletteSettings.kt` 提供默认蓝色、Material HCT 种子配色与设置控件；`src/androidMain/kotlin/dev/wawlink/ui/AgentPalette.android.kt` 读取系统动态配色，`src/desktopMain/kotlin/dev/wawlink/ui/AgentPalette.desktop.kt` 明确回退，`AgentPaletteTest.kt` 覆盖明暗配色对比度及 HEX 输入边界。完整 Material Color Utilities 许可随 `src/commonMain/composeResources/files/licenses/material-color-utilities.txt` 打包。
   - 同目录的 `AgentTheme.kt` 提供统一主题、标准表单 sheet，以及参考 WawSSH 的 `AgentActionSheet` / `AgentActionRow` 全宽操作面板与列表行。
@@ -92,7 +93,7 @@
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - 同目录的 `OmpEventReducer.kt` 在归并器内部按稳定 ID 定位当前节点，只复制变更节点的祖先兄弟列表，外部整体替换自动失效索引；重复终态与工具输出的冗余渲染被消除。完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考归属。`OmpProcessPool.kt` 的事件日志逐条写入并关闭缓冲 UTF-8 writer，不额外构造整条换行字符串及其 UTF-8 字节数组。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
-  - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生历史与运行实例接入 Kotlin 状态流，并复用消息归并、附件及文件服务。`omp-management/session.mjs` 加载 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs`，通过当前原生 AgentSession 的扩展侧通道执行历史及子代理操作；有状态模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖分支返回、相同文本的身份隔离、多投影定位及可见正文复制边界。
+  - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生轻量历史索引与独立运行实例接入 Kotlin 状态流，按会话、节点与版本缓存所选详情，保留完整快照分页与增量刷新。`omp-management/session.mjs` 加载 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs`，分别负责原生操作分发、完整树索引/按需详情及注册表首屏/异步持久发现/增量活动摘要；有状态模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖完整匹配快照、过期详情拒绝、正文复制边界、Hub 与历史解耦、分支返回及稳定消息身份。
   - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。
   - 同资源目录的 `clawhub.ts`、`clawhub-http.ts`、`clawhub-source.ts` 提供独立 ClawHub 公开目录、精确版本与完整资源校验、受限联网及作用域安装；`.wawlink-clawhub.json` 只记录安装来源，不认证后续本地编辑内容。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpInstallation.kt` 提供容器内安装自检与终端命令，`src/jvmSharedMain/resources/omp-install.sh` 固定 OMP/Bun 来源和完整依赖，分阶段校验真实原生模块与 RPC 后切换安装；缺少 CA 的 APT 基础镜像先通过保留签名校验的临时 HTTP 源安装证书，不修改原软件源或关闭 TLS 校验。`OmpProcessPool.kt` 聚合会话及管理进程故障并暂停/恢复修复关联进程，`src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpInstallationTest.kt` 覆盖引擎故障与缺失安装的区分及自检协议边界。
@@ -138,6 +139,7 @@
 - 除非明确要求，禁止启动或使用 Android 模拟器进行 Debug 调试、测试或功能验收。
 - Debug Gradle 任务仅用于本地测试与编译，不允许据此启动模拟器。
 - 聊天性能回归修复按用户当前要求不运行桌面端或移动端测试、性能基准及界面验收，只做静态排查与 APK 构建，由用户真机复测；未获重新授权前不得用桌面测试代替手机表现，也不得把构建通过写成卡顿或闪退已验证修复。
+- 历史树与 Agent Hub 加载改造按用户当前要求不再运行 Desktop 测试或界面验收，只构建 APK 交由用户真机验证，并关闭本轮 Desktop 验证进程；不得把构建或此前的桌面观察写成 Android 真机验收结论。
 - 每次修改完成并通过必要验证后，必须为本次修改创建 Git commit，提交仅包含本次任务的变更。
 - 已确认：Rootfs 完整预装功能优先，不将 150–220 MB 作为硬上限；必须报告实际解压体积和归档体积。
 - 已确认：依上游真实能力提供引擎；Proroot 仅 Android arm64，桌面使用 PRoot/QEMU 或 chroot；强制只读绑定仅 chroot 支持，其他引擎必须明确拒绝，禁止静默变为可写。

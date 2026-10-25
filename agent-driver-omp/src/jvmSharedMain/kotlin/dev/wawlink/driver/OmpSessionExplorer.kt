@@ -16,11 +16,11 @@ internal class OmpSessionExplorer(
     private val containerId: String,
     private val workspace: String,
     private val scope: CoroutineScope,
-    private val mainState: StateFlow<ChatSessionUiState>,
     private val request: suspend (String, JsonObject) -> JsonObject,
     private val synchronize: suspend (JsonObject) -> Unit,
     private val identities: suspend (List<JsonObject>) -> Map<String, List<String>>,
     private val originalTexts: suspend (List<JsonObject>) -> Map<String, String>,
+    private val messageForChatItem: suspend (String) -> JsonObject?,
     private val prepareAttachments: suspend (String, List<AttachmentFile>, String) -> Triple<String, List<AttachmentFile>, JsonArray>,
     private val files: (String, String) -> Flow<List<WorkspaceFileItem>>,
 ) : SessionExplorer {
@@ -31,57 +31,101 @@ internal class OmpSessionExplorer(
     private val historyMutex = Mutex()
     private val hubMutex = Mutex()
     private val children = linkedMapOf<String, ChildController>()
-    private var records = emptyList<JsonObject>()
+    private val detailMutex = Mutex()
+    private data class DetailKey(val sessionId: String, val sessionFile: String?, val entryId: String, val version: String, val kind: HistoryDetailKind)
+    private val details = LinkedHashMap<DetailKey, SessionHistoryDetail>(8, .75f, true)
 
-    private suspend fun call(op: String, body: JsonObject = buildJsonObject {}): JsonObject = request(op, body)
+    private suspend fun call(op: String, body: JsonObject = buildJsonObject {}): JsonObject =
+        withContext(Dispatchers.IO) { request(op, body) }
 
-    override suspend fun refreshHistory() = historyMutex.withLock {
+    override suspend fun refreshHistory(): Unit = historyMutex.withLock {
         mutableHistory.update { it.copy(loading = true, error = null) }
-        try { applyHistory(call("explorer_history")) }
-        catch (failure: Exception) { mutableHistory.update { it.copy(error = failure.message) }; throw failure }
-        finally { mutableHistory.update { it.copy(loading = false) } }
+        try {
+            val previous = history.value
+            var page = call("explorer_history", buildJsonObject { previous.revision.takeIf { it.isNotEmpty() }?.let { put("since", it) } })
+            val sessionId = page.string("sessionId")
+            val revision = page.string("revision")
+            val leaf = page.optional("leafId")
+            val sessionFile = page.optional("sessionFile")
+            val reset = page.bool("reset") == true
+            check(reset || (sessionId == previous.sessionId && sessionFile == previous.sessionFile)) { "原生历史增量所属会话已变化" }
+            if (revision == previous.revision && sessionId == previous.sessionId && sessionFile == previous.sessionFile && leaf == previous.leafId &&
+                (page["nodes"] as? JsonArray).isNullOrEmpty() && (page["removedIds"] as? JsonArray).isNullOrEmpty() && page.optional("nextCursor") == null) return@withLock
+            val nodes = if (reset) linkedMapOf() else previous.nodes.associateByTo(linkedMapOf()) { it.id }
+            val cursors = hashSetOf<String>()
+            while (true) {
+                check(page.string("sessionId") == sessionId && page.string("revision") == revision && page.optional("leafId") == leaf && page.optional("sessionFile") == sessionFile && page.bool("reset") == reset) { "原生历史分页不是同一快照" }
+                withContext(Dispatchers.Default) {
+                    (page["removedIds"] as? JsonArray).orEmpty().forEach { nodes.remove(it.jsonPrimitive.content) }
+                    page.objects("nodes").forEach { value ->
+                        val old = nodes[value.string("id")]
+                        val node = SessionHistoryNode(id = value.string("id"), parentId = value.optional("parentId"), type = value.string("type"),
+                            role = value.optional("role"), title = value.string("title"), searchText = value.string("searchText"), timestamp = value.string("timestamp"),
+                            label = value.optional("label"), onCurrentPath = old?.onCurrentPath == true, navigable = value.bool("navigable") != false, version = value.string("version"),
+                            hasCopyContent = value.bool("hasCopyContent") == true, copyBlockCount = (value["copyBlockCount"] as? JsonPrimitive)?.intOrNull)
+                        nodes[node.id] = old?.takeIf { it == node } ?: node
+                    }
+                }
+                val cursor = page.optional("nextCursor") ?: break
+                check(cursors.add(cursor)) { "原生历史分页游标重复" }
+                page = call("explorer_history", buildJsonObject { put("cursor", cursor) })
+            }
+            val updated = withContext(Dispatchers.Default) {
+                val path = hashSetOf<String>()
+                var cursor = leaf
+                while (cursor != null && path.add(cursor)) cursor = nodes[cursor]?.parentId
+                nodes.values.map { node -> if (node.onCurrentPath == (node.id in path)) node else node.copy(onCurrentPath = node.id in path) }
+            }
+            mutableHistory.update { it.copy(sessionId = sessionId, sessionFile = sessionFile, revision = revision, leafId = leaf, nodes = updated, error = null) }
+            detailMutex.withLock {
+                val versions = updated.associate { it.id to it.version }
+                details.keys.removeAll { it.sessionId != sessionId || it.sessionFile != sessionFile || versions[it.entryId] != it.version }
+            }
+        } catch (failure: Exception) {
+            if (failure !is CancellationException) mutableHistory.update { it.copy(error = failure.message ?: "历史读取失败") }
+            throw failure
+        } finally { mutableHistory.update { it.copy(loading = false) } }
     }
 
-    private suspend fun applyHistory(response: JsonObject) {
-        records = response.objects("entries")
-        if (records.isNotEmpty() && mainState.value.feed.isEmpty()) synchronize(response)
-        val leaf = response.optional("leafId")
-        val byId = records.associateBy { it.string("id") }
-        val path = hashSetOf<String>()
-        var cursor = leaf
-        while (cursor != null && path.add(cursor)) cursor = byId[cursor]?.optional("parentId")
-        val chatIds = identities(records)
-        val originalInputs = response.obj("userInputs")?.mapNotNull { (key, value) ->
-            (value as? JsonPrimitive)?.contentOrNull?.let { key to it }
-        }.orEmpty().toMap() + originalTexts(records)
-        val labels = linkedMapOf<String, String>()
-        records.filter { it.string("type") == "label" }.forEach { entry ->
-            val target = entry.optional("targetId") ?: entry.optional("entryId") ?: return@forEach
-            val label = entry.optional("label")
-            if (label == null) labels.remove(target) else labels[target] = label
+    override suspend fun loadHistoryDetail(entryId: String, kind: HistoryDetailKind): SessionHistoryDetail = detailMutex.withLock {
+        val state = history.value
+        val node = state.nodes.firstOrNull { it.id == entryId } ?: error("历史节点已不存在，请重新读取")
+        val key = DetailKey(state.sessionId, state.sessionFile, entryId, node.version, kind)
+        details[key]?.let { return@withLock it }
+        val response = call("explorer_history_detail", buildJsonObject { put("entryId", entryId); put("version", node.version); put("kind", kind.name.lowercase()) })
+        check(response.string("sessionId") == state.sessionId && response.string("entryId") == entryId && response.string("version") == node.version) { "历史详情已变化，请重新读取" }
+        val entry = response.obj("entry")
+        val calls = response.objects("calls").associateBy { it.string("id") }
+        val detail = withContext(Dispatchers.Default) {
+            val message = entry?.obj("message") ?: entry?.takeIf { it.string("type") == "custom_message" }
+            val text = if (entry == null) "" else originalTexts(listOf(entry))[entryId] ?: response.optional("userText")
+                ?: message?.let(::messageText) ?: entry.optional("text") ?: entry.optional("summary") ?: entry.optional("label") ?: entry.optional("name").orEmpty()
+            SessionHistoryDetail(state.sessionId, entryId, node.version, text,
+                feed = if (kind == HistoryDetailKind.PREVIEW && entry != null) renderEntry(entry, calls) else emptyList(),
+                rawRecord = response.string("rawRecord"),
+                copyBlocks = if (kind == HistoryDetailKind.COPY) copyBlocks(message, text) else emptyList(),
+                ask = if (kind == HistoryDetailKind.ASK || kind == HistoryDetailKind.PREVIEW) entry?.let { nativeHistoricalAsk(it, calls) } else null)
         }
-        response.obj("labels")?.forEach { (key, value) -> value.jsonPrimitive.contentOrNull?.let { labels[key] = it } }
-        val calls = linkedMapOf<String, JsonObject>()
-        records.forEach { entry -> entry.obj("message")?.objects("content")?.filter { it.string("type") == "toolCall" }?.forEach { calls[it.string("id")] = it } }
-        val nodes = records.filterNot { it.string("type") == "session" }.map { entry ->
-            val entryId = entry.string("id")
-            val message = entry.obj("message")
-            val role = message?.optional("role")
-            val text = if (role == "user" || originalInputs.containsKey(entryId)) originalInputs[entryId]
-                ?: message?.optional("rawText") ?: entry.optional("rawText") ?: message?.let(::messageText).orEmpty()
-            else message?.let(::messageText) ?: entry.optional("text")
-                ?: entry.optional("summary") ?: entry.optional("label") ?: entry.optional("name") ?: ""
-            val feed = renderEntry(entry, calls)
-            val ask = nativeHistoricalAsk(entry, calls)
-            val isAskResult = role == "toolResult" && (message?.string("toolName")?.lowercase() == "ask" || calls[message?.string("toolCallId")]?.string("name")?.lowercase() == "ask")
-            SessionHistoryNode(entryId, entry.optional("parentId"), if (isAskResult) "ask" else entry.string("type"), role,
-                entry.optional("title") ?: title(entry.string("type"), role, text), text,
-                entry.optional("timestamp") ?: message?.optional("timestamp").orEmpty(),
-                labels[entryId] ?: entry.optional("label"), entryId in path,
-                entry["navigable"]?.jsonPrimitive?.booleanOrNull ?: (entry.string("type") != "label"),
-                feed, entry.toString(), copyBlocks(message, text), ask, chatIds[entryId]?.firstOrNull(), chatIds[entryId].orEmpty())
-        }
-        mutableHistory.update { it.copy(sessionId = response.string("sessionId"), sessionFile = response.optional("sessionFile"), leafId = leaf, nodes = nodes, error = null) }
+        check(history.value.sessionId == state.sessionId && history.value.sessionFile == state.sessionFile && history.value.nodes.any { it.id == entryId && it.version == node.version }) { "历史详情已过期，请重新读取" }
+        details[key] = detail
+        while (details.size > 8) details.remove(details.keys.first())
+        detail
+    }
+
+    override suspend fun entryIdForChatItem(chatItemId: String): String? {
+        val message = messageForChatItem(chatItemId) ?: return null
+        val response = call("explorer_history_find", buildJsonObject { put("message", message) })
+        check(response.string("sessionId") == history.value.sessionId) { "消息所属会话已变化" }
+        return response.optional("entryId")
+    }
+
+    override suspend fun chatItemIdForEntry(entryId: String): String? {
+        val sessionId = history.value.sessionId.ifBlank { hub.value.mainSessionId }
+        val node = history.value.nodes.firstOrNull { it.id == entryId }
+        val response = call("explorer_history_detail", buildJsonObject { put("entryId", entryId); node?.let { put("version", it.version) }; put("kind", "identity") })
+        check(response.string("sessionId") == sessionId) { "消息所属会话已变化" }
+        val entry = response.obj("entry") ?: return null
+        return identities(listOf(entry))[entryId]?.firstOrNull()
     }
 
     private suspend fun <T> historyOperation(block: suspend () -> T): T {
@@ -104,22 +148,20 @@ internal class OmpSessionExplorer(
             put("entryId", entryId); put("summary", buildJsonObject { put("enabled", summary.enabled); put("instructions", summary.instructions) })
         })
         if (response["cancelled"]?.jsonPrimitive?.booleanOrNull == true) throw SessionNavigationCancelledException()
-        val snapshot = call("explorer_history")
-        synchronize(snapshot)
-        applyHistory(snapshot)
+        synchronize(call("explorer_history_branch"))
+        refreshHistory()
         response.obj("prompt")?.let { prompt ->
             RestoredSessionPrompt(prompt.string("text"), restoredImages(prompt))
         }
     }
 
     override suspend fun reanswer(entryId: String, answers: List<AskAnswer>) = historyOperation {
-        val card = history.value.nodes.firstOrNull { it.id == entryId }?.ask ?: error("历史问题元数据不可用")
+        val card = loadHistoryDetail(entryId, HistoryDetailKind.ASK).ask ?: error("历史问题元数据不可用")
         val ordered = validateAskAnswers(card.questions, answers)
         val response = call("explorer_reanswer", buildJsonObject { put("entryId", entryId); put("answers", answersJson(ordered)) })
         if (response.bool("cancelled") == true) throw SessionNavigationCancelledException()
-        val snapshot = call("explorer_history")
-        synchronize(snapshot)
-        applyHistory(snapshot)
+        synchronize(call("explorer_history_branch"))
+        refreshHistory()
     }
 
     override suspend fun cancelNavigation() { call("explorer_cancel_navigation") }
@@ -138,16 +180,14 @@ internal class OmpSessionExplorer(
             if (hub.value.mainSessionId.isNotBlank() && hub.value.mainSessionId != mainId) {
                 synchronized(children) { children.values.forEach { it.invalidate() }; children.clear() }
             }
-            val nativeHistory = call("explorer_history")
-            val chatIds = identities(nativeHistory.objects("entries"))
-            val agents = response.objects("agents").map(::runtimeAgent).map { agent ->
-                agent.copy(dispatchChatItemId = if (agent.parentId == null) chatIds[agent.dispatchEntryId]?.firstOrNull() else null)
-            }
-            val activities = response.objects("activity").map(::activity).map { event ->
-                event.copy(chatItemId = null)
-            }
-            mutableHub.value = AgentHubState(mainId, agents, activities,
-                response["activityLimit"]?.jsonPrimitive?.intOrNull ?: activityLimit, connected = response["connected"]?.jsonPrimitive?.booleanOrNull == true)
+            val previous = hub.value
+            val oldAgents = previous.agents.associateBy { it.instanceKey }
+            val agents = response.objects("agents").map(::runtimeAgent).map { agent -> oldAgents[agent.instanceKey]?.takeIf { it == agent } ?: agent }
+            val oldActivities = previous.activity.associateBy { it.id }
+            val activities = response.objects("activity").map(::activity).map { event -> oldActivities[event.id]?.takeIf { it == event } ?: event }
+            mutableHub.value = AgentHubState(mainSessionId = mainId, agents = agents, activity = activities,
+                activityLimit = (response["activityLimit"] as? JsonPrimitive)?.intOrNull ?: activityLimit, connected = response.bool("connected") == true,
+                discovering = response.bool("discovering") == true, discoveryError = response.optional("discoveryError"))
         } catch (failure: Exception) {
             mutableHub.update { it.copy(connected = false, error = failure.message) }; throw failure
         } finally { mutableHub.update { it.copy(loading = false) } }
@@ -445,7 +485,7 @@ internal class OmpSessionExplorer(
             jobs = value.objects("jobs").map { AgentBackgroundJob(it.string("id"), it.string("command"), it.optional("cwd"), it.long("pid"), it.string("status"), it["exitCode"]?.jsonPrimitive?.intOrNull, it.string("output"), it.optional("outputPath")) },
             canSend = value.bool("canSend") == true, canStop = value.bool("canStop") == true, canKill = value.bool("canKill") == true,
             canRevive = value.bool("canRevive") == true, canSetModel = value.bool("canSetModel") == true, unavailableReason = value.optional("unavailableReason"),
-            dispatchEntryId = value.optional("dispatchEntryId"), dispatchChatItemId = value.optional("dispatchChatItemId"), definitionName = value.optional("definitionName"))
+            dispatchEntryId = value.optional("dispatchEntryId"), definitionName = value.optional("definitionName"))
     }
     private fun activity(value: JsonObject) = AgentActivity(value.string("id"), value.string("agentId"), value.string("instanceKey"),
         enumValue<AgentActivityKind>(value.string("kind")) ?: error("原生子代理活动类别未知"), value.string("text"), value.string("timestamp"), value.optional("entryId"), value.optional("chatItemId"))
@@ -465,10 +505,6 @@ private fun messageText(message: JsonObject): String = when (val content = messa
     is JsonPrimitive -> content.contentOrNull.orEmpty()
     is JsonArray -> content.mapNotNull { (it as? JsonObject)?.takeIf { block -> block.string("type") == "text" }?.optional("text") }.joinToString("\n")
     else -> message.optional("summary").orEmpty()
-}
-private fun title(type: String, role: String?, text: String): String {
-    val prefix = when (role) { "user" -> "用户"; "assistant" -> "助手"; "toolResult" -> "工具结果"; else -> when(type) { "compaction" -> "压缩摘要"; "branch_summary" -> "分支摘要"; "label" -> "标签"; "model_change" -> "模型切换"; "thinking_level_change" -> "思考等级"; else -> type } }
-    return text.lineSequence().firstOrNull { it.isNotBlank() }?.take(120)?.let { "$prefix · $it" } ?: prefix
 }
 private fun answersJson(answers: List<AskAnswer>) = buildJsonArray { answers.forEach { answer -> add(buildJsonObject {
     put("id", answer.questionId); put("selectedOptions", buildJsonArray { answer.selectedOptions.forEach { add(it) } }); answer.customInput?.let { put("customInput", it) }

@@ -377,7 +377,7 @@ private fun SubagentDetails(agent: RuntimeAgent, hub: AgentHubState, busy: Boole
     val children = hub.agents.filter { it.parentId == agent.id }
     if (children.isNotEmpty()) ManagementGroup("下级") { children.forEachIndexed { index, child -> HubAgentRow(child, hub.agents, index = index, count = children.size, busy = busy, onOpen = { onOpen(child, null) }, onDefinition = onDefinition, onControl = onControl) } }
     Row(Modifier.padding(top = 16.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton({ onDispatch(agent) }, enabled = agent.dispatchChatItemId != null || agent.dispatchEntryId != null) { Symbol("reply", size = 20.dp); Text("在上级中定位派发") }
+        OutlinedButton({ onDispatch(agent) }, enabled = agent.dispatchEntryId != null) { Symbol("reply", size = 20.dp); Text("在上级中定位派发") }
         TextButton({ onDefinition(agent.definitionName ?: agent.name) }, enabled = !agent.advisor) { Symbol("description", size = 20.dp); Text("Agent 定义") }
     }
 }

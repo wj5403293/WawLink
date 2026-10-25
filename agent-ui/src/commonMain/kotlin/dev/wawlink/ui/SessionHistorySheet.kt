@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 /** Browsing and selecting never changes the native leaf. Only explicitly confirmed actions do. */
 @Composable
@@ -207,7 +209,6 @@ fun SessionHistorySheet(
     fun switch(node: SessionHistoryNode, summary: HistorySummary, replace: Boolean) {
         operation {
             val prompt = explorer.navigate(node.id, summary)
-            explorer.refreshHistory()
             explorer.history.value.error?.let { kotlin.error(it) }
             if (prompt != null) onRestorePrompt(prompt, replace)
             notice = if (historyIsUser(node)) {
@@ -217,13 +218,16 @@ fun SessionHistorySheet(
         }
     }
     LaunchedEffect(explorer, session.id) {
-        try {
-            explorer.refreshHistory()
-        } catch (failure: Exception) {
-            if (failure is CancellationException) throw failure
-            error = failure.message ?: "历史读取失败"
-        } finally {
-            historyRead = true
+        while (isActive) {
+            try {
+                explorer.refreshHistory()
+            } catch (failure: Exception) {
+                if (failure is CancellationException) throw failure
+                error = failure.message ?: "历史读取失败"
+            } finally {
+                historyRead = true
+            }
+            delay(2500)
         }
     }
     LaunchedEffect(history.nodes, history.leafId) {
@@ -237,15 +241,21 @@ fun SessionHistorySheet(
     }
     LaunchedEffect(focusChatItemId, copyFocusedMessage, historyRead, history.nodes, history.loading) {
         if (historyRead && !history.loading && !focusApplied && focusChatItemId != null) {
-            val node = history.nodes.firstOrNull { it.chatItemId == focusChatItemId || focusChatItemId in it.chatItemIds }
-            if (node != null) {
-                initialized = true
-                focusApplied = true
-                error = null
-                focus(node.id, true)
-                if (copyFocusedMessage) show("blocks", node)
-            } else if (history.error == null && error == null) {
-                error = "这条消息尚未写入原生历史"
+            try {
+                val entryId = explorer.entryIdForChatItem(focusChatItemId)
+                val node = history.nodes.firstOrNull { it.id == entryId }
+                if (node != null) {
+                    initialized = true
+                    focusApplied = true
+                    error = null
+                    focus(node.id, true)
+                    if (copyFocusedMessage) show("blocks", node)
+                } else if (history.error == null && error == null) {
+                    error = "这条消息尚未写入原生历史"
+                }
+            } catch (failure: Exception) {
+                if (failure is CancellationException) throw failure
+                error = failure.message ?: "消息定位失败"
             }
         }
     }
@@ -262,8 +272,12 @@ fun SessionHistorySheet(
                     AgentIconButton("more_vert", "更多节点操作", { menu = true }, enabled = !busy)
                     DropdownMenu(menu, { menu = false }, shape = RoundedCornerShape(24.dp), containerColor = c.surface) {
                         if (historyIsAsk(node)) HistoryMenuItem("切换到这里", "subdirectory_arrow_right", node.navigable && node.id != history.leafId && !session.isRunning) { menu = false; show("switch", node) }
-                        HistoryMenuItem("在聊天中定位", "chat", node.onCurrentPath && node.chatItemId != null) {
-                            menu = false; onLocate(node.chatItemId!!); onDismiss()
+                        HistoryMenuItem("在聊天中定位", "chat", node.onCurrentPath) {
+                            menu = false
+                            operation {
+                                val chatId = explorer.chatItemIdForEntry(node.id) ?: kotlin.error("这个节点在当前聊天中没有可定位的内容")
+                                onLocate(chatId); onDismiss()
+                            }
                         }
                         HistoryMenuItem("复制内容", "content_copy") { menu = false; show("blocks", node) }
                         HistoryMenuItem("摘要并切换", "summarize", node.navigable && node.id != history.leafId && !session.isRunning) { menu = false; show("switch", node, true) }
@@ -316,13 +330,12 @@ fun SessionHistorySheet(
     panelState.SaveableStateProvider(if (panel in listOf("preview", "label", "switch", "reanswer", "blocks")) "$panel:${targetId.orEmpty()}" else panel ?: "tree") {
     when (panel) {
         "preview" -> target?.let { node ->
-            HistoryPreview(node, history.sessionId, controller, expanded, { dismissPanel() }, { detail = it })
+            HistoryPreview(explorer, node, history.sessionId, controller, expanded, { dismissPanel() }, { detail = it })
         }
         "label" -> target?.let { node ->
             HistoryLabel(node, busy, error, { dismissPanel() }) { label ->
                 operation {
                     explorer.setLabel(node.id, label)
-                    explorer.refreshHistory()
                     explorer.history.value.error?.let { kotlin.error(it) }
                     notice = if (label == null) "已清除标签" else "已保存标签"
                     panel = null
@@ -341,15 +354,16 @@ fun SessionHistorySheet(
             }) { summary, replace -> switch(node, summary, replace) }
         }
         "rewind" -> HistoryRewind(history.nodes, path, history.leafId, session.isRunning || busy, { dismissPanel() }, { node -> show("switch", node) }, { node -> show("preview", node) })
-        "turns" -> HistoryTurns(path, { dismissPanel() }, { node -> show("blocks", node) }, ::copy, { openingLink = it }, error, notice)
-        "blocks" -> target?.let { node -> HistoryBlocks(node, { dismissPanel() }, ::copy, { openingLink = it }, error, notice) }
+        "turns" -> HistoryTurns(explorer, path, { dismissPanel() }, { node -> show("blocks", node) }, ::copy, { openingLink = it }, error, notice)
+        "blocks" -> target?.let { node -> HistoryBlocks(explorer, node, { dismissPanel() }, ::copy, { openingLink = it }, error, notice) }
         "reanswer" -> target?.let { node ->
-            val ask = node.ask
             HistorySurface("重新回答", { dismissPanel() }, full = true) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     HistoryBanner("原答案会保留，新答案成为兄弟分支。提交后 Agent 会继续运行，可能调用工具和修改文件。", warning = true)
                     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     error?.let { HistoryBanner(it, error = true) }
+                    HistoryDetailContent(explorer, node, HistoryDetailKind.ASK) { loaded ->
+                    val ask = loaded.ask
                     if (ask == null || ask.questions.isEmpty()) {
                         HistoryBanner("原问题和完整选项没有保存下来，不能重新回答。仍可查看原始记录和原答案。", error = true)
                     } else {
@@ -367,6 +381,7 @@ fun SessionHistorySheet(
                             }
                         }
                         key(form.id) { FeedNode(form, formController, expanded) { detail = it } }
+                    }
                     }
                 }
             }
@@ -409,7 +424,6 @@ fun SessionHistorySheet(
         }, confirmButton = { TextButton({
             operation {
                 explorer.reanswer(node.id, answers)
-                explorer.refreshHistory()
                 pendingAnswers = null
                 panel = null
                 notice = "已提交新答案，Agent 继续运行"
@@ -441,7 +455,7 @@ private data class HistoryRow(val node: SessionHistoryNode, val rails: List<Hist
 private val historyToolTypes = setOf("tool", "toolResult", "bash", "python", "bashExecution", "pythonExecution")
 private val historyDefaultTypes = setOf("message", "user", "assistant", "tool", "toolResult", "bash", "python", "bashExecution", "pythonExecution", "ask", "custom_message", "custom", "compaction", "branch_summary")
 private fun historyIsUser(node: SessionHistoryNode) = node.role == "user" || node.type == "user"
-private fun historyIsAsk(node: SessionHistoryNode) = node.ask != null || node.type == "ask"
+private fun historyIsAsk(node: SessionHistoryNode) = node.type == "ask"
 private fun historyIsAssistant(node: SessionHistoryNode) = node.role == "assistant" || node.type == "assistant"
 private fun historyIsTool(node: SessionHistoryNode) = node.role == "toolResult" || node.role == "tool" || node.type in historyToolTypes
 private fun historyType(node: SessionHistoryNode): Pair<String, String> = when {
@@ -463,11 +477,11 @@ private fun historyType(node: SessionHistoryNode): Pair<String, String> = when {
         else -> "description" to node.type
     }
 }
-private fun historyTitle(node: SessionHistoryNode): String = node.text.ifBlank {
+private fun historyTitle(node: SessionHistoryNode): String = node.searchText.ifBlank {
     node.title.takeIf { it.isNotBlank() && it != node.type } ?: historyType(node).second
 }.replace('\n', ' ')
 private fun historyVisible(node: SessionHistoryNode, filter: String): Boolean {
-    val pureToolCall = historyIsAssistant(node) && node.text.isBlank() && node.feed.none { it is AssistantMessageItem && it.markdownText.isNotBlank() }
+    val pureToolCall = historyIsAssistant(node) && node.searchText.isBlank()
     if (pureToolCall) return false
     return when (filter) {
         "all" -> true
@@ -495,7 +509,7 @@ private fun historyRows(nodes: List<SessionHistoryNode>, filter: String, query: 
         val (node, rails) = stack.removeLast()
         if (!visited.add(node.id)) continue
         val descendants = children[node.id].orEmpty()
-        val matches = query.isBlank() || node.text.take(200).contains(query, true) || (node.text.isBlank() && node.title.take(200).contains(query, true)) || node.label.orEmpty().contains(query, true) || historyType(node).second.contains(query, true) || node.type.contains(query, true) || node.role.orEmpty().contains(query, true)
+        val matches = query.isBlank() || node.searchText.contains(query, true) || (node.searchText.isBlank() && node.title.take(200).contains(query, true)) || node.label.orEmpty().contains(query, true) || historyType(node).second.contains(query, true) || node.type.contains(query, true) || node.role.orEmpty().contains(query, true)
         if (historyVisible(node, filter) && matches) result += HistoryRow(node, rails, descendants.size)
         push(descendants, rails.map { if (it.kind == "tee") HistoryRail("line", it.current) else if (it.kind == "elbow") HistoryRail("blank") else it })
     }
@@ -682,27 +696,29 @@ private fun HistoryEmpty(icon: String, text: String, action: String? = null, onA
 }
 
 @Composable
-private fun HistoryPreview(node: SessionHistoryNode, sessionId: String, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDismiss: () -> Unit, onDetail: (FeedDetail) -> Unit) {
+private fun HistoryPreview(explorer: SessionExplorer, node: SessionHistoryNode, sessionId: String, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDismiss: () -> Unit, onDetail: (FeedDetail) -> Unit) {
     var raw by rememberSaveable(sessionId, node.id) { mutableStateOf(false) }
     val c = LocalAgentColors.current
-    val ask = node.ask
     HistorySurface(historyType(node).second, onDismiss, full = true) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             HistorySegments(historyPreviewTabs, if (raw) "raw" else "body") { raw = it == "raw" }
-            if (raw) {
-                if (node.rawRecord.isBlank()) HistoryBanner("原生没有返回这条节点的原始记录。", error = true)
-                else {
-                    TextButton({ onDetail(FeedDetail(node.id, "原始记录", node.rawRecord, "json")) }) { Symbol("open_in_full", size = 20.dp); Spacer(Modifier.width(8.dp)); Text("全屏查看原始记录") }
-                    SelectionContainer { HighlightedCode(node.rawRecord, "json", fontSize = 15.sp, lineHeight = 25.5.sp) }
-                }
-            } else if (node.feed.isNotEmpty()) {
-                node.feed.forEach { item -> HistoryReadonlyFeed(item, controller, expanded, onDetail) }
-            } else if (ask != null) {
-                HistoryReadonlyFeed(ask, controller, expanded, onDetail)
-            } else if (node.text.isNotBlank()) {
-                if (historyIsUser(node)) SelectionContainer { Text(node.text, fontSize = 18.sp) }
-                else Markdown(node.text)
-            } else HistoryEmpty("visibility_off", "这个节点没有可见正文，请查看原始记录")
+            HistoryDetailContent(explorer, node, if (raw) HistoryDetailKind.RAW else HistoryDetailKind.PREVIEW) { loaded ->
+                val ask = loaded.ask
+                if (raw) {
+                    if (loaded.rawRecord.isBlank()) HistoryBanner("原生没有返回这条节点的原始记录。", error = true)
+                    else {
+                        TextButton({ onDetail(FeedDetail(node.id, "原始记录", loaded.rawRecord, "json")) }) { Symbol("open_in_full", size = 20.dp); Spacer(Modifier.width(8.dp)); Text("全屏查看原始记录") }
+                        SelectionContainer { HighlightedCode(loaded.rawRecord, "json", fontSize = 15.sp, lineHeight = 25.5.sp) }
+                    }
+                } else if (loaded.feed.isNotEmpty()) {
+                    loaded.feed.forEach { item -> HistoryReadonlyFeed(item, controller, expanded, onDetail) }
+                } else if (ask != null) {
+                    HistoryReadonlyFeed(ask, controller, expanded, onDetail)
+                } else if (loaded.text.isNotBlank()) {
+                    if (historyIsUser(node)) SelectionContainer { Text(loaded.text, fontSize = 18.sp) }
+                    else Markdown(loaded.text)
+                } else HistoryEmpty("visibility_off", "这个节点没有可见正文，请查看原始记录")
+            }
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 listOf("节点" to node.id, "父节点" to (node.parentId ?: "根节点"), "时间" to node.timestamp.ifBlank { "未记录" }, "会话" to sessionId, "类型" to node.type, "状态" to if (node.onCurrentPath) "在当前路径上" else "在其他分支上").forEachIndexed { index, (key, value) ->
                     Row(Modifier.fillMaxWidth().background(c.surfaceContainerLow, RoundedCornerShape(topStart = if (index == 0) 20.dp else 6.dp, topEnd = if (index == 0) 20.dp else 6.dp, bottomStart = if (index == 5) 20.dp else 6.dp, bottomEnd = if (index == 5) 20.dp else 6.dp)).padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -714,6 +730,31 @@ private fun HistoryPreview(node: SessionHistoryNode, sessionId: String, controll
         }
     }
 }
+@Composable
+private fun HistoryDetailContent(explorer: SessionExplorer, node: SessionHistoryNode, kind: HistoryDetailKind, content: @Composable (SessionHistoryDetail) -> Unit) {
+    var loaded by remember(explorer, node.id, node.version, kind) { mutableStateOf<SessionHistoryDetail?>(null) }
+    var failure by remember(explorer, node.id, node.version, kind) { mutableStateOf<String?>(null) }
+    var attempt by remember(explorer, node.id, node.version, kind) { mutableIntStateOf(0) }
+    LaunchedEffect(explorer, node.id, node.version, kind, attempt) {
+        loaded = null
+        failure = null
+        try {
+            if (attempt > 0) explorer.refreshHistory()
+            loaded = explorer.loadHistoryDetail(node.id, kind)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            failure = error.message ?: "节点详情读取失败"
+        }
+    }
+    val result = loaded
+    when {
+        failure != null -> HistoryBanner(failure!!, error = true, action = "重试", onAction = { attempt++ })
+        result == null -> LinearProgressIndicator(Modifier.fillMaxWidth())
+        else -> content(result)
+    }
+}
+
 @Composable
 private fun HistoryReadonlyFeed(item: FeedItem, controller: AgentSessionController, expanded: MutableMap<String, Boolean>, onDetail: (FeedDetail) -> Unit) {
     when (item) {
@@ -807,7 +848,7 @@ private fun HistoryRewind(nodes: List<SessionHistoryNode>, path: List<SessionHis
     var hideTools by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     val source = if (currentOnly) path else nodes
-    val candidates = source.filter { it.navigable && (!hideTools || !historyIsTool(it)) && (query.isBlank() || it.text.take(200).contains(query, true) || it.title.take(200).contains(query, true) || historyType(it).second.contains(query, true)) }
+    val candidates = source.filter { it.navigable && (!hideTools || !historyIsTool(it)) && (query.isBlank() || it.searchText.contains(query, true) || it.title.take(200).contains(query, true) || historyType(it).second.contains(query, true)) }
     var selected by rememberSaveable { mutableStateOf(leaf) }
     var positioned by rememberSaveable { mutableStateOf(false) }
     val list = rememberLazyListState()
@@ -867,42 +908,47 @@ private fun HistoryRewind(nodes: List<SessionHistoryNode>, path: List<SessionHis
     }
 }
 
-private fun historyCopyBlocks(node: SessionHistoryNode): List<SessionCopyBlock> = node.copyBlocks.ifEmpty {
-    if (node.text.isNotEmpty()) listOf(SessionCopyBlock(if (historyIsUser(node)) "原始输入" else "完整正文", node.text, "notes")) else emptyList()
-}
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HistoryTurns(path: List<SessionHistoryNode>, onDismiss: () -> Unit, onChoose: (SessionHistoryNode) -> Unit, onCopy: (String, String) -> Unit, onOpen: (String) -> Unit, error: String?, notice: String?) {
+private fun HistoryTurns(explorer: SessionExplorer, path: List<SessionHistoryNode>, onDismiss: () -> Unit, onChoose: (SessionHistoryNode) -> Unit, onCopy: (String, String) -> Unit, onOpen: (String) -> Unit, error: String?, notice: String?) {
     var shown by rememberSaveable { mutableIntStateOf(5) }
-    val turns = remember(path) { path.filter { historyCopyBlocks(it).any { block -> block.text.isNotEmpty() } }.asReversed() }
+    val turns = remember(path) { path.filter { it.hasCopyContent }.asReversed() }
     val assistant = path.lastOrNull { historyIsAssistant(it) }
-    val blocks = assistant?.let(::historyCopyBlocks).orEmpty()
-    val code = blocks.lastOrNull { it.icon == "code" }?.text ?: assistant?.text?.let { text -> Regex("```[^\\n]*\\n([\\s\\S]*?)```").findAll(text).lastOrNull()?.groupValues?.get(1)?.removeSuffix("\n") }
-    val command = blocks.lastOrNull { it.icon == "terminal" }?.text
-    val link = blocks.lastOrNull { it.icon == "link" }?.text ?: assistant?.text?.let { Regex("https?://[^\\s<>\\]\")]+").findAll(it).lastOrNull()?.value?.trimEnd('.', ',', '。', '，') }
     HistorySurface("复制", onDismiss, full = true) {
         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                HistoryChip("最近的代码", false, { code?.let { onCopy(it, "代码，不含围栏") } }, code != null, "code")
-                HistoryChip("最近的命令", false, { command?.let { onCopy(it, "命令") } }, command != null, "terminal")
-                HistoryChip("最近的链接", false, { link?.let { onCopy(it, "完整链接") } }, link != null, "link")
-                HistoryChip("打开链接", false, { link?.let(onOpen) }, link != null, "open_in_new")
-            }
+            if (assistant != null) HistoryDetailContent(explorer, assistant, HistoryDetailKind.COPY) { loaded ->
+                HistoryQuickCopy(loaded.copyBlocks, onCopy, onOpen)
+            } else HistoryQuickCopy(emptyList(), onCopy, onOpen)
             error?.let { HistoryBanner(it, error = true) }; notice?.let { HistoryBanner(it) }
             Text("选择一条消息", Modifier.padding(vertical = 12.dp), color = LocalAgentColors.current.primary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
-                items(turns.take(shown), key = { it.id }) { node -> HistoryListRow(node, false, "${historyType(node).second} · ${historyCopyBlocks(node).size} 项可复制", { onChoose(node) }) }
+                items(turns.take(shown), key = { it.id }) { node -> HistoryListRow(node, false, "${historyType(node).second} · ${node.copyBlockCount?.let { "$it 项可复制" } ?: "可复制内容"}", { onChoose(node) }) }
                 if (turns.isEmpty()) item { HistoryEmpty("content_paste_off", "当前路径没有可复制的消息") }
                 if (shown < turns.size) item { TextButton({ shown += 5 }, Modifier.fillMaxWidth()) { Symbol("expand_more", size = 20.dp); Text("加载更早的消息") } }
             }
         }
     }
 }
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HistoryBlocks(node: SessionHistoryNode, onDismiss: () -> Unit, onCopy: (String, String) -> Unit, onOpen: (String) -> Unit, error: String?, notice: String?) {
-    val blocks = historyCopyBlocks(node)
+private fun HistoryQuickCopy(blocks: List<SessionCopyBlock>, onCopy: (String, String) -> Unit, onOpen: (String) -> Unit) {
+    val code = blocks.lastOrNull { it.icon == "code" }?.text
+    val command = blocks.lastOrNull { it.icon == "terminal" }?.text
+    val link = blocks.lastOrNull { it.icon == "link" }?.text
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HistoryChip("最近的代码", false, { code?.let { onCopy(it, "代码，不含围栏") } }, code != null, "code")
+        HistoryChip("最近的命令", false, { command?.let { onCopy(it, "命令") } }, command != null, "terminal")
+        HistoryChip("最近的链接", false, { link?.let { onCopy(it, "完整链接") } }, link != null, "link")
+        HistoryChip("打开链接", false, { link?.let(onOpen) }, link != null, "open_in_new")
+    }
+}
+
+@Composable
+private fun HistoryBlocks(explorer: SessionExplorer, node: SessionHistoryNode, onDismiss: () -> Unit, onCopy: (String, String) -> Unit, onOpen: (String) -> Unit, error: String?, notice: String?) {
     var selected by rememberSaveable(node.id) { mutableIntStateOf(-1) }
     HistorySurface("复制内容", onDismiss, full = true) {
+        HistoryDetailContent(explorer, node, HistoryDetailKind.COPY) { loaded ->
+        val blocks = loaded.copyBlocks
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
                 error?.let { HistoryBanner(it, error = true) }; notice?.let { HistoryBanner(it) }
@@ -924,6 +970,7 @@ private fun HistoryBlocks(node: SessionHistoryNode, onDismiss: () -> Unit, onCop
                     }
                 }
             }
+        }
         }
     }
 }

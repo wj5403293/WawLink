@@ -7,48 +7,43 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class OmpSessionExplorerHistoryTest {
-    @Test fun historyConsumerCopiesOnlyVisibleTextAndKeepsExactTargets() = runBlocking {
+    @Test fun selectedDetailsPreserveOriginalTextAndCopyOnlyVisibleContent() = runBlocking {
         val visible = "Visible answer\n> quoted first\n> quoted second\n\n```kotlin\n  val n = 1\n\n```\n[reference](https://example.test/path_(part)?a=1&b=2)."
-        val response = buildJsonObject {
-            put("sessionId", "native-main"); put("leafId", "assistant")
-            put("entries", buildJsonArray {
+        val entries = listOf(
+            entry("user", "user", JsonPrimitive("expanded prompt with injected context")),
+            entry("skill", "custom", JsonPrimitive("expanded private skill instructions")),
+            entry("assistant", "assistant", buildJsonArray {
+                add(buildJsonObject { put("type", "thinking"); put("thinking", "private thought must stay out of copy") })
+                add(buildJsonObject { put("type", "text"); put("text", visible) })
+                add(buildJsonObject { put("type", "image"); put("mimeType", "image/png"); put("data", "aW1hZ2U=") })
                 add(buildJsonObject {
-                    put("id", "user"); put("type", "message"); put("parentId", JsonNull)
-                    put("message", buildJsonObject { put("role", "user"); put("content", "expanded prompt with injected context"); put("timestamp", 1) })
+                    put("type", "toolCall"); put("id", "bash-call"); put("name", "bash")
+                    put("arguments", buildJsonObject { put("command", "printf '%s' original-command") })
                 })
-                add(buildJsonObject {
-                    put("id", "skill"); put("type", "message"); put("parentId", "user")
-                    put("message", buildJsonObject { put("role", "custom"); put("content", "expanded private skill instructions"); put("timestamp", 2) })
-                })
-                add(buildJsonObject {
-                    put("id", "assistant"); put("type", "message"); put("parentId", "skill")
-                    put("message", buildJsonObject {
-                        put("role", "assistant"); put("timestamp", 3)
-                        put("content", buildJsonArray {
-                            add(buildJsonObject { put("type", "thinking"); put("thinking", "private thought must stay out of copy") })
-                            add(buildJsonObject { put("type", "text"); put("text", visible) })
-                            add(buildJsonObject { put("type", "image"); put("mimeType", "image/png"); put("data", "aW1hZ2U=") })
-                            add(buildJsonObject {
-                                put("type", "toolCall"); put("id", "bash-call"); put("name", "bash")
-                                put("arguments", buildJsonObject { put("command", "printf '%s' original-command") })
-                            })
-                        })
-                    })
-                })
-            })
-            put("userInputs", buildJsonObject { put("skill", "/skill:review src/Main.kt") })
-        }
+            }),
+        ).associateBy { it["id"]!!.jsonPrimitive.content }
         val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val explorer = OmpSessionExplorer("app", "container", "/workspace", owner,
-                MutableStateFlow(ChatSessionUiState("app", feed = listOf(AssistantMessageItem("existing", "existing")))),
-                request = { _, _ -> response }, synchronize = {},
-                identities = { mapOf("assistant" to listOf("answer-block", "thought-block", "tool-block")) },
-                originalTexts = { mapOf("user" to "  original user input\nuntouched  ") },
-                prepareAttachments = { text, attachments, _ -> Triple(text, attachments, JsonArray(emptyList())) },
-                files = { _, _ -> flowOf(emptyList()) })
+            val explorer = explorer(owner) { op, body ->
+                when (op) {
+                    "explorer_history" -> page("r1", "assistant", entries.keys.map { node(it) })
+                    "explorer_history_detail" -> {
+                        val id = body["entryId"]!!.jsonPrimitive.content
+                        buildJsonObject {
+                            put("sessionId", "native-main"); put("entryId", id); put("version", "v1")
+                            if (body["kind"]!!.jsonPrimitive.content == "raw") put("rawRecord", entries.getValue(id).toString())
+                            else {
+                                put("entry", entries.getValue(id))
+                                if (id == "user") put("userText", "  original user input\nuntouched  ")
+                                if (id == "skill") put("userText", "/skill:review src/Main.kt")
+                            }
+                        }
+                    }
+                    else -> error("Unexpected native operation: $op")
+                }
+            }
             explorer.refreshHistory()
-            val assistant = explorer.history.value.nodes.single { it.id == "assistant" }
+            val assistant = explorer.loadHistoryDetail("assistant", HistoryDetailKind.COPY)
             assertEquals(visible, assistant.text)
             assertEquals(visible, assistant.copyBlocks.first().text)
             assertTrue(assistant.copyBlocks.none { "private thought" in it.text || "aW1hZ2U=" in it.text })
@@ -56,16 +51,109 @@ class OmpSessionExplorerHistoryTest {
             assertEquals("  val n = 1\n\n", assistant.copyBlocks.single { it.icon == "code" }.text)
             assertEquals("https://example.test/path_(part)?a=1&b=2", assistant.copyBlocks.single { it.icon == "link" }.text)
             assertEquals("printf '%s' original-command", assistant.copyBlocks.single { it.icon == "terminal" }.text)
-            assertEquals("answer-block", assistant.chatItemId)
-            assertEquals(listOf("answer-block", "thought-block", "tool-block"), assistant.chatItemIds)
             fun all(feed: List<FeedItem>): List<FeedItem> = feed.flatMap { listOf(it) + if (it is StepGroupNodeItem) all(it.children) else emptyList() }
-            assertTrue(all(assistant.feed).filterIsInstance<ThinkingNodeItem>().any { "private thought" in it.text })
-            val rawUser = explorer.history.value.nodes.single { it.id == "user" }
-            assertEquals("  original user input\nuntouched  ", rawUser.text)
-            assertEquals(rawUser.text, rawUser.copyBlocks.first().text)
-            val skill = explorer.history.value.nodes.single { it.id == "skill" }
+            val preview = explorer.loadHistoryDetail("assistant", HistoryDetailKind.PREVIEW)
+            assertTrue(all(preview.feed).filterIsInstance<ThinkingNodeItem>().any { "private thought" in it.text })
+            assertEquals(entries.getValue("assistant").toString(), explorer.loadHistoryDetail("assistant", HistoryDetailKind.RAW).rawRecord)
+            val user = explorer.loadHistoryDetail("user", HistoryDetailKind.COPY)
+            assertEquals("  original user input\nuntouched  ", user.text)
+            assertEquals(user.text, user.copyBlocks.first().text)
+            val skill = explorer.loadHistoryDetail("skill", HistoryDetailKind.COPY)
             assertEquals("/skill:review src/Main.kt", skill.text)
             assertEquals(skill.text, skill.copyBlocks.first().text)
         } finally { owner.cancel() }
+    }
+
+    @Test fun historyPublishesOnlyCompleteMatchingSnapshots() = runBlocking {
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val secondPage = CompletableDeferred<Unit>()
+        val releasePage = CompletableDeferred<Unit>()
+        var mode = "initial"
+        try {
+            val explorer = explorer(owner) { _, body ->
+                when {
+                    mode == "initial" -> page("r0", "old", listOf(node("old")))
+                    body["cursor"] == null -> page(if (mode == "paged") "r1" else "r2", "b", listOf(node("a")), cursor = "next")
+                    mode == "paged" -> {
+                        secondPage.complete(Unit); releasePage.await()
+                        page("r1", "b", listOf(node("b", "a")))
+                    }
+                    else -> page("wrong-revision", "b", listOf(node("b", "a")))
+                }
+            }
+            explorer.refreshHistory()
+            mode = "paged"
+            val reading = async { explorer.refreshHistory() }
+            withTimeout(5000) { secondPage.await() }
+            assertEquals(listOf("old"), explorer.history.value.nodes.map { it.id })
+            releasePage.complete(Unit); reading.await()
+            assertEquals(listOf("a", "b"), explorer.history.value.nodes.map { it.id })
+            assertTrue(explorer.history.value.nodes.all { it.onCurrentPath })
+            mode = "mismatched"
+            assertFailsWith<IllegalStateException> { explorer.refreshHistory() }
+            assertEquals("r1", explorer.history.value.revision)
+            assertEquals(listOf("a", "b"), explorer.history.value.nodes.map { it.id })
+        } finally { releasePage.complete(Unit); owner.cancel() }
+    }
+
+    @Test fun versionChangesInvalidateSelectedDetailsAndRejectOldResponses() = runBlocking<Unit> {
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        var version = "v1"
+        var stale = false
+        try {
+            val explorer = explorer(owner) { op, _ ->
+                if (op == "explorer_history") page(version, "a", listOf(node("a", version = version)))
+                else buildJsonObject {
+                    put("sessionId", "native-main"); put("entryId", "a"); put("version", if (stale) "v1" else version)
+                    put("entry", entry("a", "assistant", buildJsonArray { add(buildJsonObject { put("type", "text"); put("text", version) }) }))
+                }
+            }
+            explorer.refreshHistory()
+            assertEquals("v1", explorer.loadHistoryDetail("a", HistoryDetailKind.COPY).text)
+            version = "v2"; explorer.refreshHistory()
+            assertEquals("v2", explorer.loadHistoryDetail("a", HistoryDetailKind.COPY).text)
+            stale = true
+            assertFailsWith<IllegalStateException> { explorer.loadHistoryDetail("a", HistoryDetailKind.PREVIEW) }
+        } finally { owner.cancel() }
+    }
+
+    @Test fun hubRosterRemainsAvailableWithoutHistoryOrTranscriptDetails() = runBlocking {
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val explorer = explorer(owner) { op, _ ->
+                check(op == "explorer_hub") { "History and transcript details are unavailable" }
+                buildJsonObject {
+                    put("mainSessionId", "native-main"); put("connected", true); put("discovering", true)
+                    put("agents", buildJsonArray { add(buildJsonObject {
+                        put("instanceKey", "child-instance"); put("id", "child"); put("name", "运行实例"); put("lifecycle", "running")
+                    }) })
+                }
+            }
+            explorer.refreshHub()
+            assertTrue(explorer.hub.value.connected)
+            assertTrue(explorer.hub.value.discovering)
+            assertEquals("child-instance", explorer.hub.value.agents.single().instanceKey)
+            assertEquals(RuntimeAgentLifecycle.RUNNING, explorer.hub.value.agents.single().lifecycle)
+            assertNull(explorer.hub.value.error)
+        } finally { owner.cancel() }
+    }
+
+    private fun explorer(owner: CoroutineScope, request: suspend (String, JsonObject) -> JsonObject) =
+        OmpSessionExplorer("app", "container", "/workspace", owner, request = request, synchronize = {},
+            identities = { emptyMap() }, originalTexts = { emptyMap() }, messageForChatItem = { null },
+            prepareAttachments = { text, attachments, _ -> Triple(text, attachments, JsonArray(emptyList())) },
+            files = { _, _ -> flowOf(emptyList()) })
+
+    private fun entry(id: String, role: String, content: JsonElement) = buildJsonObject {
+        put("id", id); put("type", "message"); put("parentId", JsonNull)
+        put("message", buildJsonObject { put("role", role); put("content", content); put("timestamp", 1) })
+    }
+    private fun node(id: String, parent: String? = null, version: String = "v1") = buildJsonObject {
+        put("id", id); put("parentId", parent); put("type", "message"); put("title", id); put("version", version)
+        put("hasCopyContent", true)
+    }
+    private fun page(revision: String, leaf: String, nodes: List<JsonObject>, cursor: String? = null) = buildJsonObject {
+        put("sessionId", "native-main"); put("sessionFile", "/session/main.jsonl"); put("revision", revision); put("leafId", leaf)
+        put("reset", true); put("nodes", JsonArray(nodes)); put("nextCursor", cursor)
     }
 }

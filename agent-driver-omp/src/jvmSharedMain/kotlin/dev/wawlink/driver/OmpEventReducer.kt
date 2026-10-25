@@ -128,8 +128,6 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
     internal fun nativeEntryFeedAliases(records: List<JsonObject>): Map<String, List<String>> {
         val unused = messages.entries.toMutableList()
         val feed = allItems(state.feed).associateBy { it.id }
-        fun toolIds(callId: String): List<String> = listOfNotNull(askFeedByTool[callId],
-            "history:ask:$callId".takeIf { it in feed }, feed.keys.firstOrNull { it.endsWith(":tool:$callId") })
         return buildMap {
             records.forEach { entry ->
                 val message = entry["message"] as? JsonObject ?: return@forEach
@@ -138,20 +136,33 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
                 val match = unused.firstOrNull { it.key == explicit } ?: unused.firstOrNull { it.value == message }
                 if (match != null) {
                     unused.remove(match)
-                    val id = userFeedIds[match.key] ?: match.key
-                    val targets = when (message.string("role")) {
-                        "assistant" -> message.array("content").orEmpty().flatMapIndexed { index, value ->
-                            val block = value as? JsonObject
-                            if (block?.string("type") == "toolCall") block.string("id")?.let(::toolIds).orEmpty()
-                            else listOf(blockId(id, index))
-                        }.sortedBy { if (feed[it] is AssistantMessageItem) 0 else if (feed[it] is AskCardItem) 1 else 2 }
-                        "toolResult" -> message.string("toolCallId")?.let(::toolIds).orEmpty()
-                        else -> listOf(id)
-                    }.filter { it in feed }.distinct()
+                    val targets = nativeFeedTargets(match.key, message, feed)
                     if (targets.isNotEmpty()) put(entryId, targets)
                 }
             }
         }
+    }
+
+    /** Resolve the one explicitly selected chat item without serializing any other message. */
+    internal fun nativeMessageForFeedItem(feedItemId: String): JsonObject? {
+        val feed = allItems(state.feed).associateBy { it.id }
+        return messages.entries.firstOrNull { (id, message) -> feedItemId in nativeFeedTargets(id, message, feed) }?.value
+    }
+
+
+    private fun nativeFeedTargets(messageId: String, message: JsonObject, feed: Map<String, FeedItem>): List<String> {
+        val id = userFeedIds[messageId] ?: messageId
+        fun toolIds(callId: String): List<String> = listOfNotNull(askFeedByTool[callId],
+            "history:ask:$callId".takeIf { it in feed }, feed.keys.firstOrNull { it.endsWith(":tool:$callId") })
+        return when (message.string("role")) {
+            "assistant" -> message.array("content").orEmpty().flatMapIndexed { index, value ->
+                val block = value as? JsonObject
+                if (block?.string("type") == "toolCall") block.string("id")?.let(::toolIds).orEmpty()
+                else listOf(blockId(id, index))
+            }.sortedBy { if (feed[it] is AssistantMessageItem) 0 else if (feed[it] is AskCardItem) 1 else 2 }
+            "toolResult" -> message.string("toolCallId")?.let(::toolIds).orEmpty()
+            else -> listOf(id)
+        }.filter { it in feed }.distinct()
     }
 
     private val originalUserText = mutableMapOf<String, String>()

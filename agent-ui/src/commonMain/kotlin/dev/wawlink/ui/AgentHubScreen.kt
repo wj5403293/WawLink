@@ -115,13 +115,16 @@ fun AgentHubScreen(
                             onExport = { exportAgent = it }, onPickFiles = onPickFiles,
                             onPickContainerFiles = onPickContainerFiles, onOpenFile = onOpenFile,
                             onDispatch = { agent ->
-                                val target = agent.dispatchChatItemId ?: agent.dispatchEntryId
+                                val target = agent.dispatchEntryId
                                 if (target == null) failure = "记录没有可定位的派发节点"
                                 else {
                                     val parent = hub.agents.firstOrNull { it.id == agent.parentId }
                                     when {
                                         parent != null -> open(parent, target)
-                                        agent.parentId == null -> onLocateMain(target)
+                                        agent.parentId == null -> perform {
+                                            val chatId = explorer.chatItemIdForEntry(target) ?: error("派发记录在当前聊天中没有可定位的内容")
+                                            onLocateMain(chatId)
+                                        }
                                         else -> failure = "派发所属上级 ${agent.parentId} 的记录当前不可用；未跳转到主会话"
                                     }
                                 }
@@ -133,7 +136,7 @@ fun AgentHubScreen(
                         }
                     }
                 }
-                val error = failure ?: hub.error
+                val error = failure ?: hub.error ?: hub.discoveryError
                 if (error != null) Row(Modifier.fillMaxWidth().background(colors.errorContainer).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Symbol("error", tint = colors.error)
                     Text(error, Modifier.weight(1f).padding(horizontal = 10.dp), color = colors.error, fontSize = 16.sp)
@@ -141,7 +144,7 @@ fun AgentHubScreen(
                     if (failure != null) AgentIconButton("close", "关闭错误", { failure = null })
                 }
             }
-            if (pending || hub.loading) LinearProgressIndicator(Modifier.widthIn(max = AgentPageMaxWidth).fillMaxWidth().align(Alignment.TopCenter))
+            if (pending || hub.loading || hub.discovering) LinearProgressIndicator(Modifier.widthIn(max = AgentPageMaxWidth).fillMaxWidth().align(Alignment.TopCenter))
         }
     }
     }
@@ -201,7 +204,7 @@ private fun HubOverview(hub: AgentHubState, mainTitle: String, busy: Boolean, on
                     }
                 }
                 if (query.isNotBlank() || filter != "all") Text("${matches.size} 个匹配，共 ${hub.agents.size} 个", Modifier.padding(4.dp), color = LocalAgentColors.current.primary, fontSize = 16.sp)
-                if (rows.isEmpty()) HubEmpty(if (hub.agents.isEmpty()) "smart_toy" else "search_off", if (hub.agents.isEmpty()) "这个会话还没有派发过子代理" else "没有匹配的 Agent")
+                if (rows.isEmpty() && !hub.loading && !hub.discovering) HubEmpty(if (hub.agents.isEmpty()) "smart_toy" else "search_off", if (hub.agents.isEmpty()) "这个会话还没有派发过子代理" else "没有匹配的 Agent")
                 rows.forEachIndexed { index, (agent, depth) -> HubAgentRow(agent, hub.agents, depth, view == "flat", agent.instanceKey !in matches, index, rows.size, busy, { onOpen(agent, null) }, onDefinition, onControl) }
             }
         }
@@ -315,7 +318,8 @@ internal fun HubActivity(hub: AgentHubState, root: RuntimeAgent? = null, onOpen:
         if (selected != null) HubChip("含下级", subtree) { subtree = !subtree }
         HubChip(if (follow) "跟随最新" else "已暂停跟随", follow, if (follow) "vertical_align_bottom" else "pause") { follow = !follow }
     }
-    if (activities.isEmpty()) HubEmpty("event_busy", "没有符合条件的活动")
+    if (activities.isEmpty() && !hub.loading && !hub.discovering) HubEmpty("event_busy", "没有符合条件的活动")
+    else if (activities.isEmpty()) Spacer(Modifier.height(24.dp))
     else LazyColumn(state = list, modifier = Modifier.fillMaxWidth().heightIn(max = 580.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         itemsIndexed(activities, key = { _, a -> a.id }) { index, activity ->
             val agent = hub.agents.firstOrNull { it.instanceKey == activity.instanceKey }

@@ -1,6 +1,6 @@
 import { AgentRegistry, MAIN_AGENT_ID } from '@oh-my-pi/pi-coding-agent/registry/agent-registry';
 import { createRuntimeExplorer } from './explorer-runtime.mjs';
-import { forkHistory, historySnapshot, reanswer, requireIdle, restoredNavigation } from './explorer-history.mjs';
+import { forkHistory, historyBranch, historyDetail, historyFind, historyPosition, historySnapshot, reanswer, requireIdle, restoredNavigation } from './explorer-history.mjs';
 import { safeReason } from './diagnostics.mjs';
 
 export function explorerError(error, request) {
@@ -29,13 +29,16 @@ export function createSessionExplorer(pi, getContext) {
       if (request.sessionId && request.sessionId !== sessionId) throw Error('Stale native session target');
       let data;
       switch (request.op) {
-        case 'explorer_history': data = historySnapshot(context.sessionManager); break;
+        case 'explorer_history': data = historySnapshot(context.sessionManager, request); break;
+        case 'explorer_history_detail': data = historyDetail(context.sessionManager, request); break;
+        case 'explorer_history_find': data = historyFind(context.sessionManager, request); break;
+        case 'explorer_history_branch': data = historyBranch(context.sessionManager); break;
         case 'explorer_label': {
           if (typeof request.entryId !== 'string' || (request.label != null && typeof request.label !== 'string')) throw Error('Invalid native label');
           const session = mainSession();
           session.sessionManager.appendLabelChange(request.entryId, request.label ?? undefined);
           await session.sessionManager.flush();
-          data = historySnapshot(session.sessionManager); break;
+          data = historyPosition(session.sessionManager); break;
         }
         case 'explorer_navigate': {
           const session = mainSession();
@@ -46,7 +49,7 @@ export function createSessionExplorer(pi, getContext) {
             const result = await session.navigateTree(request.entryId, { summarize: request.summary?.enabled === true,
               customInstructions: request.summary?.instructions ?? undefined });
             await session.sessionManager.flush();
-            data = { ...restoredNavigation(result), ...historySnapshot(session.sessionManager) };
+            data = { ...restoredNavigation(result), ...historyPosition(session.sessionManager) };
           } finally { navigation = undefined; }
           break;
         }

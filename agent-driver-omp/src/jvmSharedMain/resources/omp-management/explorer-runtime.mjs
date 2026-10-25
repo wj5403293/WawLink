@@ -1,6 +1,7 @@
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { access, mkdir, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
 import { AgentRegistry, MAIN_AGENT_ID } from '@oh-my-pi/pi-coding-agent/registry/agent-registry';
 import { AgentLifecycleManager } from '@oh-my-pi/pi-coding-agent/registry/agent-lifecycle';
 import { registerPersistedSubagents, sessionFileBelongsToRoot } from '@oh-my-pi/pi-coding-agent/registry/persisted-agents';
@@ -8,7 +9,8 @@ import { AgentActivityIndex } from '/opt/omp/src/activity/index.ts';
 // Not an exported host module: this native parser owns only per-instance file
 // caches, never a registry/lifecycle singleton. Stateful imports use host aliases.
 import { loadSessionFile, resolveBlobRefsInEntries } from '@oh-my-pi/pi-coding-agent/session/session-loader';
-import { resolveSessionLeafId } from '@oh-my-pi/pi-coding-agent/session/session-entries';
+import { EPHEMERAL_MODEL_CHANGE_ROLE, resolveSessionLeafId } from '@oh-my-pi/pi-coding-agent/session/session-entries';
+import { assistantTurnProducedOutput } from '@oh-my-pi/pi-coding-agent/session/messages';
 import { sessionMessagePersistenceKey, sameMessageContent } from '@oh-my-pi/pi-coding-agent/session/turn-persistence';
 import { isUserAuthoredQueuedMessage, toRestoredQueuedMessage } from '@oh-my-pi/pi-coding-agent/session/queued-messages';
 import { BlobStore } from '@oh-my-pi/pi-coding-agent/session/blob-store';
@@ -87,25 +89,27 @@ export function attachChildUI(session, ui) {
 
 export function createRuntimeExplorer(getMain, getContext) {
   const observers = new Map();
-  let activity = new AgentActivityIndex();
-  let rootId;
+  let rootId, hub;
   function clear() {
     for (const observer of observers.values()) { observer.unsubscribe?.(); observer.restoreUI?.(); observer.cancelRequests(); }
     observers.clear();
-    activity = new AgentActivityIndex();
+    for (const watcher of hub?.watchers.values() ?? []) watcher.unsubscribe();
+    hub = { cache: new Map(), watchers: new Map(), directories: new Map(), initialized: false,
+      discovering: true, discoveryError: null, flight: null, activity: new AgentActivityIndex() };
   }
   function current() {
     const context = getContext();
     if (!context) throw Error('Native session is unavailable');
-    const mainId = context.sessionManager.getSessionId();
-    if (rootId !== mainId) { clear(); rootId = mainId; }
-    return { context, mainId, file: context.sessionManager.getSessionFile() };
+    const mainId = context.sessionManager.getSessionId(), file = context.sessionManager.getSessionFile();
+    const id = JSON.stringify([mainId, file]);
+    if (rootId !== id) { clear(); rootId = id; }
+    return { context, mainId, file, hub };
   }
-  async function refs() {
-    const root = current();
-    if (root.file) await registerPersistedSubagents(registry(), root.file, { hydrateHistory: true,
-      shouldContinue: () => getContext()?.sessionManager.getSessionId() === root.mainId });
-    if (getContext()?.sessionManager.getSessionId() !== root.mainId) throw Error('Main session changed during discovery');
+  function isCurrent(root) {
+    const manager = getContext()?.sessionManager;
+    return hub === root.hub && manager?.getSessionId() === root.mainId && manager?.getSessionFile() === root.file;
+  }
+  function refs(root = current()) {
     return registry().list().filter(ref => ref.id !== MAIN_AGENT_ID && ref.kind !== 'main' &&
       (ref.sessionFile && root.file ? sessionFileBelongsToRoot(ref.sessionFile, root.file) : belongsByParent(ref, root.mainId)));
   }
@@ -121,7 +125,12 @@ export function createRuntimeExplorer(getMain, getContext) {
   async function resolveRef(request, live = false) {
     const root = current();
     if (request.sessionId && request.sessionId !== root.mainId) throw Error('Stale main-session control target');
-    const ref = (await refs()).find(ref => keyOf(root.mainId, ref) === request.instanceKey);
+    let ref = refs(root).find(ref => keyOf(root.mainId, ref) === request.instanceKey);
+    if (!ref) {
+      await refresh(root);
+      if (!isCurrent(root)) throw Error('Main session changed during discovery');
+      ref = refs(root).find(ref => keyOf(root.mainId, ref) === request.instanceKey);
+    }
     if (!ref) throw Error('Agent instance is unavailable or its transcript identity changed');
     if (live && (ref.kind === 'advisor' || !ref.session || ref.status === 'aborted'))
       throw Error(ref.kind === 'advisor' ? 'Advisor transcripts are observation-only' : 'Agent is not live; explicitly revive it before interacting');
@@ -206,59 +215,220 @@ export function createRuntimeExplorer(getMain, getContext) {
     try { await access(peek.cwd); } catch { return { canRevive: false, unavailableReason: 'Original native workspace is unavailable' }; }
     return { canRevive: true, unavailableReason: null };
   }
-  async function rosterRow(ref, mainEntries) {
-    const session = ref.session;
-    let persisted, transcriptError;
-    if (!session && ref.sessionFile) {
-      try { persisted = await readTranscript(ref.sessionFile); }
-      catch (error) { transcriptError = safeReason(error?.message ?? error); }
+  function watchSession(state, key, session) {
+    let watcher = state.watchers.get(key);
+    if (watcher && watcher.session === session) return watcher;
+    watcher?.unsubscribe();
+    watcher = { session, revision: 0, unsubscribe: () => {} };
+    if (session) watcher.unsubscribe = session.subscribe(event => {
+      if (['message_end', 'turn_end', 'agent_end', 'model_changed', 'auto_compaction_end', 'branch_summary_end'].includes(event.type)) watcher.revision++;
+    });
+    state.watchers.set(key, watcher);
+    return watcher;
+  }
+  async function fileStamp(file) {
+    if (!file) return null;
+    try {
+      const value = await stat(file);
+      return `${value.dev}:${value.ino}:${value.size}:${value.mtimeMs}:${value.ctimeMs}`;
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+      throw error;
     }
-    const entries = session?.sessionManager.getEntries() ?? persisted?.entries ?? [];
-    const messages = entries.filter(e => e.type === 'message').map(e => e.message);
-    const init = entries.find(e => e.type === 'session_init');
-    const users = messages.filter(m => m.role === 'user');
-    const lastAssistant = messages.findLast(m => m.role === 'assistant');
-    const failures = messages.filter(m => m.isError || m.stopReason === 'error' || m.stopReason === 'aborted');
+  }
+  async function directoryStamps(root) {
+    const directories = new Set();
+    if (root.file?.endsWith('.jsonl')) {
+      const base = root.file.slice(0, -6);
+      directories.add(base);
+      for (const ref of refs(root)) if (ref.sessionFile && sessionFileBelongsToRoot(ref.sessionFile, root.file)) {
+        for (let dir = dirname(ref.sessionFile); dir !== base && dir.startsWith(`${base}/`); dir = dirname(dir)) directories.add(dir);
+      }
+    }
+    return new Map(await Promise.all([...directories].map(async dir => [dir, await fileStamp(dir)])));
+  }
+  function recordDispatch(entry, dispatch) {
+    if (entry.type !== 'message' || entry.message.role !== 'assistant') return;
+    for (const block of Array.isArray(entry.message.content) ? entry.message.content : []) if (block.type === 'toolCall' && block.name === 'task') {
+      for (const task of Array.isArray(block.arguments?.tasks) ? block.arguments.tasks : [block.arguments])
+        if (typeof task?.name === 'string' && !dispatch.has(task.name)) dispatch.set(task.name, entry.id);
+    }
+  }
+  function mainDispatch(entries, cached) {
+    const append = cached?.entryCount <= entries.length &&
+      (cached.entryCount === 0 || entries[cached.entryCount - 1]?.id === cached.lastEntryId);
+    const dispatch = append ? cached.summary.dispatch : new Map();
+    for (let index = append ? cached.entryCount : 0; index < entries.length; index++) recordDispatch(entries[index], dispatch);
+    return { dispatch };
+  }
+  function summarize(entries, header, leafId) {
+    const dispatch = new Map(), communications = [], byId = new Map();
+    const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    let init, task = '', hasUser = false, lastAssistant, failure, usageCount = 0, directCost = 0;
+    for (const entry of entries) {
+      byId.set(entry.id, entry);
+      if (entry.type === 'session_init' && !init) init = entry;
+      if (entry.type === 'model_usage') directCost += entry.usage?.cost?.total ?? 0;
+      const message = entry.type === 'message' ? entry.message : entry.type === 'custom_message' ? entry : null;
+      if (!message) continue;
+      if (['irc:message', 'irc:relay', 'irc'].includes(message.customType)) communications.push({
+        id: entry.id, text: textOf(message.content), timestamp: entry.timestamp });
+      if (entry.type !== 'message') continue;
+      if (message.role === 'user' && !hasUser) { task = textOf(message.content); hasUser = true; }
+      if (message.isError || message.stopReason === 'error' || message.stopReason === 'aborted')
+        failure = safeReason(message.errorMessage ?? textOf(message.content));
+      if (message.role !== 'assistant') continue;
+      lastAssistant = { model: message.model, provider: message.provider };
+      if (message.usage) {
+        usageCount++;
+        for (const key of Object.keys(totals)) totals[key] += message.usage[key] ?? 0;
+        directCost += message.usage.cost?.total ?? 0;
+      }
+      recordDispatch(entry, dispatch);
+    }
+    const visited = new Set(), metrics = { requests: 0, tools: 0 };
+    let modelRole, servedModel, resolvedModel, resolvedModelIsFallback, latestModelChange, contextTokens;
+    for (let id = leafId; id && !visited.has(id); id = byId.get(id)?.parentId) {
+      visited.add(id);
+      const entry = byId.get(id);
+      if (entry?.type === 'model_change') {
+        latestModelChange ??= entry;
+        if (entry.role && entry.role !== EPHEMERAL_MODEL_CHANGE_ROLE) modelRole ??= entry.role;
+        if (servedModel && !resolvedModel && (entry.model === servedModel || entry.model?.startsWith(`${servedModel}@`))) {
+          resolvedModel = entry.model; resolvedModelIsFallback = entry.resolvedModelIsFallback;
+        }
+      }
+      if (entry?.type !== 'message' || entry.message.role !== 'assistant') continue;
+      const message = entry.message;
+      if (!servedModel && message.provider && message.model && assistantTurnProducedOutput(message)) servedModel = `${message.provider}/${message.model}`;
+      metrics.requests++;
+      metrics.tools += (Array.isArray(message.content) ? message.content : []).filter(block => block.type === 'toolCall').length;
+      contextTokens ??= message.usage?.totalTokens || undefined;
+    }
+    resolvedModel ??= servedModel ?? latestModelChange?.model;
+    resolvedModelIsFallback ??= servedModel ? false : latestModelChange?.resolvedModelIsFallback;
+    const start = Date.parse(header?.timestamp ?? entries[0]?.timestamp), end = Date.parse(entries.at(-1)?.timestamp);
+    return { task, failure, lastAssistant, definitionName: init?.agent, workspace: header?.cwd,
+      dispatch, communications, totals: usageCount ? totals : {}, directCost,
+      modelRole, resolvedModel, resolvedModelIsFallback,
+      metrics: metrics.requests ? { ...metrics, contextTokens, durationMs: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : null } : null };
+  }
+  function refresh(root) {
+    const state = root.hub;
+    if (state.flight) return state.flight;
+    // Yield an event-loop turn, not just a microtask: the caller must be able
+    // to serialize and begin persisting the registry-only response first.
+    state.flight = setImmediate().then(async () => {
+      let directories = await directoryStamps(root);
+      if (!isCurrent(root)) return;
+      const changed = !state.initialized || directories.size !== state.directories.size ||
+        [...directories].some(([dir, stamp]) => state.directories.get(dir) !== stamp);
+      if (changed) {
+        state.discovering = true;
+        if (root.file) await registerPersistedSubagents(registry(), root.file, {
+          hydrateHistory: false, shouldContinue: () => isCurrent(root) });
+        if (!isCurrent(root)) return;
+        const beforeScan = directories;
+        directories = await directoryStamps(root);
+        if (!isCurrent(root)) return;
+        // Retain pre-scan stamps so a change racing discovery is retried.
+        state.directories = new Map([...directories].map(([dir, stamp]) => [dir, beforeScan.has(dir) ? beforeScan.get(dir) : stamp]));
+        state.initialized = true;
+      }
+      const all = refs(root), keys = new Set(all.map(ref => keyOf(root.mainId, ref)));
+      const mainKey = JSON.stringify([root.mainId, MAIN_AGENT_ID, root.file]);
+      keys.add(mainKey);
+      for (const [key, watcher] of state.watchers) if (!keys.has(key)) { watcher.unsubscribe(); state.watchers.delete(key); state.cache.delete(key); }
+      const main = getMain();
+      const validTarget = (ref, key, session) => isCurrent(root) && ref.session === session &&
+        (ref.id === MAIN_AGENT_ID || (registry().get(ref.id) === ref && keyOf(root.mainId, ref) === key));
+      const targets = [{ id: MAIN_AGENT_ID, session: main, sessionFile: root.file }, ...all];
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(4, targets.length) }, async () => {
+        for (;;) {
+          const ref = targets[next++];
+          if (!ref || !isCurrent(root)) return;
+          const key = ref.id === MAIN_AGENT_ID ? mainKey : keyOf(root.mainId, ref);
+          const session = ref.session;
+          const watcher = watchSession(state, key, session), revision = watcher.revision;
+          let cached = state.cache.get(key), stamp;
+          try {
+            stamp = await fileStamp(ref.sessionFile);
+            if (!isCurrent(root)) return;
+            if (!validTarget(ref, key, session)) continue;
+            const leafId = session?.sessionManager.getLeafId();
+            if (!cached || cached.error || cached.stamp !== stamp || cached.session !== session || cached.revision !== revision || cached.leafId !== leafId) {
+              state.discovering = true;
+              const transcript = session ? null : ref.sessionFile ? await readTranscript(ref.sessionFile) : null;
+              if (!validTarget(ref, key, session)) continue;
+              const manager = session?.sessionManager;
+              const entries = manager?.getEntries() ?? transcript?.entries ?? [];
+              const summary = ref.id === MAIN_AGENT_ID ? mainDispatch(entries, cached)
+                : summarize(entries, transcript?.header ?? manager?.getHeader?.(), manager?.getLeafId() ?? transcript?.leafId);
+              const capability = ref.id === MAIN_AGENT_ID ? null : await reviveCapability(ref);
+              if (!validTarget(ref, key, session)) continue;
+              cached = { stamp, session, revision, leafId, summary, capability,
+                entryCount: entries.length, lastEntryId: entries.at(-1)?.id,
+                stats: ref.id === MAIN_AGENT_ID ? null : session?.getSessionStats(), error: null, activityStamp: cached?.activityStamp };
+              state.cache.set(key, cached);
+            }
+            if (ref.id !== MAIN_AGENT_ID) cached.jobs = jobs(session);
+            if (ref.id !== MAIN_AGENT_ID && cached.activityStamp !== stamp) {
+              await state.activity.sync(ref.id, ref.sessionFile);
+              if (validTarget(ref, key, session)) cached.activityStamp = stamp;
+            }
+          } catch (error) {
+            if (!validTarget(ref, key, session)) continue;
+            state.cache.set(key, { ...cached, session, stamp, revision, error: safeReason(error?.message ?? error) });
+          }
+        }
+      }));
+      if (isCurrent(root)) state.discoveryError = null;
+    }).catch(error => {
+      if (isCurrent(root)) state.discoveryError = safeReason(error?.message ?? error);
+    }).finally(() => {
+      state.flight = null;
+      if (isCurrent(root)) state.discovering = false;
+    });
+    return state.flight;
+  }
+  function rosterRow(ref, root) {
+    const session = ref.session, cached = root.hub.cache.get(keyOf(root.mainId, ref));
+    const summary = cached?.summary, stats = cached?.stats;
     const serving = session?.servingModel;
-    const selector = serving?.selector ?? ref.history?.resolvedModel;
+    const selector = serving?.selector ?? summary?.resolvedModel ?? ref.history?.resolvedModel;
     const slash = selector?.indexOf('/') ?? -1;
-    const stats = session?.getSessionStats();
-    const usageMessages = messages.filter(m => m.role === 'assistant' && m.usage);
-    const sum = key => usageMessages.length ? usageMessages.reduce((total, m) => total + (m.usage[key] ?? 0), 0) : null;
     const artifacts = [];
     for (const [title, file] of [['Task output', ref.history?.outputPath], ['Patch', ref.history?.patchPath],
       ...(ref.history?.nestedPatchPaths ?? []).map(file => ['Nested patch', file])]) if (file) artifacts.push({ title, path: file, icon: title.includes('Patch') ? 'difference' : 'draft' });
-    let ownerEntries = mainEntries;
-    if (ref.parentId && ref.parentId !== MAIN_AGENT_ID) {
-      const owner = registry().get(ref.parentId);
-      ownerEntries = owner?.session?.sessionManager.getEntries() ?? (owner?.sessionFile ?
-        (await readTranscript(owner.sessionFile).catch(() => ({ entries: [] }))).entries : []);
-    }
-    const dispatch = ownerEntries.find(e => e.type === 'message' && e.message.role === 'assistant' &&
-      (e.message.content ?? []).some(b => b.type === 'toolCall' && b.name === 'task' &&
-        (Array.isArray(b.arguments?.tasks) ? b.arguments.tasks : [b.arguments]).some(task => task?.name === ref.id)));
-    const capability = await reviveCapability(ref);
+    const owner = ref.parentId && ref.parentId !== MAIN_AGENT_ID ? registry().get(ref.parentId) : null;
+    const ownerKey = ref.parentId && ref.parentId !== MAIN_AGENT_ID ? (owner ? keyOf(root.mainId, owner) : null)
+      : JSON.stringify([root.mainId, MAIN_AGENT_ID, root.file]);
+    const dispatch = root.hub.cache.get(ownerKey)?.summary?.dispatch.get(ref.id);
     const live = !!session && ref.kind !== 'advisor' && ref.status !== 'aborted';
-    const telemetry = ref.history?.metrics;
-    return { instanceKey: keyOf(current().mainId, ref), id: ref.id, name: ref.displayName, parentId: ref.parentId === MAIN_AGENT_ID ? null : ref.parentId ?? null,
-      lifecycle: ref.status, advisor: ref.kind === 'advisor', task: textOf(users[0]?.content), activity: ref.activity ?? '',
-      result: ref.lifecycle?.acceptedAt ? (failures.length ? 'failed' : 'completed') : ref.status === 'aborted' ? 'cancelled' : null,
-      error: transcriptError ?? (failures.length ? safeReason(failures.at(-1).errorMessage ?? textOf(failures.at(-1).content)) : null),
-      modelId: session?.model?.id ?? (slash >= 0 ? selector.slice(slash + 1) : selector ?? lastAssistant?.model ?? null),
-      providerId: session?.model?.provider ?? (slash >= 0 ? selector.slice(0, slash) : lastAssistant?.provider ?? null),
-      modelRole: ref.history?.modelRole ?? null, thinking: session?.configuredThinkingLevel() ?? null,
-      fallback: serving?.isFallback || ref.history?.resolvedModelIsFallback ? selector ?? null : null,
-      workspace: session?.sessionManager.getCwd() ?? persisted?.header.cwd ?? null, sessionFile: ref.sessionFile,
+    const telemetry = summary?.metrics ?? ref.history?.metrics;
+    const capability = ref.kind === 'advisor' ? { canRevive: false, unavailableReason: 'Advisor transcripts are observation-only' }
+      : session ? { canRevive: false, unavailableReason: null }
+      : cached?.capability ?? { canRevive: false, unavailableReason: cached?.error ?? (ref.sessionFile ? 'Native session details are loading' : 'Native transcript is unavailable') };
+    return { instanceKey: keyOf(root.mainId, ref), id: ref.id, name: ref.displayName, parentId: ref.parentId === MAIN_AGENT_ID ? null : ref.parentId ?? null,
+      lifecycle: ref.status, advisor: ref.kind === 'advisor', task: summary?.task ?? '', activity: ref.activity ?? '',
+      result: ref.lifecycle?.acceptedAt ? (summary?.failure ? 'failed' : 'completed') : ref.status === 'aborted' ? 'cancelled' : null,
+      error: cached?.error ?? summary?.failure ?? null,
+      modelId: session?.model?.id ?? (slash >= 0 ? selector.slice(slash + 1) : selector ?? summary?.lastAssistant?.model ?? null),
+      providerId: session?.model?.provider ?? (slash >= 0 ? selector.slice(0, slash) : summary?.lastAssistant?.provider ?? null),
+      modelRole: summary?.modelRole ?? ref.history?.modelRole ?? null, thinking: session?.configuredThinkingLevel() ?? null,
+      fallback: serving?.isFallback || summary?.resolvedModelIsFallback || (!summary && ref.history?.resolvedModelIsFallback) ? selector ?? null : null,
+      workspace: session?.sessionManager.getCwd() ?? summary?.workspace ?? null, sessionFile: ref.sessionFile,
       createdAtMillis: number(ref.createdAt), lastActivityMillis: number(ref.lastActivity), unread: null,
       stats: { elapsedMillis: number(telemetry?.durationMs), requests: stats ? stats.assistantMessages : number(telemetry?.requests),
-        tools: stats?.toolCalls ?? number(telemetry?.tools), inputTokens: stats?.tokens.input ?? sum('input'),
-        outputTokens: stats?.tokens.output ?? sum('output'), cacheReadTokens: stats?.tokens.cacheRead ?? sum('cacheRead'),
-        cacheWriteTokens: stats?.tokens.cacheWrite ?? sum('cacheWrite'), cost: stats?.cost ?? number(ref.history?.directCost),
+        tools: stats?.toolCalls ?? number(telemetry?.tools), inputTokens: stats?.tokens.input ?? number(summary?.totals.input),
+        outputTokens: stats?.tokens.output ?? number(summary?.totals.output), cacheReadTokens: stats?.tokens.cacheRead ?? number(summary?.totals.cacheRead),
+        cacheWriteTokens: stats?.tokens.cacheWrite ?? number(summary?.totals.cacheWrite), cost: stats?.cost ?? number(summary?.directCost ?? ref.history?.directCost),
         contextTokens: session ? number(session.lastPromptTokens()) : number(telemetry?.contextTokens), contextWindow: number(session?.model?.contextWindow ?? telemetry?.contextWindow) },
-      artifacts, jobs: jobs(session), canSend: live, canStop: live && session.isStreaming,
+      artifacts, jobs: cached?.jobs ?? [], canSend: live, canStop: live && session.isStreaming,
       canKill: ref.kind !== 'advisor' && ref.status !== 'aborted', canSetModel: live, ...capability,
-      dispatchEntryId: dispatch?.id ?? null, dispatchChatItemId: dispatch ? `entry:${dispatch.id}` : null,
-      definitionName: ref.history?.agent ?? init?.agent ?? null };
+      dispatchEntryId: dispatch ?? null,
+      definitionName: ref.history?.agent ?? summary?.definitionName ?? null };
   }
   function jobs(session) {
     const snapshot = session?.getAsyncJobSnapshot({ recentLimit: 200 });
@@ -401,24 +571,24 @@ export function createRuntimeExplorer(getMain, getContext) {
   }
   return async request => {
     if (request.op === 'explorer_hub') {
-      const all = await refs(), root = current();
-      const mainEntries = root.context.sessionManager.getEntries();
-      const agents = await Promise.all(all.map(ref => rosterRow(ref, mainEntries)));
-      await Promise.all(all.map(ref => activity.sync(ref.id, ref.sessionFile)));
+      const root = current(), all = refs(root);
+      // Nothing on this path reads a transcript or waits for discovery. The
+      // single background flight publishes enrichment to subsequent polls.
+      if (!root.hub.discoveryError) for (const ref of all)
+        if (!root.hub.cache.has(keyOf(root.mainId, ref))) root.hub.discovering = true;
+      refresh(root);
+      const agents = all.map(ref => rosterRow(ref, root));
       const activityLimit = request.activityLimit === 2000 ? 2000 : 20;
       const byId = new Map(agents.map(agent => [agent.id, agent]));
-      const rows = activity.query({ agentIds: new Set(byId.keys()), limit: activityLimit }).map(row => ({
+      const rows = root.hub.activity.query({ agentIds: new Set(byId.keys()), limit: activityLimit }).map(row => ({
         id: row.id, agentId: row.agentId, instanceKey: byId.get(row.agentId).instanceKey,
         kind: row.status === 'error' ? 'error' : row.kind === 'tool' ? 'tool' : row.kind === 'message' ? 'communication' : row.kind,
         text: [row.title, row.summary].filter(Boolean).join(' · '), timestamp: new Date(row.timestamp).toISOString(),
         entryId: row.entryId ?? null, chatItemId: row.entryId ? `entry:${row.entryId}` : null }));
       for (const ref of all) {
-        const entries = ref.session?.sessionManager.getEntries() ?? (ref.sessionFile ? (await readTranscript(ref.sessionFile).catch(() => ({ entries: [] }))).entries : []);
-        for (const entry of entries) {
-          const message = entry.type === 'message' ? entry.message : entry.type === 'custom_message' ? entry : null;
-          if (!message || !['irc:message', 'irc:relay', 'irc'].includes(message.customType)) continue;
+        for (const entry of root.hub.cache.get(keyOf(root.mainId, ref))?.summary?.communications ?? []) {
           rows.push({ id: `communication:${ref.id}:${entry.id}`, agentId: ref.id, instanceKey: keyOf(root.mainId, ref),
-            kind: 'communication', text: textOf(message.content), timestamp: entry.timestamp,
+            kind: 'communication', text: entry.text, timestamp: entry.timestamp,
             entryId: entry.id, chatItemId: `entry:${entry.id}` });
         }
       }
@@ -426,7 +596,8 @@ export function createRuntimeExplorer(getMain, getContext) {
         id: `lifecycle:${keyOf(root.mainId, ref)}:${ref.status}:${ref.lastActivity}`, agentId: ref.id, instanceKey: keyOf(root.mainId, ref),
         kind: 'lifecycle', text: ref.status, timestamp: new Date(ref.lastActivity).toISOString(), entryId: null });
       rows.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
-      return { mainSessionId: root.mainId, agents, activity: rows.slice(-activityLimit), activityLimit, connected: true };
+      return { mainSessionId: root.mainId, agents, activity: rows.slice(-activityLimit), activityLimit, connected: true,
+        discovering: root.hub.discovering, discoveryError: root.hub.discoveryError };
     }
     if (request.op === 'explorer_agent_snapshot') return snapshot(request);
     const mutating = ['explorer_agent_prompt', 'explorer_agent_model', 'explorer_agent_thinking', 'explorer_agent_respond'];

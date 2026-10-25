@@ -7,6 +7,10 @@ interface SessionExplorer {
     val history: StateFlow<SessionHistoryState>
     val hub: StateFlow<AgentHubState>
     suspend fun refreshHistory()
+    suspend fun loadHistoryDetail(entryId: String, kind: HistoryDetailKind): SessionHistoryDetail
+    /** Resolve only the explicitly selected message; the index never carries full chat records. */
+    suspend fun entryIdForChatItem(chatItemId: String): String?
+    suspend fun chatItemIdForEntry(entryId: String): String?
     suspend fun refreshHub(activityLimit: Int = 20)
     suspend fun setLabel(entryId: String, label: String?)
     suspend fun navigate(entryId: String, summary: HistorySummary = HistorySummary()): RestoredSessionPrompt?
@@ -35,6 +39,7 @@ data class SessionHistoryState(
     val sessionId: String = "",
     val sessionFile: String? = null,
     val leafId: String? = null,
+    val revision: String = "",
     val nodes: List<SessionHistoryNode> = emptyList(),
     val loading: Boolean = false,
     val busy: Boolean = false,
@@ -47,19 +52,28 @@ data class SessionHistoryNode(
     val type: String,
     val role: String? = null,
     val title: String,
-    val text: String = "",
+    /** Native searchable prefix, never the full message body. */
+    val searchText: String = "",
     val timestamp: String = "",
     val label: String? = null,
     val onCurrentPath: Boolean = false,
     val navigable: Boolean = true,
+    val version: String = "",
+    val hasCopyContent: Boolean = false,
+    val copyBlockCount: Int? = null,
+)
+
+enum class HistoryDetailKind { PREVIEW, RAW, COPY, ASK }
+
+data class SessionHistoryDetail(
+    val sessionId: String,
+    val entryId: String,
+    val version: String,
+    val text: String = "",
     val feed: List<FeedItem> = emptyList(),
     val rawRecord: String = "",
     val copyBlocks: List<SessionCopyBlock> = emptyList(),
     val ask: AskCardItem? = null,
-    /** Exact application feed identity, not a text-based guess. */
-    val chatItemId: String? = null,
-    /** A native message may project to separate text, thinking, Ask and tool nodes. */
-    val chatItemIds: List<String> = emptyList(),
 )
 
 data class SessionCopyBlock(val title: String, val text: String, val icon: String = "notes")
@@ -80,6 +94,8 @@ data class AgentHubState(
     val activityLimit: Int = 20,
     val loading: Boolean = false,
     val connected: Boolean = false,
+    val discovering: Boolean = false,
+    val discoveryError: String? = null,
     val error: String? = null,
 )
 
@@ -116,7 +132,6 @@ data class RuntimeAgent(
     val canSetModel: Boolean = false,
     val unavailableReason: String? = null,
     val dispatchEntryId: String? = null,
-    val dispatchChatItemId: String? = null,
     val definitionName: String? = null,
 )
 
