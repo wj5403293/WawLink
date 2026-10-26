@@ -278,6 +278,31 @@ const sdk = await wawlink.lua(`
 
 应用在原生 Agent 启动前或进入功能页时注入 `~/.omp/agent/skills/wawlink-functions/SKILL.md`；缺失时安装，精确匹配上一版未修改内置文件的 SHA-256 时原子升级，其他已有内容及用户修改保持不变。新 Skill 包含 `container`、动态 `cardUrl`、外部接口/依赖及初始化时序契约，不再强制 HTML 仅用内联资源。它**仅在用户明确要求“添加 WawLink 功能页卡片”或等价新增请求时触发**，普通网页、脚本、插件/技能或笼统功能请求不创建卡片。不预装示例卡片，不复制开发机认证。
 
+#### 容器内轻量调试命令
+
+`wawlink-feature` 复用容器已有 Bun，连接应用当前挂载的真实 WebView，无需 Chrome、Chromium、Playwright 或 ADB。应用为运行中的容器安装到当前用户 `~/.wawlink/bin/`，新建 Agent/终端进程的 PATH 包含此目录；旧 shell 可直接使用完整路径。更新 APK 不需要重新导入 Rootfs。
+
+```bash
+wawlink-feature list
+wawlink-feature inspect weather --surface card
+wawlink-feature logs weather --surface card
+wawlink-feature eval weather 'getComputedStyle(document.body).height' --surface card
+wawlink-feature screenshot weather --surface card --output /tmp/weather-card.png
+wawlink-feature reload weather --surface card
+wawlink-feature inspect weather --surface page
+wawlink-feature eval weather 'document.querySelector("button").click()' --surface page
+wawlink-feature screenshot weather --surface page --output /tmp/weather-page.png
+```
+
+将 `weather` 替换为实际功能 ID。`--surface card`（默认）选择功能列表中的 HTML 卡片，`--surface page` 选择打开后的完整功能页；按容器、功能 ID 与页面种类隔离，不根据标题或 URL 猜测。`inspect` 提供实际生命周期、服务状态、挂载状态、原生尺寸及 DOM 计算布局，便于区分未启动服务与高度为零等布局故障。`logs` 合并有界的服务输出、页面 console、JavaScript 异常、未处理 Promise 拒绝及资源错误；页面未挂载时仍能读取服务输出，不伪造页面日志。
+
+`eval` 返回实际 JSON 值并支持 Promise；异常和拒绝按真实错误退出。`screenshot` 保存当前可见 WebView 的实际 PNG 到客体路径，拒绝覆盖已有文件；不包含宿主 AppBar 或其他页面。`reload` 只重载所选文档，静态卡片重新读取当前 HTML，动态文档重新加载实际 URL，不冒充重启服务。服务端代码修改仍须按真实生命周期启停。
+
+调试不会自动启动容器、服务或打开页面。懒加载或隐藏的卡片、尚未进入的功能页可能未挂载，`inspect` 明确显示未挂载，执行、截图和重载返回可定位错误；不能用 HTTP 就绪或另一份离屏浏览器冒充应用画面已验证。日志有界且只覆盖已捕获范围，重载后的新文档与旧请求隔离。
+
+通道使用随机 loopback 端口和当前容器运行代次凭据，不向网页开放公共 CORS，容器停止或应用关闭即撤销；凭据不出现在命令结果中。`eval` 具有受信页面原有的 LuaJ/Java 桥权限，是可信代码执行，不是不可信脚本沙箱。新 Skill 强调天气、监控等随容器持续运行的托管服务应按需求显式声明 `lifecycle: container`；默认 `page` 不会因存在动态卡片而自动改变。
+
+
 ## 独立嵌入 UI
 
 ```bash
@@ -562,4 +587,12 @@ OMP 安装引导本轮通过 182 项 Kotlin 回归（容器 32、驱动 121、�
 白屏另为应用侧 WebView 布局问题：真机文档已收到真实天气数据，脚本正常执行，但 `html/body` 高度为 0，`100vh` 也为 0，`overflow:hidden` 将内容裁掉。Android 共享功能 WebView 现显式使用宽高 `MATCH_PARENT`，由 Compose 分配实际尺寸，保留作者原始 HTML/CSS，不注入固定像素高度补丁。
 
 `:app-android:assembleDebug` 构建成功，默认 APK 已覆盖安装并保留原有数据；用户确认真机实际显示正常、手动验证通过，随后按要求停止进一步验证。未启动模拟器、未运行模型请求、未重建或重新导入 Rootfs。本次未新增自动化测试，设备 WebView 布局以本轮真机排查与用户验收为证据。
+
+### 容器内轻量卡片与功能页调试（2026-10-26）
+
+新增 `wawlink-feature`，复用已有 Bun 与应用实际挂载的 WebView，提供 `list`、`inspect`、`logs`、`eval`、`screenshot`、`reload`；卡片和完整功能页通过 `--surface card/page` 独立选择。内置 Skill 补充真实调试流程和生命周期选择，不安装浏览器或依赖 ADB，不为调试自动启服、打开页面或改写功能清单。
+
+14 项定向 Kotlin 回归通过（调试通道 4、既有功能运行时 10），无失败或跳过。真实 x86_64 PRoot 客体通过命令 PATH 调用宿主的桌面 JavaFX WebView，验证卡片与完整页的独立身份、DOM 点击、Promise 成功与拒绝、首个页面脚本的 console、真实 Bun 服务输出、两种页面的 PNG 实际像素、已有文件与符号链接拒绝覆盖、静态客体 HTML 重新读取及完整页 URL 重载、导航取消旧 Promise、遮挡时保留页面但拒绝截图、销毁后拒绝执行。临时容器、界面及烟测入口均已关闭或移除。
+
+Android Debug APK 构建通过，默认产物为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`b7b55216f74a2fd4ecc8ffb42414cb837f197a89e32afd6df1dd090e527908dc`。本轮未运行 Android 模拟器、Android 真机调试命令或模型请求；桌面结果不替代设备端 WebView、LuaJ/Intent 与 PNG 截图验收。更新 APK 即可继续使用已有容器，无需重新导入 Rootfs。
 

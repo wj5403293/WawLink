@@ -324,7 +324,7 @@ internal fun ContainerFeaturesScreen(
                 val itemScale by animateFloatAsState(if (editing && key !in selected) .97f else 1f, tween(350, easing = EmphEasing))
                 val itemAlpha by animateFloatAsState(if (key in layout.hidden) { if (key in selected) .75f else .45f } else 1f, tween(300, easing = EmphEasing))
                 FeatureCardTile(
-                    entry, state, service, containerId, container?.running == true, editing, key in selected, color, cardThemeCss,
+                    entry, state, service, containerId, container?.running == true, container?.runGeneration ?: 0, editing, key in selected, color, cardThemeCss,
                     Modifier.fillMaxWidth().zIndex(if (currentDrag != null) 2f else 0f)
                         .animateItem(placementSpec = if (currentDrag != null) null else tween(420, easing = EmphEasing))
                         .graphicsLayer {
@@ -456,7 +456,7 @@ private fun Modifier.featureCardGestures(
 
 @Composable
 private fun FeatureCardTile(
-    entry: CardEntry, state: ContainerFeatureState, service: ContainerFeatureService, containerId: String?, containerRunning: Boolean,
+    entry: CardEntry, state: ContainerFeatureState, service: ContainerFeatureService, containerId: String?, containerRunning: Boolean, runGeneration: Long,
     selectionMode: Boolean, selected: Boolean, color: String?, css: String, modifier: Modifier,
     onAction: (String) -> Unit, onError: (String) -> Unit, onClick: () -> Unit, onSelect: () -> Unit,
     nativeGestures: FeatureCardNativeGestures,
@@ -508,7 +508,10 @@ private fun FeatureCardTile(
                 fun Color.hex() = "#%06x".format(toArgb() and 0xffffff)
                 "$css\n:root{--wawlink-card-color:${background.hex()};--wawlink-card-foreground:${foreground.hex()}}:where(html,body){margin:0;width:100%;height:100%;overflow:hidden;background:var(--wawlink-card-color);color:var(--wawlink-card-foreground)}:where(button,input,select,textarea){color:inherit}"
             }
-            if (html != null || url != null) CompositionLocalProvider(LocalFeatureCardNativeGestures provides nativeGestures) {
+            if (html != null || url != null) CompositionLocalProvider(
+                LocalFeatureCardNativeGestures provides nativeGestures,
+                LocalFeatureDebugContext provides FeatureDebugContext(service.debugger, FeatureDebugTarget(requireNotNull(containerId), requireNotNull(feature).id, "card"), runGeneration),
+            ) {
                 ContainerFeatureCardSurface(html, url, cardCss, data,
                     Modifier.fillMaxWidth().height(htmlHeight.dp), onAction, { message -> htmlError = message; onError(message) })
             } else Box(Modifier.fillMaxWidth().height(htmlHeight.dp), contentAlignment = Alignment.Center) {

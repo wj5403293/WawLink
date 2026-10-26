@@ -52,6 +52,11 @@ internal fun ContainerFeatureCardSurface(html: String?, url: String?, css: Strin
     }
     val loadedFont = font ?: return
     val holder = remember(html, url) { DesktopFeatureCard() }
+    val debugContext = LocalFeatureDebugContext.current
+    DisposableEffect(holder, debugContext) {
+        val registration = holder.debug.bind(debugContext)
+        onDispose { registration.close() }
+    }
     val covered by rememberUpdatedState(LocalFeatureCardCovered.current)
     var frame by remember(holder) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(covered, holder) {
@@ -68,6 +73,7 @@ internal fun ContainerFeatureCardSurface(html: String?, url: String?, css: Strin
     DisposableEffect(holder) {
         onDispose {
             holder.disposed.set(true)
+            holder.debug.dispose()
             Platform.runLater {
                 holder.stopGestures?.invoke(); holder.stopGestures = null
                 holder.detach()
@@ -153,15 +159,16 @@ internal fun ContainerFeatureCardSurface(html: String?, url: String?, css: Strin
                         web.addEventFilter(KeyEvent.ANY) { if (gestures?.selectionMode == true) it.consume() }
                         val engine = web.engine
                         engine.isJavaScriptEnabled = true
-                        installDesktopCardPolicy(web, url, report)
+                        installDesktopCardPolicy(web, url, { holder.staticDocumentLoadPending }, report)
                         engine.createPopupHandler = javafx.util.Callback { null }
                         engine.confirmHandler = javafx.util.Callback { false }
                         engine.promptHandler = javafx.util.Callback { null }
                         engine.setOnAlert { }
-                        engine.setOnError { report("卡片渲染失败：${it.message}") }
+                        engine.setOnError { holder.debug.recordError("卡片渲染失败：${it.message}"); report("卡片渲染失败：${it.message}") }
                         fun trustedDocument(): Boolean = if (url == null) engine.location.isNullOrEmpty() || engine.location == "about:blank"
                             else featureSameOrigin(engine.location, featureDocumentOrigin(url))
                         engine.locationProperty().addListener { _, _, _ ->
+                            holder.debug.invalidate()
                             if (!holder.disposed.get() && !trustedDocument()) {
                                 engine.loadWorker.cancel(); report("已阻止离开当前功能来源的导航")
                             }
@@ -169,9 +176,11 @@ internal fun ContainerFeatureCardSurface(html: String?, url: String?, css: Strin
                         engine.loadWorker.stateProperty().addListener { _, _, state ->
                             if (holder.disposed.get()) return@addListener
                             when (state) {
-                                Worker.State.SCHEDULED -> holder.detach()
+                                Worker.State.SCHEDULED -> { holder.debug.invalidate(); holder.detach() }
                                 Worker.State.SUCCEEDED -> if (trustedDocument()) {
                                     holder.detach()
+                                    holder.staticDocumentLoadPending = false
+                                    holder.debug.bootstrap()
                                     val document = engine.document
                                     fun consume(element: Element) {
                                         val value = element.getAttribute("data-wawlink-native-action")
@@ -200,13 +209,25 @@ internal fun ContainerFeatureCardSurface(html: String?, url: String?, css: Strin
                                     if (covered) runCatching { frame = holder.captureFrame() }
                                         .onFailure { report("卡片合成失败：${it.message}") }
                                 }
-                                Worker.State.FAILED -> report("卡片加载失败：${engine.loadWorker.exception?.message}")
+                                Worker.State.FAILED -> {
+                                    holder.staticDocumentLoadPending = false
+                                    holder.debug.recordError("卡片加载失败：${engine.loadWorker.exception?.message}")
+                                    report("卡片加载失败：${engine.loadWorker.exception?.message}")
+                                }
+                                Worker.State.CANCELLED -> holder.staticDocumentLoadPending = false
                                 else -> Unit
                             }
                         }
                         scene = Scene(web).apply { fill = javafx.scene.paint.Color.WHITE }
-                        if (url != null) engine.load(url)
-                        else engine.loadContent(featureCardDocument(requireNotNull(html), currentCss, currentData, loadedFont, featureDesktopBootstrap() + ";" + symbols), "text/html")
+                        fun loadDocument(refreshedHtml: String? = null) {
+                            if (url != null) engine.load(engine.location.takeIf { featureSameOrigin(it, featureDocumentOrigin(url)) } ?: url)
+                            else {
+                                holder.staticDocumentLoadPending = true
+                                engine.loadContent(featureCardDocument(requireNotNull(refreshedHtml ?: html), currentCss, currentData, loadedFont, featureDesktopBootstrap() + ";" + symbols), "text/html")
+                            }
+                        }
+                        holder.debug.attach(web, ::trustedDocument, { !covered && holder.panel?.isShowing == true }, staticHtml = html != null, reloadDocument = ::loadDocument)
+                        loadDocument()
                     } catch (failure: Throwable) { report("无法初始化桌面 WebKit：${failure.message}") }
                 }
             }
@@ -233,11 +254,11 @@ internal fun ContainerFeatureCardSurface(html: String?, url: String?, css: Strin
 }
 
 /** JavaFX 21 has no public pre-navigation veto. Install before the first load and fail closed if unavailable. */
-private fun installDesktopCardPolicy(web: WebView, url: String?, report: (String) -> Unit) {
+private fun installDesktopCardPolicy(web: WebView, url: String?, staticDocumentLoadPending: () -> Boolean, report: (String) -> Unit) {
     val page = Accessor.getPageFor(web.engine)
     val origin = url?.let(::featureDocumentOrigin)
     val policy = object : PolicyClient {
-        private fun initialStatic(target: URL?): Boolean = origin == null && web.engine.document == null &&
+        private fun initialStatic(target: URL?): Boolean = origin == null && (web.engine.document == null || staticDocumentLoadPending()) &&
             (target == null || target.toExternalForm() == "about:blank")
         private fun navigate(frame: Long, target: URL?): Boolean {
             val allowed = frame == page.mainFrame && (initialStatic(target) ||
@@ -270,6 +291,8 @@ internal fun registerDesktopFeatureFont(font: FeatureWebFont) {
 
 private class DesktopFeatureCard {
     val disposed = AtomicBoolean()
+    val debug = DesktopFeatureDebugSurface(disposed)
+    var staticDocumentLoadPending = false
     var panel: JFXPanel? = null
     var view: WebView? = null
     var target: EventTarget? = null

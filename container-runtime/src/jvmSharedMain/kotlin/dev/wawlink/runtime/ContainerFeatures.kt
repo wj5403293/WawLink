@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -61,6 +62,9 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     val states: StateFlow<Map<String, ContainerFeatureState>> = _states.asStateFlow()
     private val _errors = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     val errors: StateFlow<Map<String, List<String>>> = _errors.asStateFlow()
+    val debugger = ContainerFeatureDebugger(runtime, { discover(it, runningOnly = true) }) { containerId, featureId ->
+        states.value[stateKey(containerId, featureId)] ?: ContainerFeatureState()
+    }
     @Volatile private var closed = false
     @Volatile private var themeCss = DEFAULT_FEATURE_CSS
     @Volatile private var iconFont: ByteArray? = null
@@ -84,8 +88,10 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     }
 
     init {
+        FeatureDebugServices.attach(runtime, debugger)
         scope.launch {
             runtime.containers.collect { containers ->
+                debugger.containersChanged()
                 val running = containers.filter { it.running }.associateBy { it.config.id }
                 synchronized(gate) {
                     runs.filter { (id, run) -> running[id]?.runGeneration != run.generation }.keys.forEach { id ->
@@ -159,13 +165,15 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
         throw failure
     }
 
-    private suspend fun discover(containerId: String, run: ContainerRun? = null): ContainerFeatureCatalog {
+    private suspend fun discover(containerId: String, run: ContainerRun? = null, runningOnly: Boolean = false): ContainerFeatureCatalog = withContext(if (runningOnly) FeatureRunningOnly else EmptyCoroutineContext) {
         check(!closed) { "功能服务已关闭" }
         if (run != null) synchronized(gate) { check(current(run)) { "容器运行实例已变化" } }
         val errors = mutableListOf<String>()
-        try { installSkill(containerId) } catch (cancelled: CancellationException) { throw cancelled }
-        catch (failure: Exception) { errors += "内置 Skill 注入失败：${failure.message}" }
-        val bytes = command(containerId, """
+        if (!runningOnly) {
+            try { installSkill(containerId) } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { errors += "内置 Skill 注入失败：${failure.message}" }
+        }
+        val bytes = featureCommand(runtime, containerId, """
             set -eu
             case "${'$'}HOME" in /*) ;; *) echo '容器 HOME 无效' >&2; exit 1;; esac
             home=${'$'}(readlink -f -- "${'$'}HOME")
@@ -189,7 +197,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                 head -c 65537 -- "${'$'}dir/card.json" | base64 | tr -d '\n'
                 printf '\000'
             done
-        """.trimIndent()).toString(Charsets.UTF_8).split('\u0000')
+        """.trimIndent(), runningOnly = runningOnly).toString(Charsets.UTF_8).split('\u0000')
         val home = bytes.firstOrNull().orEmpty()
         require(home.startsWith('/')) { "未能读取容器实际 HOME" }
         val features = mutableListOf<ContainerFeature>()
@@ -236,7 +244,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
             }
         }
         publishErrors(containerId, errors, run)
-        return ContainerFeatureCatalog(home, features.sortedBy { it.title }, errors)
+        ContainerFeatureCatalog(home, features.sortedBy { it.title }, errors)
     }
 
     suspend fun start(containerId: String, feature: ContainerFeature): ContainerFeatureSession {
@@ -579,6 +587,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
             closed = true
             allRuns.map { it.job }.also { jobs -> jobs.forEach { it.cancel(CancellationException("功能服务已关闭")) } }
         }
+        debugger.close()
         scriptActions.close()
         runBlocking(Dispatchers.IO) {
             jobs.joinAll()
@@ -603,7 +612,7 @@ suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId:
         if [ -L "${'$'}dir" ]; then exit 0; fi
         mkdir -p -- "${'$'}dir"
         file="${'$'}dir/SKILL.md"
-        previous=a669ee3b065497efb0962e8fb1ea68a0f183e876bf283fa8e1ef4358d941600c
+        previous=80d19787c9463af5cb4e4f11a0d41f952651d00fae85194713397e51999a782b
         if [ -L "${'$'}file" ]; then exit 0; fi
         upgrade=false
         if [ -e "${'$'}file" ]; then
@@ -625,6 +634,7 @@ suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId:
             ln -- "${'$'}tmp" "${'$'}file" 2>/dev/null || [ -f "${'$'}file" ]
         fi
     """.trimIndent())
+    FeatureDebugServices.install(runtime, containerId)
 }
 
 private object FeatureRunningOnly : AbstractCoroutineContextElement(Key) {

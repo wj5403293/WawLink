@@ -223,6 +223,7 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         val env = linkedMapOf("HOME" to user.home, "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         env.putAll(config.environment)
         environment.forEach { (key, value) -> require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && '\u0000' !in value) { "进程环境变量无效：$key" }; env[key] = value }
+        env["PATH"] = env.getValue("HOME").trimEnd('/') + "/.wawlink/bin:" + env.getValue("PATH")
         // Proroot installs its path hooks in the guest environment; env -i would erase them
         // before the shell exec. PRoot/chroot do not depend on inherited guest LD_* state.
         val guest = listOf("/usr/bin/env") + (if (config.engine == ContainerEngineType.PROROOT) emptyList() else listOf("-i")) + env.map { "${it.key}=${it.value}" } + listOf("/bin/sh", "-c", "cd ${shellQuote(cwd)} || exit; exec \"\$@\"", "wawlink") + arguments

@@ -29,6 +29,11 @@ internal fun ContainerWebSurface(session: ContainerFeatureSession, css: String, 
     val symbolScript = symbols ?: return
     val loadedFont = font ?: return
     val holder = remember(session) { FeatureDesktopWeb() }
+    val debugContext = LocalFeatureDebugContext.current
+    DisposableEffect(holder, debugContext) {
+        val registration = holder.debug.bind(debugContext)
+        onDispose { registration.close() }
+    }
     val appDensity = LocalDensity.current
     val appearance = LocalAgentAppearance.current
     var nativeScale by remember { mutableFloatStateOf(appDensity.density / appearance.densityScale) }
@@ -36,6 +41,7 @@ internal fun ContainerWebSurface(session: ContainerFeatureSession, css: String, 
     DisposableEffect(holder) {
         onDispose {
             holder.disposed.set(true)
+            holder.debug.dispose()
             Platform.runLater {
                 holder.view?.engine?.apply { loadWorker.cancel(); load(null) }
                 holder.panel?.scene = null
@@ -67,27 +73,39 @@ internal fun ContainerWebSurface(session: ContainerFeatureSession, css: String, 
                         engine.confirmHandler = javafx.util.Callback { false }
                         engine.promptHandler = javafx.util.Callback { null }
                         engine.setOnAlert { /* No modal native dialogs from guest JavaScript. */ }
-                        engine.setOnError { event -> report("网页渲染失败：${event.message}") }
+                        engine.setOnError { event -> holder.debug.recordError("网页渲染失败：${event.message}"); report("网页渲染失败：${event.message}") }
                         engine.locationProperty().addListener { _, _, location ->
+                            holder.debug.invalidate()
                             if (!holder.disposed.get() && !containerFeatureAllows(location, session)) {
                                 engine.loadWorker.cancel()
                                 report("已阻止离开当前功能来源的导航")
                             }
                         }
                         engine.loadWorker.stateProperty().addListener { _, _, state ->
+                            if (holder.disposed.get()) return@addListener
                             when (state) {
+                                Worker.State.SCHEDULED -> holder.debug.invalidate()
                                 Worker.State.SUCCEEDED -> if (containerFeatureAllows(engine.location, session)) {
+                                    holder.debug.bootstrap()
                                     runCatching { engine.executeScript(featureDesktopUnavailableScript()) }
                                     runCatching { engine.executeScript(symbolScript) }
                                         .onFailure { report("图标渲染失败：${it.message}") }
                                     runCatching { engine.executeScript(containerFeatureThemeScript(currentCss)) }
                                         .onFailure { report("主题注入失败：${it.message}") }
                                 }
-                                Worker.State.FAILED -> if (!holder.disposed.get()) report("本地页面加载失败：${engine.loadWorker.exception?.message ?: "连接不可用"}")
+                                Worker.State.FAILED -> if (!holder.disposed.get()) {
+                                    holder.debug.recordError("本地页面加载失败：${engine.loadWorker.exception?.message ?: "连接不可用"}")
+                                    report("本地页面加载失败：${engine.loadWorker.exception?.message ?: "连接不可用"}")
+                                }
                                 else -> Unit
                             }
                         }
                         scene = Scene(web)
+                        holder.debug.attach(web,
+                            trustedDocument = { containerFeatureAllows(engine.location, session) },
+                            isVisible = { holder.panel?.isShowing == true },
+                            reloadDocument = { engine.load(engine.location.takeIf { containerFeatureAllows(it, session) } ?: session.url) },
+                        )
                         engine.load(session.url)
                     }
                 } catch (failure: Throwable) { report("无法初始化桌面 WebKit：${failure.message}") }
@@ -107,6 +125,7 @@ internal fun ContainerWebSurface(session: ContainerFeatureSession, css: String, 
 
 private class FeatureDesktopWeb {
     val disposed = AtomicBoolean()
+    val debug = DesktopFeatureDebugSurface(disposed)
     var panel: JFXPanel? = null
     var view: WebView? = null
 }

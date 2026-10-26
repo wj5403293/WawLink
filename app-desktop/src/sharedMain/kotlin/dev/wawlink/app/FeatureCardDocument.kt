@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.Base64
 import java.net.URI
+import dev.wawlink.runtime.FEATURE_DEBUG_BOOTSTRAP
 
 internal const val FEATURE_CARD_ORIGIN = "https://wawlink-card.invalid"
 internal const val FEATURE_CARD_URL = "$FEATURE_CARD_ORIGIN/card.html"
@@ -118,7 +119,7 @@ internal suspend fun featureSymbolScript(): String = featureFontLock.withLock {
 
 /** Insert before guest markup so APIs and theme exist for the first guest script. */
 internal fun featureCardDocument(html: String, css: String, data: String, font: FeatureWebFont, bootstrap: String): String {
-    val script = bootstrap + ";" + featureCardUpdateScript(css, data) + ";" + featureReadyScript()
+    val script = FEATURE_DEBUG_BOOTSTRAP + ";" + bootstrap + ";" + featureCardUpdateScript(css, data) + ";" + featureReadyScript()
     val head = "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
         "<meta id=\"wawlink-native-policy\" http-equiv=\"Content-Security-Policy\" content=\"$FEATURE_DOCUMENT_POLICY\">" +
         "<style>html,body{margin:0;height:100%;width:100%;overflow:hidden;box-sizing:border-box}*,*:before,*:after{box-sizing:inherit}</style>" +

@@ -44,6 +44,30 @@ start.sh 通过 /bin/sh 运行（写 POSIX shell，或由脚本显式 exec 需�
 
 page 离开功能页后运行可选 stop.sh 并终止服务组；manual 离页继续，用户明确启停。container 在每次容器从停止变为运行时自动扫描并启动，不需要先进入功能页，离页/隐藏不停止，停止容器或关闭应用时回收。手动停止或失败后不因刷新、改名或切页反复拉起，下次容器启动再自动尝试；在已运行容器中新建卡片可手动启动，或下次容器启动自动运行。stop.sh 可选、幂等、尽快完成；应用正常停止功能时使用同一环境执行，容器已关闭则直接回收，失败也不遗留进程组。不承诺手机杀进程后永久后台运行，不擅自重新启动已停止容器。
 
+创建天气、内存监控等需要随容器运行、无需用户先打开页面的服务型动态卡片时，按用户需求显式写 lifecycle: container；不要漏写后落到默认 page。只在打开功能期间运行的服务才选 page，需要用户独立控制启停才选 manual。外部已有服务的 cardUrl 不会因本功能 lifecycle 自动接管其进程。
+
+## 轻量调试：卡片和完整功能页
+
+容器内可直接运行 wawlink-feature（复用已有 Bun，不安装 Chrome、Chromium、Playwright 或 ADB）。若当前旧 shell 尚未更新 PATH，使用 "${'$'}HOME/.wawlink/bin/wawlink-feature"。命令对接 WawLink 应用已经挂载的真实 WebView；不是另一份浏览器，也不会为调试启动容器、启动服务或擅自打开页面。
+
+    wawlink-feature list
+    wawlink-feature inspect weather --surface card
+    wawlink-feature logs weather --surface card
+    wawlink-feature eval weather 'getComputedStyle(document.body).height' --surface card
+    wawlink-feature screenshot weather --surface card --output /tmp/weather-card.png
+    wawlink-feature reload weather --surface card
+    wawlink-feature inspect weather --surface page
+    wawlink-feature eval weather 'document.querySelector("button").click()' --surface page
+    wawlink-feature screenshot weather --surface page --output /tmp/weather-page.png
+
+weather 替换为真实功能 id。--surface card（默认）是功能列表里的外部卡片，--surface page 是点入后的完整功能页面，二者独立选中，不用标题、相同 URL 或正文猜测目标。list 和 inspect 先检查是否挂载；列表懒加载、离页或隐藏可能使卡片尚未挂载，完整页面也要实际打开后才存在。未打开就明确报告，不能把服务 HTTP 成功冒充画面已显示；截图要求真实可见画面。
+
+inspect 包含真实生命周期、服务状态、挂载状态、原生尺寸、视口、html/body 计算布局和桥就绪状态。纯白时先查服务错误，再查 viewport、html/body 的高度、display、visibility 和 overflow，不盲目改数据接口。logs 同时给出有界的服务输出及页面 console、JavaScript 错误、未处理 Promise 拒绝、资源加载错误；日志只覆盖已经挂载页面的捕获范围，不承诺保留全部历史。eval 支持 Promise，可查询 DOM、样式、状态或触发真实交互，拒绝和异常必须报告；不要伪造交互结果。截图为当前 WebView 的真实 PNG，保存到指定客体路径，不重复写已有文件。
+
+reload 只重载选中的文档，不重启服务；静态卡片重新读取实际 HTML 文件，动态页面重新请求实际 URL，宿主重新注入主题和桥。修改服务端程序需要按真实生命周期停止、再启动，不把文档重载声称为后端重启。命令 JSON 输出供读取，失败退出码非零并保留原因；执行超时、导航、销毁、切换容器或容器重启后的旧请求不得当作新页面结果。
+
+调试 eval 是用户可信代码执行，具有该页面现有的 Android LuaJ/Java 桥能力；不是只读检查或不可信脚本沙箱。调试通道仅本地、按当前容器运行代次认证，不读取、输出或写入代码中的调试凭据，不将它发布到公网。
+
 ## HTML 卡片与原生操作
 
 HTML 拥有整个卡片区域，宿主不额外叠加标题、描述、按钮或内边距。可自由组织 DOM、CSS、JS，使用合适的框架及真实网络数据，不要求复刻原生布局，不强制每一行样式或禁止 CDN；确保响应式铺满实际视口，cardHeight 决定高度，cardSpan 决定单双列。宿主负责圆角和编辑手势。保持大字号中文、可读对比度及非线性反馈，天气/状态样式可按用户设计使用自己的配色和图形，不伪造数据。

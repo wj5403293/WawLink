@@ -69,7 +69,9 @@ internal fun ContainerExtensionScreen(service: ContainerFeatureService, containe
         val displayStatus = if (startupPending && state.status != ContainerFeatureStatus.RUNNING && state.status != ContainerFeatureStatus.STOPPING) ContainerFeatureStatus.STARTING else state.status
         when (displayStatus) {
             ContainerFeatureStatus.RUNNING -> state.session?.let { session ->
-                ContainerWebSurface(session, css, Modifier.fillMaxSize(), onError = { surfaceError = it })
+                CompositionLocalProvider(LocalFeatureDebugContext provides FeatureDebugContext(service.debugger, FeatureDebugTarget(containerId, feature.id, "page"))) {
+                    ContainerWebSurface(session, css, Modifier.fillMaxSize(), onError = { surfaceError = it })
+                }
             }
             ContainerFeatureStatus.STARTING, ContainerFeatureStatus.STOPPING -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()

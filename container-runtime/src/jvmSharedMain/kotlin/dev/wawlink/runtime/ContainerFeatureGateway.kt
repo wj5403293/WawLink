@@ -114,7 +114,7 @@ internal class ContainerFeatureGateway(val upstreamPort: Int, private val token:
             if (type.substringBefore(';').equals("text/html", true) && body.isNotEmpty()) {
                 val html = body.toString(Charsets.UTF_8)
                 val guard = FEATURE_WEB_GUARD.replace("__WAWLINK_COOKIE_PREFIX__", appCookiePrefix)
-                val style = "<script>$guard</script><style id=\"wawlink-native-theme\">${themeCss.replace("</", "<\\/")}</style>"
+                val style = "<script>$FEATURE_DEBUG_BOOTSTRAP</script><script>$guard</script><style id=\"wawlink-native-theme\">${themeCss.replace("</", "<\\/")}</style>"
                 val head = Regex("<head(?:\\s[^>]*)?>", RegexOption.IGNORE_CASE).find(html)
                 val gap = head?.range?.last?.plus(1) ?: Regex("<!doctype[^>]*>", RegexOption.IGNORE_CASE).find(html)?.range?.last?.plus(1) ?: 0
                 body = (html.substring(0, gap) + style + html.substring(gap)).toByteArray()
