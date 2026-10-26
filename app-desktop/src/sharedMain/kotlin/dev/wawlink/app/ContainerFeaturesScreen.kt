@@ -309,8 +309,10 @@ internal fun ContainerFeaturesScreen(
                     }
                 }
                 val pin = LocalPinnableContainer.current
-                DisposableEffect(currentDrag != null, pin) {
-                    val handle = if (currentDrag != null) pin?.pin() else null
+                // Keep loaded HTML documents alive when scrolling them outside the viewport.
+                val keepMounted = currentDrag != null || feature?.isHtmlCard == true
+                DisposableEffect(keepMounted, pin) {
+                    val handle = if (keepMounted) pin?.pin() else null
                     onDispose { handle?.release() }
                 }
                 val color = layout.colors[key] ?: feature?.color
