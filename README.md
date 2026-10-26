@@ -276,7 +276,7 @@ const sdk = await wawlink.lua(`
 
 服务须在 30 秒内对根路径的带令牌 GET 返回 2xx/3xx；实际 HTTP 就绪后才打开 WebUI。Android 使用 WebView，Desktop 使用 JavaFX WebView。主文档导航和原生桥限定当前受信来源；资源与连接允许 loopback HTTP/WS、外部 HTTPS/WSS、接口及 CDN，仍遵守浏览器 CORS 和服务自身更严格的 CSP。关闭宿主 file/content 访问、子框架和 object；Android 可信 Lua/系统助手是显式宿主入口，不是 Web 跨域导航。外部脚本在受信页面内执行时拥有该页面桥能力，仅使用用户信任的依赖。网关支持同源资源、表单与 WebSocket；普通 HTTP 单次请求/响应上限 32 MiB，上传不接受 HTTP 分块传输。页面默认沿用白底、中文大字号、Material 3、离线 Material Symbols 与非线性动画，卡片按用户设计自由布局和配色。脚本及可信 Lua 不是不可信代码安全沙箱。
 
-应用在原生 Agent 启动前或进入功能页时注入 `~/.omp/agent/skills/wawlink-functions/SKILL.md`；缺失时安装，精确匹配上一版未修改内置文件的 SHA-256 时原子升级，其他已有内容及用户修改保持不变。新 Skill 包含 `container`、动态 `cardUrl`、外部接口/依赖及初始化时序契约，不再强制 HTML 仅用内联资源。它**仅在用户明确要求“添加 WawLink 功能页卡片”或等价新增请求时触发**，普通网页、脚本、插件/技能或笼统功能请求不创建卡片。不预装示例卡片，不复制开发机认证。
+应用在容器运行接入、原生 Agent 启动前或读取功能页时自动检查 `~/.omp/agent/skills/wawlink-functions/SKILL.md`；缺失时安装，在同目录 `.wawlink-builtin.sha256` 记录已安装正文的 SHA-256。软件内置内容更新后，容器正文仍匹配安装记录才原子同步新内容和哈希；用户修改过的正文及原记录保留不动，不仅改记录冒充内容已更新。没有记录的旧容器仅在正文精确匹配已发布内置版本时接管升级；之后支持跨软件版本更新，不再依赖单个写死的上一版哈希。更新中断可按暂存记录的前后哈希恢复；内容已一致时不重复写文件。检查不会重开已停止容器，也不伪造现有 Agent 的运行时重载，新 Agent 启动前会读取更新后的文件。Skill 包含 `container`、动态 `cardUrl`、外部接口/依赖及初始化时序契约，不强制 HTML 仅用内联资源。它**仅在用户明确要求“添加 WawLink 功能页卡片”或等价新增请求时触发**，普通网页、脚本、插件/技能或笼统功能请求不创建卡片。不预装示例卡片，不复制开发机认证。
 
 #### 容器内轻量调试命令
 
@@ -595,4 +595,12 @@ OMP 安装引导本轮通过 182 项 Kotlin 回归（容器 32、驱动 121、�
 14 项定向 Kotlin 回归通过（调试通道 4、既有功能运行时 10），无失败或跳过。真实 x86_64 PRoot 客体通过命令 PATH 调用宿主的桌面 JavaFX WebView，验证卡片与完整页的独立身份、DOM 点击、Promise 成功与拒绝、首个页面脚本的 console、真实 Bun 服务输出、两种页面的 PNG 实际像素、已有文件与符号链接拒绝覆盖、静态客体 HTML 重新读取及完整页 URL 重载、导航取消旧 Promise、遮挡时保留页面但拒绝截图、销毁后拒绝执行。临时容器、界面及烟测入口均已关闭或移除。
 
 Android Debug APK 构建通过，默认产物为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`b7b55216f74a2fd4ecc8ffb42414cb837f197a89e32afd6df1dd090e527908dc`。本轮未运行 Android 模拟器、Android 真机调试命令或模型请求；桌面结果不替代设备端 WebView、LuaJ/Intent 与 PNG 截图验收。更新 APK 即可继续使用已有容器，无需重新导入 Rootfs。
+
+### 预置 Skill 自动更新（2026-10-26）
+
+预置 Skill 改为比较软件正文、容器实际正文与持久化安装哈希，自动升级未修改版本，同时更新哈希记录；未知同名 Skill、用户修改、链接和无效记录均保留。安装记录随容器携带，后续软件版本不必逐次补写“上一版哈希”。已有入口继续在容器运行接入、功能页读取及 Agent 启动前执行检查，不新增轮询或为升级唤醒已停止容器。
+
+18 项定向回归通过（预置 Skill 4、既有功能运行时 10、调试通道 4），无失败或跳过。真实 x86_64 PRoot 开启 `link2symlink` 后，使用本轮编译的生产安装脚本验证 6 个已发布 Skill 正文的无记录接管升级、后续未列入历史清单的新版本更新、用户修改及原哈希记录保留、正文缺失后重新安装；临时程序与客体已移除。另有回归覆盖更新中断前后两侧恢复、当前内容幂等及权限保留。
+
+Android Debug APK 构建及 v2 签名校验通过，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 65,053,733 bytes，SHA-256：`d5eae4db478f4d916ac2ef04ea3cd8f4d735b2d70537f7bbaabd6521b884c80a`。未运行 Android 模拟器、Android 真机验收或模型请求；更新 APK 无需重新导入 Rootfs。
 

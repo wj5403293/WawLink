@@ -598,42 +598,9 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     }
 }
 
-/** Upgrade only the exact pristine prior bundle; preserve user-authored or modified Skills. */
+/** Synchronize pristine bundled content before discovery or native Agent startup. */
 suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId: String) {
-    featureCommand(runtime, containerId, """
-        set -eu
-        case "${'$'}HOME" in /*) ;; *) echo '容器 HOME 无效' >&2; exit 1;; esac
-        home=${'$'}(readlink -f -- "${'$'}HOME")
-        root="${'$'}home/.omp/agent/skills"
-        actual=${'$'}(readlink -m -- "${'$'}root")
-        case "${'$'}actual/" in "${'$'}home/"*) ;; *) echo 'Skill 目录通过符号链接越出 HOME' >&2; exit 1;; esac
-        mkdir -p -- "${'$'}root"
-        dir="${'$'}root/wawlink-functions"
-        if [ -L "${'$'}dir" ]; then exit 0; fi
-        mkdir -p -- "${'$'}dir"
-        file="${'$'}dir/SKILL.md"
-        previous=80d19787c9463af5cb4e4f11a0d41f952651d00fae85194713397e51999a782b
-        if [ -L "${'$'}file" ]; then exit 0; fi
-        upgrade=false
-        if [ -e "${'$'}file" ]; then
-            [ -f "${'$'}file" ] && command -v sha256sum >/dev/null 2>&1 || exit 0
-            digest=${'$'}(sha256sum -- "${'$'}file")
-            [ "${'$'}{digest%% *}" = "${'$'}previous" ] || exit 0
-            upgrade=true
-        fi
-        tmp=${'$'}(mktemp "${'$'}dir/.wawlink-skill.XXXXXX")
-        trap 'rm -f -- "${'$'}tmp"' 0
-        printf '%s' ${shellQuote(Base64.getEncoder().encodeToString(FEATURE_SKILL.toByteArray()))} | base64 -d > "${'$'}tmp"
-        if [ "${'$'}upgrade" = true ]; then
-            [ ! -L "${'$'}file" ] && [ -f "${'$'}file" ] || exit 0
-            digest=${'$'}(sha256sum -- "${'$'}file")
-            [ "${'$'}{digest%% *}" = "${'$'}previous" ] || exit 0
-            chmod --reference="${'$'}file" -- "${'$'}tmp"
-            mv -f -- "${'$'}tmp" "${'$'}file"
-        else
-            ln -- "${'$'}tmp" "${'$'}file" 2>/dev/null || [ -f "${'$'}file" ]
-        fi
-    """.trimIndent())
+    featureCommand(runtime, containerId, FEATURE_SKILL_INSTALL)
     FeatureDebugServices.install(runtime, containerId)
 }
 

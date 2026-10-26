@@ -1,6 +1,9 @@
 package dev.wawlink.runtime
 
-/** Native OMP Skill; only exact known unmodified bundled versions may be upgraded. */
+import java.security.MessageDigest
+import java.util.Base64
+
+/** Native OMP Skill; installed bundle hashes distinguish app updates from user edits. */
 internal val FEATURE_SKILL = """
 ---
 name: wawlink-functions
@@ -107,3 +110,93 @@ wawlink.lua 没有返回值时解析为 null；一个返回值为对应 JSON 值
 
 保留已有用户卡片与 Skill 编辑，不覆写无关文件。只为明确请求创建所需功能，不预装样例，不改 rootfs 部署，不创建 credentials。完成后说明真实卡片目录、依赖、启动/停止行为、功能入口和已知真实限制。未获要求不运行自动化测试或模拟器，不声称未经实际验证的成功。
 """.trimIndent() + "\n"
+
+/** Historical bundles lacked an installation record; adopt only these exact published bytes. */
+private val LEGACY_FEATURE_SKILL_HASHES = listOf(
+    "e20e10acc702cea94148e6b49ea2bf140fa1690dcca3192faf8faeb03852b4bb",
+    "839859f7c73299098068e50902b895a81802ed86ef98c6c411b0e1b8a5e09db9",
+    "5a96b2621b9c1a8a8497b1b5c469030206ce0a8c916f7b1fd6e5f564eac914a7",
+    "a669ee3b065497efb0962e8fb1ea68a0f183e876bf283fa8e1ef4358d941600c",
+    "80d19787c9463af5cb4e4f11a0d41f952651d00fae85194713397e51999a782b",
+    "44d4cc62f75c175ca0c0105dda3ff0eb6ba5bb85d651d06dd15e92029b737cac",
+)
+
+internal val FEATURE_SKILL_INSTALL = featureSkillInstallScript(FEATURE_SKILL)
+
+internal fun featureSkillInstallScript(content: String): String {
+    val bytes = content.toByteArray(Charsets.UTF_8)
+    val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    return """
+        set -eu
+        case "${'$'}HOME" in /*) ;; *) echo '容器 HOME 无效' >&2; exit 1;; esac
+        home=${'$'}(readlink -f -- "${'$'}HOME")
+        root="${'$'}home/.omp/agent/skills"
+        actual=${'$'}(readlink -m -- "${'$'}root")
+        case "${'$'}actual/" in "${'$'}home/"*) ;; *) echo 'Skill 目录通过符号链接越出 HOME' >&2; exit 1;; esac
+        mkdir -p -- "${'$'}root"
+        dir="${'$'}root/wawlink-functions"
+        [ ! -L "${'$'}dir" ] || exit 0
+        mkdir -p -- "${'$'}dir"
+        file="${'$'}dir/SKILL.md"
+        record="${'$'}dir/.wawlink-builtin.sha256"
+        target=$hash
+        is_hash() { [ "${'$'}{#1}" = 64 ] && case "${'$'}1" in *[!0-9a-f]*) return 1;; *) return 0;; esac; }
+        recorded=''
+        prior=''
+        if [ -e "${'$'}record" ] || [ -L "${'$'}record" ]; then
+            [ ! -L "${'$'}record" ] && [ -f "${'$'}record" ] || exit 0
+            [ "${'$'}(wc -c < "${'$'}record")" -le 130 ] || exit 0
+            recorded=${'$'}(cat -- "${'$'}record")
+            case "${'$'}recorded" in *'
+'*) prior=${'$'}{recorded#*'
+'}; recorded=${'$'}{recorded%%'
+'*}; is_hash "${'$'}prior" || exit 0;; esac
+            is_hash "${'$'}recorded" || exit 0
+        fi
+        [ ! -L "${'$'}file" ] || exit 0
+        digest=''
+        if [ -e "${'$'}file" ]; then
+            [ -f "${'$'}file" ] || exit 0
+            digest=${'$'}(sha256sum -- "${'$'}file"); digest=${'$'}{digest%% *}
+            if [ "${'$'}digest" != "${'$'}target" ]; then
+                if [ -n "${'$'}recorded" ]; then
+                    [ "${'$'}digest" = "${'$'}recorded" ] || [ "${'$'}digest" = "${'$'}prior" ] || exit 0
+                else
+                    case "${'$'}digest" in ${LEGACY_FEATURE_SKILL_HASHES.joinToString("|")}) ;; *) exit 0;; esac
+                fi
+            elif [ "${'$'}recorded" = "${'$'}target" ] && [ -z "${'$'}prior" ]; then
+                exit 0
+            fi
+        fi
+        stage=${'$'}(mktemp -d "${'$'}dir/.wawlink-skill.XXXXXX")
+        trap 'rm -f -- "${'$'}stage/content" "${'$'}stage/record"; rmdir -- "${'$'}stage"' 0
+        umask 077
+        printf '%s' ${shellQuote(Base64.getEncoder().encodeToString(bytes))} | base64 -d > "${'$'}stage/content"
+        if [ -n "${'$'}digest" ]; then
+            [ ! -L "${'$'}file" ] && [ -f "${'$'}file" ] || exit 0
+            latest=${'$'}(sha256sum -- "${'$'}file"); [ "${'$'}{latest%% *}" = "${'$'}digest" ] || exit 0
+            chmod --reference="${'$'}file" -- "${'$'}stage/content"
+        else
+            [ ! -e "${'$'}file" ] && [ ! -L "${'$'}file" ] || exit 0
+        fi
+        [ ! -L "${'$'}record" ] || exit 0
+        # Retain both sides until content replacement completes, so interruption is recoverable.
+        printf '%s\n' "${'$'}target" > "${'$'}stage/record"
+        if [ -n "${'$'}digest" ] && [ "${'$'}digest" != "${'$'}target" ]; then
+            printf '%s\n' "${'$'}digest" >> "${'$'}stage/record"
+        fi
+        mv -fT -- "${'$'}stage/record" "${'$'}record"
+        if [ "${'$'}digest" != "${'$'}target" ]; then
+            if [ -n "${'$'}digest" ]; then
+                [ ! -L "${'$'}file" ] && [ -f "${'$'}file" ] || exit 0
+                latest=${'$'}(sha256sum -- "${'$'}file"); [ "${'$'}{latest%% *}" = "${'$'}digest" ] || exit 0
+                mv -fT -- "${'$'}stage/content" "${'$'}file"
+            else
+                mv -nT -- "${'$'}stage/content" "${'$'}file"
+                [ ! -e "${'$'}stage/content" ] || exit 0
+            fi
+        fi
+        printf '%s\n' "${'$'}target" > "${'$'}stage/record"
+        mv -fT -- "${'$'}stage/record" "${'$'}record"
+    """.trimIndent()
+}
