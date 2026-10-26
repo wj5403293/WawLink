@@ -35,6 +35,7 @@ import dev.wawlink.runtime.*
 import dev.wawlink.ui.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.*
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -84,7 +85,7 @@ internal fun ContainerFeaturesScreen(
     var editing by remember(containerId) { mutableStateOf(false) }
     var choosingContainer by remember { mutableStateOf(false) }
     var logFeature by remember(containerId) { mutableStateOf<ContainerFeature?>(null) }
-    val actionScope = rememberCoroutineScope()
+    val actionScope = key(containerId) { rememberCoroutineScope() }
     val lua = rememberFeatureNativeLuaExecutor(containerId)
     var busyActions by remember(containerId) { mutableStateOf(emptySet<String>()) }
     val actionOutput = remember(containerId) { mutableStateMapOf<String, String>() }
@@ -142,7 +143,7 @@ internal fun ContainerFeaturesScreen(
             app.featureCards.reconcile(containerId, featureCardTitles(catalog).keys.toList())
         }
         catch (cancelled: CancellationException) { throw cancelled }
-        catch (failure: Exception) { report(failure) }
+        catch (failure: Exception) { ensureActive(); report(failure) }
         finally { loading = false }
     }
     LaunchedEffect(containerId, entries) {
@@ -238,6 +239,7 @@ internal fun ContainerFeaturesScreen(
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
+                ensureActive()
                 actionOutput[feature.id] = failure.message ?: "操作失败"
                 report(failure)
             } finally { busyActions = busyActions - key }
@@ -340,8 +342,13 @@ internal fun ContainerFeaturesScreen(
                     onAction = { action ->
                         if (feature != null && containerId != null && !editing) when (action) {
                             "open" -> onExtension(feature)
-                            "start" -> persist { service.start(containerId, feature) }
-                            "stop" -> persist { service.stop(containerId, feature.id) }
+                            "start", "stop" -> actionScope.launch {
+                                try {
+                                    if (action == "start") service.start(containerId, feature)
+                                    else service.stop(containerId, feature.id)
+                                } catch (cancelled: CancellationException) { throw cancelled }
+                                catch (failure: Exception) { ensureActive(); report(failure); app.showError(failure) }
+                            }
                             else -> error = "未知卡片操作：$action"
                         }
                     }, onError = { message -> error = "${entry.title}：$message" }, onClick = { onTap(key) }, onSelect = { if (container != null && !working) { editing = true; selected = selected + key } },

@@ -6,9 +6,41 @@ import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.Base64
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 
 private const val MAX_CARD_HTML_BYTES = 256 * 1024
+
+/** One admission epoch spans discovery, validation and every command they issue. */
+internal class FeatureOperation(val containerId: String, val stopGeneration: Long, var runningOnly: Boolean) :
+    AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<FeatureOperation>
+
+    suspend fun ensureCurrent(runtime: ContainerRuntime) {
+        currentCoroutineContext().ensureActive()
+        if (runtime.wasInterrupted(containerId, stopGeneration)) throw CancellationException("容器已停止或重新启动")
+    }
+}
+
+internal suspend fun <T> withFeatureOperation(runtime: ContainerRuntime, containerId: String, block: suspend FeatureOperation.() -> T): T {
+    val inherited = currentCoroutineContext()[FeatureOperation]?.takeIf { it.containerId == containerId }
+    val operation = inherited ?: runtime.containers.value.firstOrNull { it.config.id == containerId }?.let {
+        FeatureOperation(containerId, it.stopGeneration, it.running)
+    } ?: throw CancellationException("容器已移除")
+    return withContext(operation) {
+        operation.ensureCurrent(runtime)
+        try { operation.block() }
+        catch (failure: Throwable) {
+            operation.ensureCurrent(runtime)
+            throw failure
+        }
+    }
+}
 
 internal fun parseFeatureLifecycle(manifest: JsonObject): ContainerFeatureLifecycle = when (val value = manifest["lifecycle"]) {
     null -> ContainerFeatureLifecycle.PAGE

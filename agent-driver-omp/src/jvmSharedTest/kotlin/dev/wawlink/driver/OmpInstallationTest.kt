@@ -1,5 +1,7 @@
 package dev.wawlink.driver
 
+import dev.wawlink.runtime.ContainerConfig
+import dev.wawlink.runtime.ContainerInfo
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.LocalContainerRuntime
 import dev.wawlink.runtime.RuntimePaths
@@ -9,6 +11,11 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.assertEquals
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
 
 class OmpInstallationTest {
@@ -28,7 +35,9 @@ class OmpInstallationTest {
     private suspend fun fixture(block: suspend (ContainerRuntime) -> Unit) {
         val directory = Files.createTempDirectory("wawlink-install-check-").toFile()
         val base = LocalContainerRuntime(RuntimePaths(directory))
-        try { block(base) } finally { base.close(); directory.deleteRecursively() }
+        val containerState = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("guest", "验证", directory.path), running = true)))
+        val runtime = object : ContainerRuntime by base { override val containers = containerState }
+        try { block(runtime) } finally { base.close(); directory.deleteRecursively() }
     }
 
     @Test fun engineLaunchFailureIsNotMisreportedAsMissingOmp() = runBlocking {
@@ -58,6 +67,47 @@ class OmpInstallationTest {
             "WAWLINK_OMP_CHECK\tREADY\n", "WAWLINK_OMP_CHECK\tREADY\t \n",
             "WAWLINK_OMP_CHECK\tREADY\tok\nWAWLINK_OMP_CHECK\tMISSING\tmissing\n")) {
             assertFailsWith<IllegalStateException>(output) { OmpInstallation.decodeCheck(output) }
+        }
+    }
+
+    @Test fun staleInspectionAndRunningOnlyInspectionNeverOpenStoppedContainer() = runBlocking {
+        fixture { base ->
+            val containerState = MutableStateFlow(base.containers.value.map { it.copy(running = false, stopGeneration = 1) })
+            var starts = 0
+            val runtime = object : ContainerRuntime by base {
+                override val containers = containerState
+                override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                    starts++
+                    return ResultProcess("WAWLINK_OMP_CHECK\tBROKEN\tunused\n")
+                }
+            }
+            assertFailsWith<OmpProcessStoppedException> { OmpInstallation.inspect(runtime, "guest", stopGeneration = 0) }
+            assertFailsWith<OmpProcessStoppedException> { OmpInstallation.inspect(runtime, "guest", runningOnly = true) }
+            assertEquals(0, starts)
+        }
+    }
+
+    @Test fun inspectionResultFromBeforeRapidRestartIsInterruptedInsteadOfSuggestingRepair() = runBlocking {
+        fixture { base ->
+            val containerState = MutableStateFlow(base.containers.value)
+            val opened = CompletableDeferred<Unit>()
+            val gate = CompletableDeferred<Process>()
+            var starts = 0
+            val runtime = object : ContainerRuntime by base {
+                override val containers = containerState
+                override suspend fun openRunningProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                    starts++
+                    opened.complete(Unit)
+                    return gate.await()
+                }
+            }
+            val inspection = async { runCatching { OmpInstallation.inspect(runtime, "guest", runningOnly = true) } }
+            withTimeout(5_000) { opened.await() }
+            containerState.value = containerState.value.map { it.copy(running = false, stopGeneration = 1) }
+            containerState.value = containerState.value.map { it.copy(running = true) }
+            gate.complete(ResultProcess("WAWLINK_OMP_CHECK\tBROKEN\tstale result\n"))
+            assertTrue(withTimeout(5_000) { inspection.await() }.exceptionOrNull() is OmpProcessStoppedException)
+            assertEquals(1, starts)
         }
     }
 

@@ -11,7 +11,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -70,9 +69,9 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     @Volatile private var iconFont: ByteArray? = null
     fun setIconFont(bytes: ByteArray) { iconFont = bytes }
 
-    private class ContainerRun(val containerId: String, val generation: Long, parent: Job) {
+    private class ContainerRun(val containerId: String, val generation: Long, val stopGeneration: Long, parent: Job) {
         val job = SupervisorJob(parent)
-        val scope = CoroutineScope(job + Dispatchers.IO + FeatureRunningOnly)
+        val scope = CoroutineScope(job + Dispatchers.IO + FeatureRunningOnly + FeatureOperation(containerId, stopGeneration, runningOnly = true))
         val stoppedFeatures = mutableSetOf<String>()
     }
 
@@ -81,6 +80,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
         @Volatile var gateway: ContainerFeatureGateway? = null
         @Volatile var identity: FeatureProcessIdentity? = null
         @Volatile var stopping = false
+        @Volatile var stopRequested = false
         var port = 0
         var token = ""
         val reaping = AtomicBoolean()
@@ -94,13 +94,16 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                 debugger.containersChanged()
                 val running = containers.filter { it.running }.associateBy { it.config.id }
                 synchronized(gate) {
-                    runs.filter { (id, run) -> running[id]?.runGeneration != run.generation }.keys.forEach { id ->
-                        runs.remove(id)?.job?.cancel(CancellationException("容器已停止或重新启动"))
-                        _errors.update { it - id }
+                    runs.filter { (id, run) -> running[id]?.runGeneration != run.generation || running[id]?.stopGeneration != run.stopGeneration }.keys.forEach { id ->
+                        runs.remove(id)?.let { run ->
+                            if (unexpectedStop(run)) _errors.update { it + (id to (it[id].orEmpty() + "容器运行进程已退出").distinct()) }
+                            else _errors.update { it - id }
+                            run.job.cancel(CancellationException("容器已停止或重新启动"))
+                        }
                     }
                     if (!closed) running.values.forEach { attachLocked(it) }
                 }
-                scope.launch { scriptActions.cancelStoppedContainers(runtime.containers.value.filter { it.running }.map { it.config.id }.toSet()) }
+                scriptActions.cancelStoppedContainers()
             }
         }
     }
@@ -109,11 +112,11 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     private fun attachLocked(container: ContainerInfo): ContainerRun {
         val containerId = container.config.id
         runs[containerId]?.let { previous ->
-            if (previous.generation == container.runGeneration) return previous
+            if (previous.generation == container.runGeneration && previous.stopGeneration == container.stopGeneration) return previous
             runs.remove(containerId)
             previous.job.cancel(CancellationException("容器已重新启动"))
         }
-        return ContainerRun(containerId, container.runGeneration, scope.coroutineContext.job).also { run ->
+        return ContainerRun(containerId, container.runGeneration, container.stopGeneration, scope.coroutineContext.job).also { run ->
             runs[containerId] = run
             allRuns += run
             run.job.invokeOnCompletion { synchronized(gate) { allRuns.remove(run) } }
@@ -127,18 +130,37 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                             catch (_: Exception) { /* startInRun publishes the genuine failure. */ }
                         }
                     }
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (failure: Exception) { publishErrors(containerId, listOf("功能扫描失败：${failure.message}"), run) }
+                } catch (failure: Exception) {
+                    currentCoroutineContext().ensureActive()
+                    if (failure is CancellationException && failure !is TimeoutCancellationException) throw failure
+                    publishErrors(containerId, listOf("功能扫描失败：${failure.message}"), run)
+                }
             }
         }
     }
 
     private fun current(run: ContainerRun): Boolean = !closed && runs[run.containerId] === run && run.job.isActive &&
-        runtime.containers.value.any { it.config.id == run.containerId && it.running && it.runGeneration == run.generation }
+        runtime.containers.value.any { it.config.id == run.containerId && it.running && it.runGeneration == run.generation && it.stopGeneration == run.stopGeneration }
 
-    private fun publishErrors(containerId: String, errors: List<String>, run: ContainerRun? = null) {
+    private fun interrupted(run: ContainerRun): Boolean = closed || runtime.wasInterrupted(run.containerId, run.stopGeneration) ||
+        runtime.containers.value.any { it.config.id == run.containerId && it.running && it.runGeneration != run.generation }
+
+    private fun unexpectedStop(run: ContainerRun): Boolean = !interrupted(run) &&
+        runtime.containers.value.any { it.config.id == run.containerId && !it.running }
+
+    private fun requireCurrent(run: ContainerRun) {
+        if (!current(run)) {
+            if (unexpectedStop(run)) error("容器运行进程已退出")
+            throw CancellationException("容器已停止或重新启动")
+        }
+    }
+
+    private suspend fun publishErrors(containerId: String, errors: List<String>, run: ContainerRun? = null) {
+        currentCoroutineContext().ensureActive()
+        val operation = currentCoroutineContext()[FeatureOperation]
         synchronized(gate) {
-            if (!closed && (run == null || current(run))) _errors.update { it + (containerId to errors) }
+            if (!closed && (operation == null || !runtime.wasInterrupted(containerId, operation.stopGeneration)) &&
+                (run == null || !interrupted(run))) _errors.update { it + (containerId to errors) }
         }
     }
 
@@ -157,21 +179,24 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     /** Also called before agent startup, so the real native Skill is discoverable without opening Functions. */
     suspend fun installSkill(containerId: String) = installContainerFeatureSkill(runtime, containerId)
 
-    suspend fun catalog(containerId: String): ContainerFeatureCatalog = try {
-        discover(containerId)
-    } catch (cancelled: CancellationException) { throw cancelled }
-    catch (failure: Exception) {
-        publishErrors(containerId, listOf("功能扫描失败：${failure.message}"))
-        throw failure
+    suspend fun catalog(containerId: String): ContainerFeatureCatalog = withFeatureOperation(runtime, containerId) {
+        try { discover(containerId) }
+        catch (failure: Exception) {
+            ensureCurrent(runtime)
+            if (failure is CancellationException && failure !is TimeoutCancellationException) throw failure
+            publishErrors(containerId, listOf("功能扫描失败：${failure.message}"))
+            throw failure
+        }
     }
 
-    private suspend fun discover(containerId: String, run: ContainerRun? = null, runningOnly: Boolean = false): ContainerFeatureCatalog = withContext(if (runningOnly) FeatureRunningOnly else EmptyCoroutineContext) {
-        check(!closed) { "功能服务已关闭" }
-        if (run != null) synchronized(gate) { check(current(run)) { "容器运行实例已变化" } }
+    private suspend fun discover(containerId: String, run: ContainerRun? = null, runningOnly: Boolean = false): ContainerFeatureCatalog = withFeatureOperation(runtime, containerId) {
+        if (runningOnly) this.runningOnly = true
+        if (closed) throw CancellationException("功能服务已关闭")
+        if (run != null) synchronized(gate) { requireCurrent(run) }
         val errors = mutableListOf<String>()
         if (!runningOnly) {
             try { installSkill(containerId) } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { errors += "内置 Skill 注入失败：${failure.message}" }
+            catch (failure: Exception) { ensureCurrent(runtime); errors += "内置 Skill 注入失败：${failure.message}" }
         }
         val bytes = featureCommand(runtime, containerId, """
             set -eu
@@ -238,32 +263,52 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                             color, html, height, boolean("showStatus"), boolean("showMemory"),
                             parseFeatureCardSpan(value), parseFeatureActions(value), cardUrl)
                     } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (failure: Exception) { errors += "$id：${failure.message}" }
+                    catch (failure: Exception) { ensureCurrent(runtime); errors += "$id：${failure.message}" }
                 }
                 else -> error("容器功能扫描返回无效数据")
             }
         }
+        ensureCurrent(runtime)
+        if (run != null) synchronized(gate) { requireCurrent(run) }
         publishErrors(containerId, errors, run)
         ContainerFeatureCatalog(home, features.sortedBy { it.title }, errors)
     }
 
-    suspend fun start(containerId: String, feature: ContainerFeature): ContainerFeatureSession {
-        check(!closed) { "功能服务已关闭" }
+    suspend fun start(containerId: String, feature: ContainerFeature): ContainerFeatureSession = withFeatureOperation(runtime, containerId) {
+        if (closed) throw CancellationException("功能服务已关闭")
         if (runtime.containers.value.none { it.config.id == containerId && it.running }) catalog(containerId)
+        ensureCurrent(runtime)
         val run = synchronized(gate) {
-            check(!closed) { "功能服务已关闭" }
+            if (closed) throw CancellationException("功能服务已关闭")
             val container = runtime.containers.value.firstOrNull { it.config.id == containerId && it.running } ?: error("容器未运行")
             attachLocked(container).also { it.stoppedFeatures.remove(feature.id) }
         }
-        return run.scope.async { startInRun(run, feature, validate = true) }.await()
+        val startup = run.scope.async { startInRun(run, feature, validate = true) }
+        try { startup.await() }
+        catch (cancelled: CancellationException) {
+            startup.cancel(cancelled)
+            withContext(NonCancellable) {
+                startup.join()
+                if (feature.lifecycle == ContainerFeatureLifecycle.PAGE) {
+                    val key = stateKey(containerId, feature.id)
+                    val instance = instances[key]?.takeIf { it.run === run && it.feature == feature }
+                    if (instance != null) {
+                        instance.stopRequested = true
+                        reap(instance, ContainerFeatureStatus.STOPPED, stopHook = true)
+                    }
+                }
+            }
+            throw cancelled
+        }
     }
 
-    private suspend fun startInRun(run: ContainerRun, feature: ContainerFeature, validate: Boolean = false): ContainerFeatureSession {
+    private suspend fun startInRun(run: ContainerRun, feature: ContainerFeature, validate: Boolean = false): ContainerFeatureSession =
+        withContext(FeatureOperation(run.containerId, run.stopGeneration, runningOnly = true)) {
         val containerId = run.containerId
         val key = stateKey(containerId, feature.id)
-        return locks.getOrPut(key) { Mutex() }.withLock {
+        locks.getOrPut(key) { Mutex() }.withLock {
             synchronized(gate) {
-                check(current(run)) { "容器已停止" }
+                requireCurrent(run)
                 if (feature.id in run.stoppedFeatures) throw CancellationException("功能已停止")
                 instances[key]?.let { instance ->
                     states.value[key]?.session?.takeIf { instance.run === run && instance.process?.isAlive == true && !instance.stopping }
@@ -272,7 +317,8 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
             }
             val instance = Instance(key, feature, run, currentCoroutineContext().job)
             synchronized(gate) {
-                check(current(run) && feature.id !in run.stoppedFeatures) { "功能已停止" }
+                requireCurrent(run)
+                if (feature.id in run.stoppedFeatures) throw CancellationException("功能已停止")
                 instances[key] = instance
                 update(key) { ContainerFeatureState(status = ContainerFeatureStatus.STARTING) }
             }
@@ -305,7 +351,10 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                 """.trimIndent()
                 val process = withContext(NonCancellable) {
                     instance.startJob.ensureActive()
-                    synchronized(gate) { check(current(run) && !instance.stopping) { "容器或功能已停止" } }
+                    synchronized(gate) {
+                        requireCurrent(run)
+                        if (instance.stopping) throw CancellationException("功能已停止")
+                    }
                     runtime.openRunningProcess(containerId, listOf("/bin/sh", "-c", """
                     set -eu
                     dir=${'$'}1
@@ -374,6 +423,8 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                 val identity = withTimeout(30_000) {
                     val identity = processIdentity.await()
                     while (true) {
+                        currentCoroutineContext().ensureActive()
+                        synchronized(gate) { requireCurrent(run) }
                         check(process.isAlive) { "启动进程已退出（${process.exitValue()}），请查看输出" }
                         if (ready(port, token)) break
                         delay(180)
@@ -386,7 +437,8 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                 instance.gateway = gateway
                 val session = ContainerFeatureSession(containerId, feature.id, gateway.url, token)
                 synchronized(gate) {
-                    check(current(run) && !instance.stopping && instances[key] === instance) { "容器或功能已停止" }
+                    requireCurrent(run)
+                    if (instance.stopping || instances[key] !== instance) throw CancellationException("功能已停止")
                     update(key) { it.copy(status = ContainerFeatureStatus.RUNNING, session = session, error = null) }
                 }
                 run.scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -396,19 +448,27 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                         val exit = runInterruptible(Dispatchers.IO) { process.waitFor() }
                         reap(instance, ContainerFeatureStatus.FAILED, "服务进程已退出（$exit）", stopHook = false)
                     } finally {
-                        reap(instance, ContainerFeatureStatus.STOPPED, stopHook = true)
+                        if (unexpectedStop(run)) reap(instance, ContainerFeatureStatus.FAILED, "容器运行进程已退出", stopHook = false)
+                        else reap(instance, ContainerFeatureStatus.STOPPED, stopHook = true)
                     }
                 }
                 session
             } catch (failure: Throwable) {
-                val cancelled = (failure is CancellationException && failure !is TimeoutCancellationException) || instance.stopping ||
-                    synchronized(gate) { !current(run) }
+                val stoppedUnexpectedly = unexpectedStop(run)
+                val cancelled = instance.stopping || interrupted(run) ||
+                    (!stoppedUnexpectedly && (!currentCoroutineContext().isActive ||
+                        (failure is CancellationException && failure !is TimeoutCancellationException)))
                 val error = when {
                     cancelled -> null
                     failure is TimeoutCancellationException -> "30 秒内未就绪：服务须监听 WAWLINK_HOST/WAWLINK_PORT，并对根路径返回 HTTP 2xx/3xx"
+                    stoppedUnexpectedly -> "容器运行进程已退出"
                     else -> failure.message ?: "启动失败"
                 }
                 reap(instance, if (cancelled) ContainerFeatureStatus.STOPPED else ContainerFeatureStatus.FAILED, error, stopHook = cancelled)
+                if (cancelled) {
+                    currentCoroutineContext().ensureActive()
+                    throw CancellationException("容器或功能已停止").also { it.initCause(failure) }
+                }
                 throw failure
             }
         }
@@ -436,7 +496,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     private suspend fun cancelStarting(containerId: String, featureId: String, key: String) {
         val starting = synchronized(gate) {
             runs[containerId]?.stoppedFeatures?.add(featureId)
-            instances[key]?.also { it.stopping = true }?.startJob?.takeIf { it.isActive }
+            instances[key]?.also { it.stopRequested = true; it.stopping = true }?.startJob?.takeIf { it.isActive }
         }
         starting?.cancel(CancellationException("功能已停止"))
         starting?.join()
@@ -448,7 +508,9 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     }
 
     /** Every path uses the guest supervisor's control pipe before any host-wrapper fallback. */
-    private suspend fun reap(instance: Instance, status: ContainerFeatureStatus, error: String? = null, stopHook: Boolean): Unit = withContext(NonCancellable + Dispatchers.IO + FeatureRunningOnly) {
+    private suspend fun reap(instance: Instance, status: ContainerFeatureStatus, error: String? = null, stopHook: Boolean): Unit = withContext(
+        NonCancellable + Dispatchers.IO + FeatureRunningOnly + FeatureOperation(instance.run.containerId, instance.run.stopGeneration, runningOnly = true)
+    ) {
         if (!instance.reaping.compareAndSet(false, true)) {
             instance.reaped.await()
             return@withContext
@@ -456,10 +518,10 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
         instance.stopping = true
         val containerId = instance.run.containerId
         val featureId = instance.feature.id
-        var failure = error
+        var failure: String? = null
         try {
             synchronized(gate) {
-                if (instances[instance.key] === instance && (runs[containerId] === instance.run || runs[containerId] == null)) {
+                if (instances[instance.key] === instance) {
                     update(instance.key) { it.copy(status = ContainerFeatureStatus.STOPPING, session = null) }
                 }
             }
@@ -486,6 +548,8 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                     if (output.isNotEmpty()) append(instance, output.toString(Charsets.UTF_8))
                 } catch (_: TimeoutCancellationException) {
                     failure = "停止脚本超时（20 秒），已强制回收服务"
+                } catch (_: CancellationException) {
+                    // A stop/restart invalidated the hook; it is not a failed stop script.
                 } catch (problem: Exception) { failure = "停止脚本失败：${problem.message}" }
             }
         } finally {
@@ -495,10 +559,17 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                 failure = "回收功能进程失败：${problem.message}"
             } finally {
                 synchronized(gate) {
-                    if (instances.remove(instance.key, instance) && (runs[containerId] === instance.run || runs[containerId] == null)) {
-                        update(instance.key) { it.copy(status = if (failure != null) ContainerFeatureStatus.FAILED else status, session = null, error = failure) }
-                        if (failure != null && current(instance.run)) {
-                            val message = "${instance.feature.id}：$failure"
+                    if (instances.remove(instance.key, instance)) {
+                        val cancelled = interrupted(instance.run)
+                        val reportedFailure = if (cancelled) null else failure ?: error?.takeUnless { instance.stopRequested }
+                        val reportedStatus = when {
+                            reportedFailure != null -> ContainerFeatureStatus.FAILED
+                            cancelled || instance.stopRequested -> ContainerFeatureStatus.STOPPED
+                            else -> status
+                        }
+                        update(instance.key) { it.copy(status = reportedStatus, session = null, error = reportedFailure) }
+                        if (reportedFailure != null) {
+                            val message = "${instance.feature.id}：$reportedFailure"
                             _errors.update { errors -> errors + (containerId to (errors[containerId].orEmpty() + message).distinct()) }
                         }
                     }
@@ -599,8 +670,9 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
 }
 
 /** Synchronize pristine bundled content before discovery or native Agent startup. */
-suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId: String) {
+suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId: String) = withFeatureOperation(runtime, containerId) {
     featureCommand(runtime, containerId, FEATURE_SKILL_INSTALL)
+    ensureCurrent(runtime)
     FeatureDebugServices.install(runtime, containerId)
 }
 
@@ -608,17 +680,23 @@ private object FeatureRunningOnly : AbstractCoroutineContextElement(Key) {
     object Key : CoroutineContext.Key<FeatureRunningOnly>
 }
 
-internal suspend fun featureCommand(runtime: ContainerRuntime, containerId: String, script: String, environment: Map<String, String> = emptyMap(), runningOnly: Boolean = false, stdinBytes: ByteArray? = null): ByteArray = coroutineScope {
+internal suspend fun featureCommand(runtime: ContainerRuntime, containerId: String, script: String, environment: Map<String, String> = emptyMap(), runningOnly: Boolean = false, stdinBytes: ByteArray? = null): ByteArray = withFeatureOperation(runtime, containerId) {
+    val operation = this
+    coroutineScope {
     val owner = currentCoroutineContext().job
-    val requireRunning = runningOnly || currentCoroutineContext()[FeatureRunningOnly.Key] != null
+    val requireRunning = runningOnly || operation.runningOnly || currentCoroutineContext()[FeatureRunningOnly.Key] != null
     var child: Process? = null
     try {
         val process = withContext(NonCancellable) {
             owner.ensureActive()
+            operation.ensureCurrent(runtime)
             (if (requireRunning) runtime.openRunningProcess(containerId, listOf("/bin/sh", "-c", script), "/", environment)
-            else runtime.openProcess(containerId, listOf("/bin/sh", "-c", script), "/", environment)).also { child = it }
+            else runtime.openProcess(containerId, listOf("/bin/sh", "-c", script), "/", environment)).also {
+                child = it
+                operation.runningOnly = true
+            }
         }
-        currentCoroutineContext().ensureActive()
+        operation.ensureCurrent(runtime)
         val stdout = async(Dispatchers.IO) { process.inputStream.use { featureReadBounded(it, 4 * 1024 * 1024) } }
         val stderr = async(Dispatchers.IO) { process.errorStream.use { featureReadBounded(it, 32_768).toString(Charsets.UTF_8) } }
         val stdin = async(Dispatchers.IO) {
@@ -632,18 +710,30 @@ internal suspend fun featureCommand(runtime: ContainerRuntime, containerId: Stri
             val written = stdin.await()
             runInterruptible(Dispatchers.IO) { process.waitFor() }
             val output = stdout.await(); val error = stderr.await()
+            operation.ensureCurrent(runtime)
             check(process.exitValue() == 0) { "容器功能命令失败（${process.exitValue()}）：$error${output.toString(Charsets.UTF_8).takeLast(32_768)}" }
             written.getOrThrow()
             output
         }
     } finally {
         child?.let { process ->
-            if (process.isAlive) process.destroy()
-            process.inputStream.close()
-            process.errorStream.close()
-            process.outputStream.close()
+            try {
+                try { if (process.isAlive) process.destroy() }
+                finally {
+                    try { process.inputStream.close() }
+                    finally {
+                        try { process.errorStream.close() }
+                        finally { process.outputStream.close() }
+                    }
+                }
+            } catch (failure: Exception) {
+                owner.ensureActive()
+                operation.ensureCurrent(runtime)
+                throw failure
+            }
         }
     }
+}
 }
 
 internal const val DEFAULT_FEATURE_CSS = ":root{--md-sys-color-primary:#0b57d0;--md-sys-color-primary-container:#d3e3fd;--md-sys-color-on-primary:#ffffff;--md-sys-color-on-primary-container:#041e49;--md-sys-color-surface:#ffffff;--md-sys-color-on-surface:#1f1f1f;--wawlink-motion:cubic-bezier(.2,0,0,1);color-scheme:light}body{background:#fff;color:#1f1f1f;font-family:system-ui,'Noto Sans CJK SC',sans-serif;font-size:18px}button,input,textarea,select{font:inherit}button{transition:background-color .3s var(--wawlink-motion),transform .45s var(--wawlink-motion)}button:active{transform:scale(.96)}"

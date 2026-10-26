@@ -2,9 +2,12 @@ package dev.wawlink.app
 
 import dev.wawlink.runtime.ContainerFeaturePreferences
 import dev.wawlink.runtime.ContainerRuntime
+import dev.wawlink.runtime.wasInterrupted
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,7 +24,7 @@ data class FeatureCardLayout(
 )
 
 /** Guest storage is committed before publishing; navigation cannot interrupt an in-flight change. */
-class FeatureCardPreferences(runtime: ContainerRuntime) {
+class FeatureCardPreferences(private val runtime: ContainerRuntime) {
     private val storage = ContainerFeaturePreferences(runtime)
     private val mutex = Mutex()
     private val _error = MutableStateFlow<String?>(null)
@@ -77,11 +80,18 @@ class FeatureCardPreferences(runtime: ContainerRuntime) {
         withContext(NonCancellable) { access(containerId, transform) }
 
     private suspend fun access(containerId: String, transform: (FeatureCardLayout) -> FeatureCardLayout = { it }) = withContext(Dispatchers.IO) {
+        val generation = runtime.containers.value.firstOrNull { it.config.id == containerId }?.stopGeneration
+        fun ensureCurrent() {
+            if (generation != null && runtime.wasInterrupted(containerId, generation)) throw CancellationException("容器已停止或重新启动")
+        }
         mutex.withLock {
             try {
+                ensureCurrent()
                 val document = storage.read(containerId)
                 val current = parse(document)
                 val layout = transform(current)
+                currentCoroutineContext().ensureActive()
+                ensureCurrent()
                 if (layout != current) {
                     val next = buildJsonObject {
                         put("order", JsonArray(layout.order.map(::JsonPrimitive)))
@@ -90,10 +100,14 @@ class FeatureCardPreferences(runtime: ContainerRuntime) {
                     }
                     storage.write(containerId, next.toString(), document)
                 }
+                currentCoroutineContext().ensureActive()
+                ensureCurrent()
                 _state.value = _state.value + (containerId to layout)
                 _error.value = null
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
+                currentCoroutineContext().ensureActive()
+                ensureCurrent()
                 _error.value = "无法读取或保存功能卡片设置：${failure.message}"
                 throw failure
             }

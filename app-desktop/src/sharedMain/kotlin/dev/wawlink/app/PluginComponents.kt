@@ -94,23 +94,25 @@ internal class PluginActions(private val repository: AgentResourceRepository, pr
         complete(response)
     }
     fun validate(id: String) = run("正在校验设置") { result = request("validate", mapOf("id" to id)); notice = if (result["valid"] == true) "已声明字段的类型和范围有效；不检查必填项和未知键" else pluginJson(result["errors"]) }
-    fun cancel() { val id = operationId ?: return; scope.launch { try { val response = request("cancel", mapOf("operationId" to id)); notice = response.pluginText("note") } catch (failure: Exception) { error = failure.message } } }
+    fun cancel() { val id = operationId ?: return; scope.launch { try { val response = request("cancel", mapOf("operationId" to id)); notice = response.pluginText("note") } catch (cancelled: CancellationException) { throw cancelled } catch (failure: Exception) { error = failure.message } } }
     fun run(label: String, reread: Boolean = false, block: suspend () -> Unit) {
         if (busy == null) busy = label
         scope.launch {
             operationMutex.withLock {
                 busy = label; error = null; operationId = "plugin-${System.nanoTime()}"
+                var interrupted = false
                 try { block() }
-                catch (cancelled: CancellationException) { throw cancelled }
+                catch (cancelled: CancellationException) { interrupted = true; throw cancelled }
                 catch (failure: Exception) { error = failure.message ?: "原生插件操作失败" }
                 finally {
-                    if (reread) {
-                        // Failed/cancelled native operations may already have changed files.
-                        try { snapshot = request("snapshot"); if (selected != null) detail = request("detail", mapOf("id" to selected)) }
-                        catch (cancelled: CancellationException) { throw cancelled }
-                        catch (failure: Exception) { if (error == null) error = failure.message }
-                    }
-                    operationId = null; canCancel = false; busy = null
+                    try {
+                        if (reread && !interrupted) {
+                            // Failed native operations may already have changed files; cancelled owners must not restart a bridge.
+                            try { snapshot = request("snapshot"); if (selected != null) detail = request("detail", mapOf("id" to selected)) }
+                            catch (cancelled: CancellationException) { throw cancelled }
+                            catch (failure: Exception) { if (error == null) error = failure.message }
+                        }
+                    } finally { operationId = null; canCancel = false; busy = null }
                 }
             }
         }

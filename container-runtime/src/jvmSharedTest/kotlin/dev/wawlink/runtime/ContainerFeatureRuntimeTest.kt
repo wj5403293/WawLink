@@ -10,7 +10,12 @@ import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -25,6 +30,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.assertIs
 
 class ContainerFeatureRuntimeTest {
     private fun feature(url: String? = null) = ContainerFeature("demo", "Demo", "Description", "terminal", "/home/test/.wawlink/features/demo", cardUrl = url)
@@ -217,6 +223,131 @@ class ContainerFeatureRuntimeTest {
         }
     }
 
+    @Test fun cancelledCatalogDoesNotPublishErrorsOrReopenContainer() = runBlocking {
+        Fixture(emptyMap()).use { fixture ->
+            ContainerFeatureService(fixture.runtime).use { service ->
+                withTimeout(5000) { service.errors.first { "container" in it } }
+                fixture.nextScan()
+                fixture.pauseNextScan.set(true)
+                fixture.failNextScan.set(true)
+                val catalog = async(Dispatchers.IO) { service.catalog("container") }
+                val scan = fixture.nextScan()
+                catalog.cancelAndJoin()
+                assertFalse(scan.isAlive)
+                assertTrue(service.errors.value["container"].orEmpty().isEmpty())
+                assertEquals(0, fixture.autoOpenCalls.get())
+            }
+        }
+    }
+
+    @Test fun cancellingPageStartDuringReadinessReapsWithoutFailedState() = runBlocking {
+        Fixture(mapOf("waiting" to "page"), unready = setOf("waiting")).use { fixture ->
+            ContainerFeatureService(fixture.runtime).use { service ->
+                val feature = service.catalog("container").features.single()
+                val starting = async(Dispatchers.IO) { service.start("container", feature) }
+                val process = fixture.next("waiting")
+                starting.cancelAndJoin()
+                val stopped = state(service, "waiting", ContainerFeatureStatus.STOPPED).getValue("container/waiting")
+                assertNull(stopped.error)
+                assertNull(stopped.session)
+                assertFalse(process.isAlive)
+                assertEquals(1, process.controlStops.get())
+                assertTrue(service.errors.value["container"].orEmpty().isEmpty())
+            }
+        }
+    }
+
+    @Test fun rapidRestartInvalidatesInFlightCatalogAndReadinessWithoutErrors() = runBlocking {
+        Fixture(mapOf("waiting" to "page"), unready = setOf("waiting")).use { fixture ->
+            ContainerFeatureService(fixture.runtime).use { service ->
+                withTimeout(5000) { service.errors.first { "container" in it } }
+                fixture.nextScan()
+                val feature = service.catalog("container").features.single()
+                fixture.nextScan()
+                val starting = async(Dispatchers.IO) { runCatching { service.start("container", feature) } }
+                val process = fixture.next("waiting")
+                fixture.nextScan()
+                fixture.pauseNextScan.set(true)
+                fixture.failNextScan.set(true)
+                val catalog = async(Dispatchers.IO) { runCatching { service.catalog("container") } }
+                val scan = fixture.nextScan()
+                fixture.restart()
+                scan.stop()
+                assertIs<CancellationException>(catalog.await().exceptionOrNull())
+                assertIs<CancellationException>(starting.await().exceptionOrNull())
+                state(service, "waiting", ContainerFeatureStatus.STOPPED)
+                fixture.metadataBarrier()
+                assertFalse(process.isAlive)
+                assertNull(service.states.value.getValue("container/waiting").error)
+                assertTrue(service.errors.value["container"].orEmpty().isEmpty())
+                assertEquals(0, fixture.autoOpenCalls.get())
+                assertTrue(fixture.containers.value.first { it.config.id == "container" }.running)
+            }
+        }
+    }
+
+    @Test fun realCatalogAndReadinessFailuresRemainVisible() = runBlocking {
+        Fixture(mapOf("broken" to "page"), failed = setOf("broken")).use { fixture ->
+            ContainerFeatureService(fixture.runtime).use { service ->
+                val feature = service.catalog("container").features.single()
+                val failure = runCatching { service.start("container", feature) }.exceptionOrNull()
+                assertIs<IllegalStateException>(failure)
+                val failed = state(service, "broken", ContainerFeatureStatus.FAILED).getValue("container/broken")
+                assertTrue(failed.error.orEmpty().contains("启动进程已退出"))
+                fixture.failNextScan.set(true)
+                val catalogFailure = runCatching { service.catalog("container") }.exceptionOrNull()
+                assertIs<IllegalStateException>(catalogFailure)
+                assertTrue(service.errors.value["container"].orEmpty().any { it.contains("discovery denied") })
+            }
+        }
+    }
+
+    @Test fun containerStopDuringStopHookDoesNotPublishFailedState() = runBlocking {
+        Fixture(mapOf("ready" to "container")).use { fixture ->
+            ContainerFeatureService(fixture.runtime).use { service ->
+                fixture.next("ready")
+                state(service, "ready", ContainerFeatureStatus.RUNNING)
+                fixture.pauseNextStopHook.set(true)
+                val stopping = async(Dispatchers.IO) { service.stop("container", "ready") }
+                val hook = fixture.nextStopHook()
+                fixture.running(false)
+                hook.stop()
+                stopping.await()
+                val stopped = state(service, "ready", ContainerFeatureStatus.STOPPED).getValue("container/ready")
+                assertNull(stopped.error)
+                assertTrue(service.errors.value["container"].orEmpty().isEmpty())
+                assertEquals(0, fixture.autoOpenCalls.get())
+            }
+        }
+    }
+
+    @Test fun genuineStopHookFailureRemainsFailed() = runBlocking {
+        Fixture(mapOf("ready" to "container")).use { fixture ->
+            ContainerFeatureService(fixture.runtime).use { service ->
+                fixture.next("ready")
+                state(service, "ready", ContainerFeatureStatus.RUNNING)
+                fixture.failNextStopHook.set(true)
+                service.stop("container", "ready")
+                val failed = state(service, "ready", ContainerFeatureStatus.FAILED).getValue("container/ready")
+                assertTrue(failed.error.orEmpty().contains("stop denied"))
+                assertTrue(service.errors.value["container"].orEmpty().any { it.contains("stop denied") })
+            }
+        }
+    }
+
+    @Test fun unexpectedContainerExitRemainsFailedEvenWhenRunGenerationIsCleared() = runBlocking {
+        Fixture(mapOf("ready" to "container")).use { fixture ->
+            ContainerFeatureService(fixture.runtime).use { service ->
+                fixture.next("ready")
+                state(service, "ready", ContainerFeatureStatus.RUNNING)
+                fixture.containers.value = fixture.containers.value.map { it.copy(running = false, runGeneration = 0) }
+                val failed = state(service, "ready", ContainerFeatureStatus.FAILED).getValue("container/ready")
+                assertTrue(failed.error.orEmpty().contains("容器运行进程已退出"))
+                assertTrue(service.errors.value["container"].orEmpty().any { it.contains("容器运行进程已退出") })
+            }
+        }
+    }
+
     private suspend fun state(service: ContainerFeatureService, featureId: String, status: ContainerFeatureStatus) =
         withTimeout(5000) { service.states.first { it["container/$featureId"]?.status == status } }
 
@@ -229,10 +360,16 @@ class ContainerFeatureRuntimeTest {
         private val pauseServiceLaunch: Boolean = false,
     ) : AutoCloseable {
         private val config = ContainerConfig("container", "Test", "/unused")
-        val containers = MutableStateFlow(listOf(ContainerInfo(config, running = true)))
+        val containers = MutableStateFlow(listOf(ContainerInfo(config, running = true, runGeneration = 1)))
         val scans = AtomicInteger()
         val cardReads = AtomicInteger()
         val autoOpenCalls = AtomicInteger()
+        val pauseNextScan = AtomicBoolean()
+        val failNextScan = AtomicBoolean()
+        private val scanProcesses = Channel<ControlledProcess>(Channel.UNLIMITED)
+        val pauseNextStopHook = AtomicBoolean()
+        val failNextStopHook = AtomicBoolean()
+        private val stopHooks = Channel<ControlledProcess>(Channel.UNLIMITED)
         val started = ConcurrentHashMap<String, AtomicInteger>()
         val stopTokens = ConcurrentHashMap<String, String>()
         private val created = ConcurrentHashMap<String, Channel<ControlledProcess>>()
@@ -281,7 +418,6 @@ class ContainerFeatureRuntimeTest {
                     return ControlledProcess("/home/test\u0000", alive = false)
                 }
                 scans.incrementAndGet()
-                if (discoveryFailure) return ControlledProcess("", alive = false, error = "discovery denied", exit = 1)
                 val data = buildString {
                     append("/home/test\u0000")
                     features.forEach { (featureId, lifecycle) ->
@@ -291,11 +427,22 @@ class ContainerFeatureRuntimeTest {
                         append('\u0000')
                     }
                 }
-                return ControlledProcess(data, alive = false)
+                val failure = discoveryFailure || failNextScan.getAndSet(false)
+                val process = ControlledProcess(if (failure) "" else data, alive = pauseNextScan.getAndSet(false),
+                    error = if (failure) "discovery denied" else "", exit = if (failure) 1 else 0)
+                processes += process
+                scanProcesses.trySend(process).getOrThrow()
+                return process
             }
             if (script.contains("卡片 HTML")) cardReads.incrementAndGet()
             if (script.contains("timeout -k 1 15 /bin/sh ./stop.sh")) {
                 stopTokens[environment.getValue("WAWLINK_FEATURE_ID")] = environment.getValue("WAWLINK_TOKEN")
+                val failure = failNextStopHook.getAndSet(false)
+                val process = ControlledProcess("", alive = pauseNextStopHook.getAndSet(false),
+                    error = if (failure) "stop denied" else "", exit = if (failure) 1 else 0)
+                processes += process
+                stopHooks.trySend(process).getOrThrow()
+                return process
             }
             return ControlledProcess("", alive = false)
         }
@@ -304,7 +451,19 @@ class ContainerFeatureRuntimeTest {
             created.computeIfAbsent(featureId) { Channel(Channel.UNLIMITED) }.receive()
         }
 
-        fun running(value: Boolean) { containers.value = listOf(ContainerInfo(config, running = value)) }
+        suspend fun nextScan(): ControlledProcess = withTimeout(5000) { scanProcesses.receive() }
+        suspend fun nextStopHook(): ControlledProcess = withTimeout(5000) { stopHooks.receive() }
+
+        fun running(value: Boolean) {
+            containers.value = containers.value.filter { it.config.id == "container" }.map {
+                it.copy(running = value, stopGeneration = it.stopGeneration + if (!value && it.running) 1 else 0,
+                    runGeneration = it.runGeneration + if (value && !it.running) 1 else 0)
+            }
+        }
+
+        fun restart() {
+            containers.value = containers.value.map { it.copy(runGeneration = it.runGeneration + 1, stopGeneration = it.stopGeneration + 1) }
+        }
 
         suspend fun metadataBarrier() {
             val id = "barrier${++barrierId}"

@@ -30,7 +30,16 @@ data class ContainerConfig(
 ) {
     val displayName: String get() = metadata.title.ifBlank { name }
 }
-data class ContainerInfo(val config: ContainerConfig, val running: Boolean = false, val sizeBytes: Long = 0, val error: String? = null, val runGeneration: Long = 0, val metadataError: String? = null)
+data class ContainerInfo(
+    val config: ContainerConfig,
+    val running: Boolean = false,
+    val sizeBytes: Long = 0,
+    val error: String? = null,
+    val runGeneration: Long = 0,
+    val metadataError: String? = null,
+    /** Advanced before intentional teardown; retained across restarts so late failures stay cancelled. */
+    val stopGeneration: Long = 0,
+)
 data class DeploymentProgress(val id: String, val name: String, val progress: Float, val phase: String, val error: String? = null)
 enum class MirrorSource(val label: String) { OFFICIAL("官方源"), TSINGHUA("清华镜像"), ALIYUN("阿里镜像"), USTC("中科大镜像") }
 data class DistroSpec(val id: String, val name: String, val version: String, val arch: String = "arm64", val icon: String = "deployed_code")
@@ -78,3 +87,7 @@ interface ContainerRuntime : AutoCloseable {
     suspend fun openTerminal(id: String, initialCommand: String? = null): TerminalSession
     suspend fun register(config: ContainerConfig)
 }
+
+/** Removal or an explicit stop invalidates work even if the same container has already restarted. */
+fun ContainerRuntime.wasInterrupted(id: String, stopGeneration: Long): Boolean =
+    containers.value.firstOrNull { it.config.id == id }?.stopGeneration != stopGeneration

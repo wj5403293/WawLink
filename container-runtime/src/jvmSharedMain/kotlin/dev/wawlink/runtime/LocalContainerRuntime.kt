@@ -62,6 +62,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     private val processes = mutableMapOf<String, MutableList<TrackedProcess>>()
     private val keepers = mutableMapOf<String, TrackedProcess>()
     private val runGenerations = mutableMapOf<String, Long>()
+    private val stopGenerations = mutableMapOf<String, Long>()
     private var nextRunGeneration = 0L
     private val errors = mutableMapOf<String, String>()
     private val dnsErrors = mutableMapOf<String, String>()
@@ -132,7 +133,11 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         return RootfsArchives.size(root, excluded)
     }
     private fun publish() {
-        _containers.value = configurations.values.map { ContainerInfo(it, keepers[it.id]?.process?.isAlive == true, sizes[it.id] ?: 0, errors[it.id] ?: dnsErrors[it.id], runGenerations[it.id] ?: 0, metadataErrors[it.id]) }
+        _containers.value = configurations.values.map {
+            ContainerInfo(it, keepers[it.id]?.let { keeper -> !keeper.stopping && keeper.process.isAlive } == true,
+                sizes[it.id] ?: 0, errors[it.id] ?: dnsErrors[it.id], runGenerations[it.id] ?: 0,
+                metadataErrors[it.id], stopGenerations[it.id] ?: 0)
+        }
     }
     private fun persist() {
         val temp = File(paths.dataDir, "containers.json.tmp")
@@ -220,8 +225,8 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     private suspend fun startLocked(id: String) {
         val config = config(id)
         paths.resolvConf?.value?.let { updateDns(config, it) }
-        if (keepers[id]?.process?.isAlive == true) return
-        if (keepers.containsKey(id)) stopLocked(id)
+        if (keepers[id]?.let { !it.stopping && it.process.isAlive } == true) return
+        if (keepers.containsKey(id)) stopLocked(id, intentional = false)
         try {
             engines.prepare(config)
             if (config.engine == ContainerEngineType.PROOT || config.engine == ContainerEngineType.PROROOT) {
@@ -233,7 +238,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             val health = launchLocked(config, listOf("/bin/sh", "-c", "id >/dev/null"), "/", emptyMap(), true, false).process
             val checkOutput = scope.async { health.inputStream.bufferedReader().use { it.readText() } }
             if (!health.waitFor(90, TimeUnit.SECONDS)) {
-                stopLocked(id)
+                stopLocked(id, intentional = false)
                 error("容器引擎启动超时，请检查 Rootfs/QEMU")
             }
             val output = checkOutput.await()
@@ -255,10 +260,14 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         ensureOpen(); config(id)
         try { stopLocked(id) } catch (failure: Throwable) { errors[id] = failure.message ?: "容器停止失败"; publish(); throw failure }
     } }
-    private fun stopLocked(id: String) {
+    private fun stopLocked(id: String, intentional: Boolean = true) {
         idleJobs.remove(id)?.cancel()
         val owned = processes[id].orEmpty().toList()
-        owned.forEach { it.stopping = true; it.outputDrainer?.cancel(); it.refreshDescendants() }
+        if (intentional) stopGenerations[id] = (stopGenerations[id] ?: 0) + 1
+        owned.forEach { it.stopping = true }
+        // Readers can observe EOF immediately after TERM; invalidate their lifetime first.
+        publish()
+        owned.forEach { it.outputDrainer?.cancel(); it.refreshDescendants() }
         val root = configurations[id]?.engine == ContainerEngineType.CHROOT
         terminate(owned, root, false)
         owned.forEach { it.process.destroy() }
@@ -458,17 +467,29 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         finally { if (running) startLocked(id) }
     } }
 
-    override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = withContext(Dispatchers.IO) {
-        mutex.withLock { ensureOpen(); startLocked(id); idleJobs.remove(id)?.cancel(); launchLocked(config(id), arguments, cwd, environment, false, false).process }
+    override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+        val generation = containers.value.firstOrNull { it.config.id == id }?.stopGeneration
+        return withContext(Dispatchers.IO) {
+            mutex.withLock {
+                currentCoroutineContext().ensureActive()
+                if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动")
+                ensureOpen(); startLocked(id); idleJobs.remove(id)?.cancel()
+                launchLocked(config(id), arguments, cwd, environment, false, false).process
+            }
+        }
     }
 
-    override suspend fun openRunningProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            currentCoroutineContext().ensureActive()
-            ensureOpen()
-            check(keepers[id]?.process?.isAlive == true) { "容器已停止" }
-            idleJobs.remove(id)?.cancel()
-            launchLocked(config(id), arguments, cwd, environment, false, false).process
+    override suspend fun openRunningProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+        val generation = containers.value.firstOrNull { it.config.id == id }?.stopGeneration
+        return withContext(Dispatchers.IO) {
+            mutex.withLock {
+                currentCoroutineContext().ensureActive()
+                if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动")
+                ensureOpen()
+                check(keepers[id]?.let { !it.stopping && it.process.isAlive } == true) { "容器已停止" }
+                idleJobs.remove(id)?.cancel()
+                launchLocked(config(id), arguments, cwd, environment, false, false).process
+            }
         }
     }
 
@@ -520,7 +541,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
                 if (tracked.stopping || closed) { processes[config.id]?.remove(tracked); return@withLock }
                 if (keeper && keepers[config.id] === tracked) {
                     val reason = "容器引擎进程已退出（${process.exitValue()}）"
-                    try { stopLocked(config.id); errors[config.id] = reason }
+                    try { stopLocked(config.id, intentional = false); errors[config.id] = reason }
                     catch (failure: Throwable) { errors[config.id] = "$reason；${failure.message}" }
                     publish()
                 } else {
@@ -546,9 +567,17 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     }
 
     override suspend fun execute(id: String, command: String, cwd: String): String {
-        val shell = mutex.withLock { config(id).shell }
-        val process = openProcess(id, listOf(shell, "-lc", command), cwd)
-        return collect(process)
+        val generation = containers.value.firstOrNull { it.config.id == id }?.stopGeneration
+        try {
+            val shell = mutex.withLock { config(id).shell }
+            if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动")
+            val process = openProcess(id, listOf(shell, "-lc", command), cwd)
+            return collect(process)
+        } catch (failure: Exception) {
+            currentCoroutineContext().ensureActive()
+            if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动", failure)
+            throw failure
+        }
     }
     private suspend fun collect(process: Process): String = coroutineScope {
         val stdout = async(Dispatchers.IO) { process.inputStream.bufferedReader().use { it.readText() } }
@@ -561,8 +590,11 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         } finally { if (process.isAlive) process.destroy() }
     }
 
-    override suspend fun openTerminal(id: String, initialCommand: String?): TerminalSession = withContext(Dispatchers.IO) {
-        mutex.withLock {
+    override suspend fun openTerminal(id: String, initialCommand: String?): TerminalSession {
+        val generation = containers.value.firstOrNull { it.config.id == id }?.stopGeneration
+        return withContext(Dispatchers.IO) { mutex.withLock {
+            currentCoroutineContext().ensureActive()
+            if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动")
             ensureOpen(); startLocked(id); idleJobs.remove(id)?.cancel()
             val config = config(id)
             val tracked = launchLocked(config, terminalArguments(config.shell, initialCommand), "/workspace", emptyMap(), true, false, pty = true)
@@ -575,7 +607,10 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
                 init { scope.launch { process.waitFor(); alive.value = false } }
                 override fun resize(columns: Int, rows: Int, cellWidthPixels: Int, cellHeightPixels: Int) {
                     require(columns > 0 && rows > 0)
-                    if (process.isAlive) requireNotNull(tracked.terminal).resize(columns, rows, cellWidthPixels, cellHeightPixels)
+                    if (!closing.get() && !tracked.stopping && process.isAlive) {
+                        try { requireNotNull(tracked.terminal).resize(columns, rows, cellWidthPixels, cellHeightPixels) }
+                        catch (failure: Exception) { if (!closing.get() && !tracked.stopping) throw failure }
+                    }
                 }
                 override fun close() {
                     if (!closing.compareAndSet(false, true)) return
@@ -603,7 +638,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
                     }
                 }
             }
-        }
+        } }
     }
 
     override suspend fun probeToolchains(id: String): List<ToolchainInfo> = tools.map { tool ->

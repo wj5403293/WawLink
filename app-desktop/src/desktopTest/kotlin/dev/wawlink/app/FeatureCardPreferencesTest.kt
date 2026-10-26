@@ -1,11 +1,15 @@
 package dev.wawlink.app
 
+import dev.wawlink.runtime.ContainerConfig
+import dev.wawlink.runtime.ContainerInfo
 import dev.wawlink.runtime.ContainerRuntime
 import java.io.File
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -16,8 +20,12 @@ class FeatureCardPreferencesTest {
         val root = Files.createTempDirectory("feature-card-preferences-").toFile()
         val launches = AtomicInteger()
         var beforeLaunch: ((String) -> Unit)? = null
+        val containers = MutableStateFlow(listOf("first", "second", "container", "original-id", "new-id").map {
+            ContainerInfo(ContainerConfig(it, it, root.resolve(it).path))
+        })
         val runtime = Proxy.newProxyInstance(ContainerRuntime::class.java.classLoader, arrayOf(ContainerRuntime::class.java)) { _, method, arguments ->
-            check(method.name == "openProcess") { "Unexpected runtime API: ${method.name}" }
+            if (method.name == "getContainers") return@newProxyInstance containers
+            check(method.name == "openProcess" || method.name == "openRunningProcess") { "Unexpected runtime API: ${method.name}" }
             val id = arguments[0] as String
             check(arguments[2] == "/")
             @Suppress("UNCHECKED_CAST")
@@ -117,6 +125,29 @@ class FeatureCardPreferencesTest {
             val reopened = FeatureCardPreferences(fixture.runtime)
             reopened.load("container")
             assertEquals(before, reopened.state.value)
+        }
+    }
+
+    @Test fun stoppedContainerCancelsPreferenceSaveWithoutPublishingErrorOrOverwriting() = runBlocking {
+        Fixture().use { fixture ->
+            val preferences = FeatureCardPreferences(fixture.runtime)
+            preferences.reconcile("container", listOf("builtin/files"))
+            val before = preferences.state.value
+            val document = fixture.document("container").readText()
+            val launches = fixture.launches.get()
+            fixture.beforeLaunch = { id ->
+                fixture.containers.value = fixture.containers.value.map {
+                    if (it.config.id == id) it.copy(stopGeneration = it.stopGeneration + 1) else it
+                }
+            }
+            assertFailsWith<CancellationException> { preferences.hide("container", setOf("builtin/files")) }
+            assertEquals(launches + 1, fixture.launches.get(), "Interrupted read must not start a subsequent write")
+            assertEquals(before, preferences.state.value)
+            assertEquals(document, fixture.document("container").readText())
+            assertNull(preferences.error.value)
+            fixture.beforeLaunch = null
+            preferences.hide("container", setOf("builtin/files"))
+            assertEquals(setOf("builtin/files"), preferences.state.value.getValue("container").hidden)
         }
     }
 

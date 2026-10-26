@@ -1,9 +1,14 @@
 package dev.wawlink.driver
 
 import dev.wawlink.runtime.ContainerRuntime
+import dev.wawlink.runtime.wasInterrupted
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withTimeout
 
@@ -19,23 +24,48 @@ object OmpInstallation {
 
     fun command(): String = script
 
-    suspend fun inspect(runtime: ContainerRuntime, containerId: String): OmpInstallationCheck = coroutineScope {
+    suspend fun inspect(
+        runtime: ContainerRuntime,
+        containerId: String,
+        stopGeneration: Long = runtime.containers.value.firstOrNull { it.config.id == containerId }?.stopGeneration
+            ?: throw OmpProcessStoppedException(),
+        runningOnly: Boolean = false,
+    ): OmpInstallationCheck = coroutineScope {
+        fun interrupted() = runtime.wasInterrupted(containerId, stopGeneration) ||
+            (runningOnly && runtime.containers.value.none { it.config.id == containerId && it.running })
+        if (interrupted()) throw OmpProcessStoppedException()
         // Do not use execute(): the configured login shell may itself be missing or broken.
         // Engine failures and missing probe frames must propagate rather than suggesting reinstall.
-        val process = runtime.openProcess(containerId, listOf("/bin/sh", "-c", script, "wawlink-omp-install", "--inspect"), "/")
+        val process = try {
+            val arguments = listOf("/bin/sh", "-c", script, "wawlink-omp-install", "--inspect")
+            if (runningOnly) runtime.openRunningProcess(containerId, arguments, "/")
+            else runtime.openProcess(containerId, arguments, "/")
+        } catch (failure: Exception) {
+            if (failure !is CancellationException && interrupted()) throw OmpProcessStoppedException()
+            throw failure
+        }
+        val interruption = launch(start = CoroutineStart.UNDISPATCHED) {
+            runtime.containers.first { interrupted() }
+            process.destroyForcibly()
+        }
         // Keep readers outside the timeout scope so finally can kill the guest
         // before cancellation waits for blocking stream reads to finish.
-        val stdout = async(Dispatchers.IO) { process.inputStream.bufferedReader().use { it.readText() } }
-        val stderr = async(Dispatchers.IO) { process.errorStream.bufferedReader().use { it.readText() } }
+        val stdout = async(Dispatchers.IO) { runCatching { process.inputStream.bufferedReader().use { it.readText() } } }
+        val stderr = async(Dispatchers.IO) { runCatching { process.errorStream.bufferedReader().use { it.readText() } } }
         try {
             withTimeout(90_000) {
                 val exit = runInterruptible(Dispatchers.IO) { process.waitFor() }
-                val output = stdout.await()
-                val diagnostic = stderr.await()
+                val output = stdout.await().getOrThrow()
+                val diagnostic = stderr.await().getOrThrow()
+                if (interrupted()) throw OmpProcessStoppedException()
                 check(exit == 0) { "OMP 安装检查无法完成（$exit）：${diagnostic.trim().take(800)}" }
                 decodeCheck(output)
             }
+        } catch (failure: Exception) {
+            if (failure !is CancellationException && interrupted()) throw OmpProcessStoppedException()
+            throw failure
         } finally {
+            interruption.cancel()
             if (process.isAlive) process.destroyForcibly()
         }
     }

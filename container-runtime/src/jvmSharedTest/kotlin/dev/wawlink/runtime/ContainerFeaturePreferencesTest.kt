@@ -5,6 +5,7 @@ import java.lang.reflect.Proxy
 import java.nio.charset.CharacterCodingException
 import java.nio.file.Files
 import kotlin.test.*
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 
 /** Real shell processes with isolated guest homes; no configured rootfs is inspected. */
@@ -14,7 +15,9 @@ class ContainerFeaturePreferencesTest {
         val home = File(root, "guest home '中文").apply { mkdir() }
         val directory = File(home, ".wawlink")
         val file = File(directory, "feature-cards.json")
+        val containers = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("guest", "Guest", root.path))))
         val runtime = Proxy.newProxyInstance(ContainerRuntime::class.java.classLoader, arrayOf(ContainerRuntime::class.java)) { _, method, args ->
+            if (method.name == "getContainers") return@newProxyInstance containers
             check(method.name == "openProcess") { "Unexpected runtime API: ${method.name}" }
             check(args[0] == "guest")
             check(args[2] == "/")

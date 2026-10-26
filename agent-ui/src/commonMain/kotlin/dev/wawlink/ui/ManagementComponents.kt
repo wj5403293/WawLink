@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import dev.wawlink.protocol.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
@@ -60,7 +61,7 @@ internal class ManagementActions(scope: CoroutineScope, private val dismissNotif
                     operation()
                     error = null
                     if (success != null) scope.launch { notify(success) }
-                } catch (cancelled: CancellationException) { throw cancelled }
+                } catch (cancelled: CancellationException) { ensureActive() }
                 catch (failure: Exception) {
                     error = failure.message ?: "操作失败"
                     scope.launch { notify(error ?: "操作失败") }

@@ -6,33 +6,41 @@ import kotlinx.coroutines.*
 
 /** Independent finite actions, not service state. The caller owns presentation and cancellation. */
 internal class ContainerFeatureScriptActions(private val runtime: ContainerRuntime) : AutoCloseable {
-    private data class Invocation(val containerId: String, val feature: ContainerFeature, val job: Job)
+    private data class Invocation(val containerId: String, val feature: ContainerFeature, val generation: Long, val stopGeneration: Long, val job: Job)
     private val invocations = ConcurrentHashMap<String, Invocation>()
     private val gate = Any()
     private var closed = false
 
     suspend fun run(containerId: String, feature: ContainerFeature, action: ContainerFeatureAction, validate: suspend () -> Unit): String =
+        withFeatureOperation(runtime, containerId) {
+        val operation = this
         withContext(Dispatchers.IO) {
             coroutineScope {
                 require(action.type == ContainerFeatureActionType.SCRIPT && action in feature.actions) { "只能执行清单声明的 script 动作" }
                 val script = requireNotNull(action.script) { "script 动作缺少脚本路径" }
                 validateFeatureRelativeScript(script)
                 val key = "$containerId/${feature.id}/${action.id}"
-                val invocation = Invocation(containerId, feature, currentCoroutineContext().job)
+                val container = runtime.containers.value.firstOrNull { it.config.id == containerId && it.running }
+                    ?: error("容器未运行")
+                val invocation = Invocation(containerId, feature, container.runGeneration, container.stopGeneration, currentCoroutineContext().job)
                 synchronized(gate) {
-                    check(!closed) { "功能服务已关闭" }
+                    if (closed) throw CancellationException("功能服务已关闭")
                     check(invocations.putIfAbsent(key, invocation) == null) { "动作正在执行，请等待当前执行完成" }
                 }
                 var process: Process? = null
                 try {
-                    val container = runtime.containers.value.firstOrNull { it.config.id == containerId && it.running }
-                        ?: error("容器未运行")
-                    validate()
-                    ensureActive()
-                    check(runtime.containers.value.any { it.running && it.config.id == containerId && it.runGeneration == container.runGeneration }) { "容器已停止或运行身份已变化" }
-                    val child = withContext(NonCancellable) {
+                    suspend fun ensureCurrent() {
                         invocation.job.ensureActive()
-                        check(runtime.containers.value.any { it.running && it.config.id == containerId && it.runGeneration == container.runGeneration }) { "容器已停止或运行身份已变化" }
+                        operation.ensureCurrent(runtime)
+                        val current = runtime.containers.value.firstOrNull { it.config.id == containerId }
+                        if (current == null) throw CancellationException("容器已移除")
+                        check(current.running) { "容器运行进程已退出" }
+                        if (current.runGeneration != invocation.generation) throw CancellationException("容器运行身份已变化")
+                    }
+                    validate()
+                    ensureCurrent()
+                    val child = withContext(NonCancellable) {
+                        ensureCurrent()
                         runtime.openRunningProcess(containerId, listOf("/bin/sh", "-c", featureScriptActionSupervisor(feature, script)), "/", mapOf(
                             "WAWLINK_FEATURE_ID" to feature.id,
                             "WAWLINK_FEATURE_DIR" to feature.directory,
@@ -46,15 +54,17 @@ internal class ContainerFeatureScriptActions(private val runtime: ContainerRunti
                     val exit = runInterruptible { child.waitFor() }
                     val output = stdout.await()
                     val errors = stderr.await()
+                    ensureCurrent()
                     check(exit == 0) { "动作执行失败（退出码 $exit）：\n$output$errors" }
                     output + errors
                 } finally {
                     withContext(NonCancellable) {
-                        process?.let(::finishFeatureActionProcess)
-                        invocations.remove(key, invocation)
+                        try { process?.let(::finishFeatureActionProcess) }
+                        finally { invocations.remove(key, invocation) }
                     }
                 }
             }
+        }
         }
 
     suspend fun cancelFeature(containerId: String, featureId: String, pageOnly: Boolean = false) {
@@ -65,10 +75,11 @@ internal class ContainerFeatureScriptActions(private val runtime: ContainerRunti
         selected.map { it.job }.joinAll()
     }
 
-    suspend fun cancelStoppedContainers(running: Set<String>) {
-        val selected = invocations.values.filter { it.containerId !in running }
-        selected.forEach { it.job.cancel(CancellationException("容器已停止")) }
-        selected.map { it.job }.joinAll()
+    fun cancelStoppedContainers() {
+        invocations.values.filter { invocation ->
+            runtime.wasInterrupted(invocation.containerId, invocation.stopGeneration) ||
+                runtime.containers.value.any { it.config.id == invocation.containerId && it.running && it.runGeneration != invocation.generation }
+        }.forEach { it.job.cancel(CancellationException("容器已停止或重新启动")) }
     }
 
     override fun close() {

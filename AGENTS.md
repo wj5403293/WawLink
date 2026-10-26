@@ -77,6 +77,7 @@
 - Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。
 - Proroot 五库按作者同一固定来源整套校验并原样打包；启动显式指定当前 APK 配套的 runtime/linker，不混用旧组件。OMP/Bun 启动修复须验证真实原生模块与 RPC，不靠屏蔽错误、禁用原生模块或伪造成功输出，也不要求重建已有 Rootfs。
 - 在线镜像安装完成后检查容器内 OMP，缺失或损坏时弹出安装/修复确认；OMP 运行进程或原生管理桥故障也须提示。只有用户同意才打开独立真实 PTY 终端并自动执行随应用打包的安装脚本，取消不执行，重组不重复安装。保留已有配置、认证、工作区与会话，安装失败保留终端真实原因；不要求重导入 Rootfs，也不复制宿主认证。
+- 切换容器、启停/重启容器、离开终端或功能页造成的预期中断，不弹 OMP 安装/修复引导或会话、终端、卡片报错。停止前先撤销旧操作代次；延迟回执、退出检查与快速重启不能把旧故障带到新代次，后台诊断不得重新启动已停止容器。真实安装损坏、进程异常退出及服务失败仍保留提示，取消不得吞掉后续操作或丢失已接收消息。
 - 在线发行版的“官方源”置于最左并默认选中；选择清华、阿里或中科大时，Rootfs 与 OMP/Bun 安装下载均使用可用国内来源，不回退国外、不悄悄升级发行版。Rootfs 供应站可与所选软件源不同，界面须如实说明；没有同版本可校验国内归档时明确报错。校验保留固定发布者哈希或镜像快照 SHA256，不把镜像校验值冒充独立上游签名。选择记录保存在客体内，随导出迁移；不改用户全局 npm 配置。
 - OMP 安装按 Ubuntu、Debian、Kali、Alpine、Arch ARM、Fedora 的真实包管理器准备完整依赖，保留原生模块及生命周期脚本。Alpine 使用隔离的完整 glibc 运行库，不用 musl Bun 加 gcompat 冒充兼容，不替换 Alpine 的 musl 系统库；内置 Skill 引导兼容最小 BusyBox 客体。
 
@@ -135,6 +136,7 @@
   - 同目录的 `FeatureDebugContext.kt` 为卡片与完整功能页传递原生调试身份和运行代次；`src/desktopMain/kotlin/dev/wawlink/app/FeatureDebugSurface.desktop.kt` 接入实际 JavaFX WebView 的 UI 线程检查、执行、PNG 截图及重载，不新增浏览器进程、不向网页暴露 Java 宿主对象。
   - 同目录的 `PluginManagementScreen.kt`、`PluginComponents.kt`、`PluginEditors.kt` 实现插件原型与真实管理；`SkillManagementScreen.kt`、`SkillComponents.kt`、`SkillUiState.kt`、`SkillDraft.kt`、`SkillEditorPage.kt`、`SkillPackagePages.kt`、`SkillAuthorPages.kt` 实现技能原型、原文编辑、市场及发布维护，`SkillClawHubPages.kt` 提供 ClawHub/官方来源切换、完整资源安全预览、精确版本风险确认与来源展示。两页按入口固定用户/项目上下文，配置变更明确提示新会话生效，不伪造已加载状态。
   - `src/sharedMain/kotlin/dev/wawlink/app/AppCoordinator.kt` 负责按需恢复会话、首问标题、当前单容器持久化、直接新建与空会话清理、持久化整体缩放与配色，以及 OMP 安装修复提示去重和一次性授权，并定义两端 `HostFiles` 文件与挂载授权契约；`src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorSessionRestoreTest.kt` 覆盖大量历史的惰性加载、并发打开、标题保护与新建上下文，`AppCoordinatorAppearanceTest.kt` 覆盖缩放迁移、配色跨重启保持与默认回退。
+  - `src/desktopTest/kotlin/dev/wawlink/app/AppCoordinatorInterruptionTest.kt` 覆盖 OMP 自检中断、旧修复提示过期及跨容器代次的终端安装授权失效；驱动与功能运行时回归同时覆盖快速重启、启动中取消、迟到进程和真实故障提示。
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。
   - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载、APK 安装及主机挂载目录选择，按 Android 版本处理共享储存授权与本机储存卷路径，并按前台生命周期应用屏幕常亮偏好；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。

@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
 import kotlin.test.*
@@ -584,14 +585,194 @@ class OmpPromptDeliveryTest {
         }
     }
 
+    @Test fun containerStopDuringLaunchSettlesWithoutRepairAndActorCanRetryAfterRapidRestart() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            controller.sendPrompt("停止启动")
+            opened.await()
+            stopContainer()
+            restartContainer()
+            gate.completeExceptionally(IOException("intentional engine teardown"))
+            val stopped = awaitState { it.status == SessionStatus.STOPPED }
+            assertNull(stopped.error)
+            assertTrue(stopped.feed.filterIsInstance<UserMessageItem>().isEmpty())
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+
+            val replacement = replacementChat()
+            controller.sendPrompt("重新发送")
+            val request = replacement.request()
+            replacement.acceptUser(request)
+            replacement.respond(request)
+            replacement.finish(request)
+            val resumed = awaitState { it.status == SessionStatus.DONE }
+            assertEquals(listOf("重新发送"), resumed.feed.filterIsInstance<UserMessageItem>().map { it.text })
+            assertNull(resumed.error)
+            replacement.destroy()
+            val genuineExit = awaitIssue()
+            assertEquals(1L, genuineExit.stopGeneration)
+            awaitState { it.status == SessionStatus.ERROR }
+        }
+    }
+
+    @Test fun containerStopWithPendingQueuePreservesAcceptedHistoryAndRestoresQueueOnRetry() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            gate.complete(transport)
+            controller.sendPrompt("保留历史")
+            val first = transport.request()
+            transport.acceptUser(first)
+            transport.respond(first)
+            val accepted = awaitState { it.feed.filterIsInstance<UserMessageItem>().singleOrNull()?.accepted == true }
+                .feed.filterIsInstance<UserMessageItem>().single()
+            controller.enqueuePrompt("保留待发队列")
+            transport.request()
+            val queued = controller.state.value.queuedPrompts.single()
+            stopContainer()
+            restartContainer()
+            val stopped = awaitState { it.status == SessionStatus.STOPPED && !transport.isAlive }
+            assertEquals(listOf(accepted), stopped.feed.filterIsInstance<UserMessageItem>())
+            assertEquals(listOf(queued), stopped.queuedPrompts)
+            assertNull(stopped.error)
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+
+            val replacement = replacementChat()
+            controller.sendPrompt("继续")
+            val restored = replacement.request()
+            assertEquals("follow_up", restored.string("type"))
+            assertEquals(queued.text, restored.string("message"))
+            replacement.respond(restored)
+            val next = replacement.request()
+            replacement.acceptUser(next)
+            replacement.respond(next)
+            replacement.finish(next)
+            val resumed = awaitState { it.status == SessionStatus.DONE }
+            assertEquals(listOf(accepted.text, "继续"), resumed.feed.filterIsInstance<UserMessageItem>().map { it.text })
+            assertNull(resumed.error)
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
+    @Test fun containerStopBeforeGreetingCancelsNativeChildWithoutLosingTheController() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            val starting = RpcTransport(ready = false)
+            gate.complete(starting)
+            controller.sendPrompt("等待 greeting")
+            opened.await()
+            stopContainer()
+            val stopped = awaitState { it.status == SessionStatus.STOPPED && !starting.isAlive }
+            assertNull(stopped.error)
+            assertTrue(stopped.feed.filterIsInstance<UserMessageItem>().isEmpty())
+            controller.selectModel("manual", "still-editable")
+            awaitState { it.modelId == "still-editable" }
+            assertSame(controller, pool.session("session", "fixture", "/workspace"))
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
+    @Test fun containerStopDuringDefaultPreviewFinishesLoadingWithoutAnErrorOrChatStart() = runBlocking {
+        fixture(withManagement = true) {
+            managementCatalogue()
+            stopContainer()
+            restartContainer()
+            val stopped = awaitState { !it.modelLoading && it.status == SessionStatus.STOPPED }
+            assertNull(stopped.error)
+            assertFalse(opened.isCompleted)
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
+    @Test fun delayedInstallationInspectionCannotPublishRepairAfterContainerRestart() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            val delayedProbe = CompletableDeferred<Process>()
+            inspectionGate = delayedProbe
+            controller.sendPrompt("检查启动失败")
+            opened.await()
+            gate.completeExceptionally(IOException("OMP launch failed"))
+            inspectionFinished.await()
+            awaitState { it.status == SessionStatus.ERROR }
+            stopContainer()
+            restartContainer()
+            val staleProbe = FinishedProcess("WAWLINK_OMP_CHECK\tBROKEN\told diagnostic\n")
+            delayedProbe.complete(staleProbe)
+            withTimeout(5_000) { staleProbe.destroyed.await() }
+            awaitState { it.status == SessionStatus.STOPPED }
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+            assertEquals(1, inspectionStarts.get())
+        }
+    }
+
+    @Test fun containerStopBeforePromptAdmissionWithdrawsOnlyTheUnacceptedMessage() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            gate.complete(transport)
+            controller.sendPrompt("尚未接收")
+            transport.request()
+            assertFalse(controller.state.value.feed.filterIsInstance<UserMessageItem>().single().accepted)
+            stopContainer()
+            val stopped = awaitState { it.status == SessionStatus.STOPPED && it.feed.filterIsInstance<UserMessageItem>().isEmpty() }
+            assertNull(stopped.error)
+            controller.selectModel("manual", "retryable")
+            awaitState { it.modelId == "retryable" }
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
+    @Test fun containerStopDuringFeatureSkillInstallDoesNotCancelThePromptActor() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            val bootstrap = CompletableDeferred<Process>()
+            skillInstallGate = bootstrap
+            controller.sendPrompt("安装技能时停止")
+            withTimeout(5_000) { skillInstallStarted.await() }
+            stopContainer()
+            restartContainer()
+            bootstrap.completeExceptionally(CancellationException("container operation interrupted"))
+            val stopped = awaitState { it.status == SessionStatus.STOPPED && it.feed.filterIsInstance<UserMessageItem>().isEmpty() }
+            assertNull(stopped.error)
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+            assertFalse(opened.isCompleted)
+
+            skillInstallGate = null
+            gate.complete(transport)
+            controller.sendPrompt("技能启动重试")
+            val request = transport.request()
+            transport.acceptUser(request)
+            transport.respond(request)
+            transport.finish(request)
+            val retried = awaitState { it.status == SessionStatus.DONE }
+            assertEquals(listOf("技能启动重试"), retried.feed.filterIsInstance<UserMessageItem>().map { it.text })
+            assertNull(retried.error)
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
+    @Test fun explicitSessionOpeningStillPreviewsNativeDefaultFromAStoppedContainer() = runBlocking {
+        fixture(withManagement = true, initiallyRunning = false) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            val preview = awaitState { !it.modelLoading }
+            assertEquals("local", preview.providerId)
+            assertEquals("resolved", preview.modelId)
+            assertEquals(ThinkingLevel.MAX, preview.thinkingLevel)
+            assertFalse(opened.isCompleted, "Model preview must not start the chat RPC")
+        }
+    }
+
     private val nativeDefault = Json.parseToJsonElement("""{"models":[{"provider":"local","id":"resolved","available":true}],"roles":[{"id":"default","model":"local/resolved","providerId":"local","modelId":"resolved","thinking":"max"}]}""")
 
-    private suspend fun fixture(autoApprove: Boolean = true, withManagement: Boolean = false, block: suspend Fixture.() -> Unit) {
-        val fixture = Fixture(autoApprove, withManagement)
+    private suspend fun fixture(autoApprove: Boolean = true, withManagement: Boolean = false, initiallyRunning: Boolean = true, block: suspend Fixture.() -> Unit) {
+        val fixture = Fixture(autoApprove, withManagement, initiallyRunning)
         try { block(fixture) } finally { fixture.close() }
     }
 
-    private class Fixture(autoApprove: Boolean, withManagement: Boolean) : AutoCloseable {
+    private class Fixture(autoApprove: Boolean, withManagement: Boolean, initiallyRunning: Boolean) : AutoCloseable {
         val directory = Files.createTempDirectory("wawlink-delivery-").toFile()
         val data = File(directory, "gui")
         val transport = RpcTransport()
@@ -600,6 +781,11 @@ class OmpPromptDeliveryTest {
         val opened = CompletableDeferred<Unit>()
         val inspectionFinished = CompletableDeferred<Unit>()
         @Volatile var installationState = "READY"
+        @Volatile var inspectionGate: CompletableDeferred<Process>? = null
+        val inspectionStarts = AtomicInteger()
+        @Volatile var skillInstallGate: CompletableDeferred<Process>? = null
+        val skillInstallStarted = CompletableDeferred<Unit>()
+        private val containerState = MutableStateFlow<List<ContainerInfo>>(emptyList())
         private val chatStarts = AtomicInteger()
         private val managementStarts = AtomicInteger()
         private val chatReplacements = Channel<RpcTransport>(Channel.UNLIMITED)
@@ -607,13 +793,23 @@ class OmpPromptDeliveryTest {
         private val replacements = CopyOnWriteArrayList<RpcTransport>()
         private val local = LocalContainerRuntime(RuntimePaths(File(directory, "runtime")))
         val runtime = object : ContainerRuntime by local {
+            override val containers = containerState
+            override suspend fun openRunningProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                check(containers.value.any { it.config.id == id && it.running }) { "容器已停止" }
+                return openProcess(id, arguments, cwd, environment)
+            }
             override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
                 if (arguments.lastOrNull() == "--inspect") {
+                    inspectionStarts.incrementAndGet()
                     inspectionFinished.complete(Unit)
-                    return FinishedProcess("WAWLINK_OMP_CHECK\t$installationState\tinstallation check\n")
+                    return inspectionGate?.await() ?: FinishedProcess("WAWLINK_OMP_CHECK\t$installationState\tinstallation check\n")
                 }
                 // Bootstrap is a real short-lived shell process, not the chat transport.
                 if (arguments.firstOrNull() == "/bin/sh" && arguments.getOrNull(1) == "-c") {
+                    skillInstallGate?.let { blocked ->
+                        skillInstallStarted.complete(Unit)
+                        return blocked.await()
+                    }
                     val home = File(directory, "home").apply { mkdirs() }
                     return ProcessBuilder(arguments).directory(directory).apply {
                         environment().clear()
@@ -639,8 +835,15 @@ class OmpPromptDeliveryTest {
             Files.copy(File("/bin/sh").canonicalFile.toPath(), shell.toPath())
             check(shell.setExecutable(true))
             runBlocking { local.register(ContainerConfig("fixture", "发送验证", root.canonicalPath, arch = "amd64", link2symlink = false)) }
+            containerState.value = local.containers.value.map { it.copy(running = initiallyRunning) }
             pool = OmpProcessPool(runtime, data)
             controller = pool.session("session", "fixture", "/workspace", autoApprove = autoApprove)
+        }
+        fun stopContainer() {
+            containerState.value = containerState.value.map { it.copy(running = false, stopGeneration = it.stopGeneration + 1) }
+        }
+        fun restartContainer() {
+            containerState.value = containerState.value.map { it.copy(running = true) }
         }
         suspend fun managementCatalogue(): JsonObject {
             managementTransport.respondManagement(managementTransport.managementRequest("init"), JsonPrimitive(true))
@@ -769,6 +972,7 @@ class OmpPromptDeliveryTest {
         }
     }
     private class FinishedProcess(output: String) : Process() {
+        val destroyed = CompletableDeferred<Unit>()
         private val input = ByteArrayInputStream(output.toByteArray())
         override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
         override fun getInputStream(): InputStream = input
@@ -777,6 +981,6 @@ class OmpPromptDeliveryTest {
         override fun waitFor(timeout: Long, unit: TimeUnit): Boolean = true
         override fun exitValue(): Int = 0
         override fun isAlive(): Boolean = false
-        override fun destroy() { }
+        override fun destroy() { destroyed.complete(Unit) }
     }
 }

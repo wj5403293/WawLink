@@ -2,14 +2,16 @@ package dev.wawlink.runtime
 
 import java.io.File
 import java.nio.file.Files
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class ContainerMetadataActionTest {
-    @Test fun metadataEditsDoNotInvalidateActionsButChangedRunGenerationDoes() = runBlocking {
+    @Test fun metadataEditsPreserveActionsButRunOrStopEpochChangesCancelThem() = runBlocking {
         val directory = Files.createTempDirectory("wawlink-metadata-action-test").toFile()
         val home = File(directory, "home").apply { mkdirs() }
         val featureDirectory = File(home, ".wawlink/features/demo").apply { mkdirs() }
@@ -40,12 +42,22 @@ class ContainerMetadataActionTest {
             }
             assertEquals("action-ran", output)
             assertEquals(1, launches)
-            assertFailsWith<IllegalStateException> {
+            assertFailsWith<CancellationException> {
                 actions.run(config.id, feature, action) {
                     state.value = state.value.map { it.copy(runGeneration = it.runGeneration + 1) }
                 }
             }
             assertEquals(1, launches)
+            assertFailsWith<CancellationException> {
+                actions.run(config.id, feature, action) {
+                    state.value = state.value.map { it.copy(stopGeneration = it.stopGeneration + 1) }
+                }
+            }
+            assertEquals(1, launches, "A stop epoch must cancel validation even if the container is already running again")
+            File(featureDirectory, "run.sh").writeText("printf 'real-action-failure' >&2; exit 7\n")
+            val failure = assertFailsWith<IllegalStateException> { actions.run(config.id, feature, action) {} }
+            assertTrue(failure.message.orEmpty().contains("real-action-failure"))
+            assertEquals(2, launches)
         } finally {
             actions.close()
             base.close()

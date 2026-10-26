@@ -49,7 +49,10 @@ internal data class OmpSetupRequest(
     val message: String,
     val repair: Boolean,
     val runtimeIssueId: Long? = null,
+    val stopGeneration: Long? = null,
 )
+
+private data class ActiveOmpInstallation(val id: String, val stopGeneration: Long)
 
 class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, val dataDir: File, val isAndroid: Boolean = false) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -76,10 +79,12 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     private val ompSetupLock = Any()
     private val ompSetups = MutableStateFlow<List<OmpSetupRequest>>(emptyList())
     private val approvedOmpInstallations = mutableMapOf<String, String>()
-    private val activeOmpInstallations = mutableMapOf<String, String>()
+    private val activeOmpInstallations = mutableMapOf<String, ActiveOmpInstallation>()
     private val handledOmpIssues = mutableMapOf<String, Long>()
     internal val ompSetup = combine(ompSetups, runtime.containers) { requests, containers ->
-        requests.firstOrNull { request -> containers.any { it.config.id == request.containerId } }
+        requests.firstOrNull { request -> containers.any {
+            it.config.id == request.containerId && (request.stopGeneration == null || it.stopGeneration == request.stopGeneration)
+        } }
     }.stateIn(scope, SharingStarted.Eagerly, null)
     private val _busy = MutableStateFlow(0)
     val busy: StateFlow<Int> = _busy.asStateFlow()
@@ -132,10 +137,16 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             }
         } catch (e: Exception) { showError(e) }
         scope.launch {
-            pool.runtimeIssues.collect { issues ->
+            combine(pool.runtimeIssues, runtime.containers) { issues, _ -> issues }.collect { issues ->
+                synchronized(ompSetupLock) {
+                    ompSetups.value = ompSetups.value.filterNot { request ->
+                        request.stopGeneration?.let { runtime.wasInterrupted(request.containerId, it) } == true
+                    }
+                }
                 issues.values.forEach { issue ->
-                    offerOmpSetup(OmpSetupRequest(containerId = issue.containerId, message = issue.message,
-                        repair = true, runtimeIssueId = issue.id))
+                    if (runtime.wasInterrupted(issue.containerId, issue.stopGeneration)) pool.dismissRuntimeIssue(issue.containerId, issue.id)
+                    else offerOmpSetup(OmpSetupRequest(containerId = issue.containerId, message = issue.message,
+                        repair = true, runtimeIssueId = issue.id, stopGeneration = issue.stopGeneration))
                 }
             }
         }
@@ -153,7 +164,10 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         }
     }
     fun report(text: String) { notices.update { it + HostNotice(text = text) } }
-    fun showError(error: Throwable) { notices.update { it + HostNotice(text = error.message ?: error.toString(), error = true) } }
+    fun showError(error: Throwable) {
+        if (error is CancellationException && error !is TimeoutCancellationException) return
+        notices.update { it + HostNotice(text = error.message ?: error.toString(), error = true) }
+    }
     fun dismissNotice() { notices.update { it.drop(1) } }
     fun launch(action: suspend () -> Unit): Job = scope.launch {
         _busy.update { it + 1 }
@@ -170,10 +184,16 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     }
 
     internal suspend fun checkOmpInstallation(containerId: String) {
-        val check = OmpInstallation.inspect(runtime, containerId)
-        if (check.state != OmpInstallationState.READY) {
+        val generation = runtime.containers.value.firstOrNull { it.config.id == containerId }?.stopGeneration ?: return
+        val check = try { OmpInstallation.inspect(runtime, containerId, stopGeneration = generation) }
+        catch (failure: Exception) {
+            currentCoroutineContext().ensureActive()
+            if (runtime.wasInterrupted(containerId, generation)) return
+            throw failure
+        }
+        if (!runtime.wasInterrupted(containerId, generation) && check.state != OmpInstallationState.READY) {
             offerOmpSetup(OmpSetupRequest(containerId = containerId, message = check.message,
-                repair = check.state == OmpInstallationState.BROKEN))
+                repair = check.state == OmpInstallationState.BROKEN, stopGeneration = generation))
         }
     }
 
@@ -183,13 +203,22 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
 
     private fun offerOmpSetup(request: OmpSetupRequest) = synchronized(ompSetupLock) {
         if (runtime.containers.value.none { it.config.id == request.containerId }) return@synchronized
+        if (request.stopGeneration?.let { runtime.wasInterrupted(request.containerId, it) } == true) return@synchronized
         if (request.runtimeIssueId != null && handledOmpIssues[request.containerId] == request.runtimeIssueId) return@synchronized
-        if (request.containerId in activeOmpInstallations) {
-            acknowledgeOmpIssue(request)
-            return@synchronized
+        activeOmpInstallations[request.containerId]?.let { active ->
+            if (runtime.wasInterrupted(request.containerId, active.stopGeneration)) {
+                activeOmpInstallations.remove(request.containerId)
+                approvedOmpInstallations.remove(active.id)
+            } else {
+                acknowledgeOmpIssue(request)
+                return@synchronized
+            }
         }
         val existing = ompSetups.value.firstOrNull { it.containerId == request.containerId }
         if (existing == null) ompSetups.value += request
+        else if (existing.stopGeneration?.let { runtime.wasInterrupted(existing.containerId, it) } == true) {
+            ompSetups.value = ompSetups.value.map { if (it.id == existing.id) request else it }
+        }
         else if (request.runtimeIssueId != null) {
             ompSetups.value = ompSetups.value.map {
                 if (it.id == existing.id) request.copy(id = existing.id) else it
@@ -212,17 +241,26 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
 
     internal fun confirmOmpSetup(request: OmpSetupRequest): String? = synchronized(ompSetupLock) {
         val current = ompSetups.value.firstOrNull { it.id == request.id } ?: return@synchronized null
-        if (runtime.containers.value.none { it.config.id == current.containerId }) return@synchronized null
+        val container = runtime.containers.value.firstOrNull { it.config.id == current.containerId } ?: return@synchronized null
+        if (current.stopGeneration != null && container.stopGeneration != current.stopGeneration) return@synchronized null
         approvedOmpInstallations[current.id] = current.containerId
-        activeOmpInstallations[current.containerId] = current.id
+        activeOmpInstallations[current.containerId] = ActiveOmpInstallation(current.id, container.stopGeneration)
         acknowledgeOmpIssue(current)
         ompSetups.value = ompSetups.value.filterNot { it.id == current.id }
         current.id
     }
 
     internal suspend fun openTerminal(containerId: String, installationId: String?): TerminalSession {
+        val generation = runtime.containers.value.firstOrNull { it.config.id == containerId }?.stopGeneration
         val install = synchronized(ompSetupLock) {
-            if (installationId != null && approvedOmpInstallations[installationId] == containerId) {
+            if (installationId != null) {
+                if (approvedOmpInstallations[installationId] != containerId) throw CancellationException("安装授权已使用或失效")
+                val active = activeOmpInstallations[containerId]
+                if (active == null || active.id != installationId || generation != active.stopGeneration) {
+                    approvedOmpInstallations.remove(installationId)
+                    activeOmpInstallations.remove(containerId)
+                    throw CancellationException("容器已停止或重新启动")
+                }
                 approvedOmpInstallations.remove(installationId)
                 true
             } else false
@@ -230,6 +268,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         if (!install) return runtime.openTerminal(containerId)
         try {
             pool.prepareOmpRepair(containerId)
+            if (generation != null && runtime.wasInterrupted(containerId, generation)) throw CancellationException("容器已停止或重新启动")
             return runtime.openTerminal(containerId, OmpInstallation.command())
         } catch (failure: Throwable) {
             synchronized(ompSetupLock) { activeOmpInstallations.remove(containerId) }
@@ -239,17 +278,26 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
 
     internal fun finishOmpInstallation(containerId: String, installationId: String?, terminal: TerminalSession?) {
         val finished = synchronized(ompSetupLock) {
-            if (installationId == null || activeOmpInstallations[containerId] != installationId) false
+            val active = activeOmpInstallations[containerId]
+            if (installationId == null || active?.id != installationId) null
             else {
                 approvedOmpInstallations.remove(installationId)
                 activeOmpInstallations.remove(containerId)
-                true
             }
         }
-        if (finished) launch {
+        if (finished != null) launch {
+            if (runtime.wasInterrupted(containerId, finished.stopGeneration)) return@launch
             if (terminal != null) withTimeout(15_000) { terminal.isAlive.first { !it } }
-            if (OmpInstallation.inspect(runtime, containerId).state == OmpInstallationState.READY) {
-                pool.refreshAfterOmpRepair(containerId)
+            if (runtime.wasInterrupted(containerId, finished.stopGeneration) || runtime.containers.value.none { it.config.id == containerId && it.running }) return@launch
+            try {
+                if (OmpInstallation.inspect(runtime, containerId, stopGeneration = finished.stopGeneration, runningOnly = true).state == OmpInstallationState.READY &&
+                    !runtime.wasInterrupted(containerId, finished.stopGeneration)) {
+                    pool.refreshAfterOmpRepair(containerId)
+                }
+            } catch (failure: Exception) {
+                currentCoroutineContext().ensureActive()
+                if (runtime.wasInterrupted(containerId, finished.stopGeneration) || runtime.containers.value.none { it.config.id == containerId && it.running }) return@launch
+                throw failure
             }
         }
     }

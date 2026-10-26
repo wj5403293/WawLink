@@ -1,6 +1,8 @@
 package dev.wawlink.driver
 
 import dev.wawlink.protocol.AgentConfigurationContext
+import dev.wawlink.runtime.ContainerConfig
+import dev.wawlink.runtime.ContainerInfo
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.LocalContainerRuntime
 import dev.wawlink.runtime.RuntimePaths
@@ -18,6 +20,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
 
@@ -300,6 +303,100 @@ class OmpAgentManagementRepositoryTest {
         }
     }
 
+    @Test fun containerStopDuringNativeLaunchDiscardsLateChildAndReloadCanRetryAfterRestart() = runBlocking {
+        fixture {
+            opening.receive()
+            stopContainer()
+            restartContainer()
+            val stale = launchTransport()
+            withTimeout(5_000) { stale.destroyed.await() }
+            awaitState { !it.loading && !it.modelsLoading }
+            assertTrue(runtimeFailures.isEmpty())
+            assertNull(repository.state.value.error)
+
+            val retry = async { repository.reload() }
+            val replacement = connect()
+            replacement.respond(replacement.request("snapshot"), configuration)
+            replacement.respond(replacement.request("modelsSnapshot"), catalogueResult)
+            retry.await()
+            assertEquals("chat", repository.state.value.models.single().id)
+            assertNull(repository.state.value.error)
+            replacement.destroy()
+            awaitState { it.error != null }
+            assertEquals(1, runtimeFailures.size)
+            assertEquals(listOf(1L), failureGenerations)
+            assertTrue(uncaught.isEmpty(), uncaught.toString())
+        }
+    }
+
+    @Test fun containerStopBeforeInitCompletesPendingRequestsWithoutAnError() = runBlocking {
+        fixture {
+            val transport = launchTransport()
+            transport.request("init")
+            stopContainer()
+            val stopped = awaitState { !it.loading && !it.modelsLoading }
+            withTimeout(5_000) { transport.destroyed.await() }
+            assertNull(stopped.error)
+            assertNull(stopped.modelsError)
+            assertTrue(runtimeFailures.isEmpty())
+            assertTrue(uncaught.isEmpty(), uncaught.toString())
+        }
+    }
+
+    @Test fun containerStopDuringCatalogueKeepsDefinitionsAndRetryRemainsAvailable() = runBlocking {
+        fixture {
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            transport.request("modelsSnapshot")
+            awaitState { !it.loading }
+            stopContainer()
+            restartContainer()
+            val stopped = awaitState { !it.modelsLoading }
+            withTimeout(5_000) { transport.destroyed.await() }
+            assertEquals("review", stopped.agents.single().name)
+            assertNull(stopped.error)
+            assertNull(stopped.modelsError)
+            assertTrue(runtimeFailures.isEmpty())
+            val retry = async { repository.reload() }
+            val replacement = connect()
+            replacement.respond(replacement.request("snapshot"), configuration)
+            replacement.respond(replacement.request("modelsSnapshot"), catalogueResult)
+            retry.await()
+            assertEquals("chat", repository.state.value.models.single().id)
+            assertTrue(runtimeFailures.isEmpty())
+            assertTrue(uncaught.isEmpty(), uncaught.toString())
+        }
+    }
+
+    @Test fun containerStopCancelsExternalManagementAndResourceRequestsWithoutRepairErrors() = runBlocking {
+        fixture {
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            transport.respond(transport.request("modelsSnapshot"), catalogueResult)
+            awaitState { !it.modelsLoading }
+            val generate = async { runCatching { repository.generateAgent("停止生成") } }
+            transport.request("generateAgent")
+            val resource = async { runCatching { repository.resources.request("skills.snapshot", emptyMap()) } }
+            transport.request("skills.snapshot")
+            stopContainer()
+            assertTrue(withTimeout(5_000) { generate.await() }.exceptionOrNull() is CancellationException)
+            assertTrue(withTimeout(5_000) { resource.await() }.exceptionOrNull() is CancellationException)
+            assertTrue(runtimeFailures.isEmpty())
+            assertNull(repository.state.value.error)
+            assertNull(repository.state.value.modelsError)
+
+            restartContainer()
+            val retry = async { repository.reload() }
+            val replacement = connect()
+            replacement.respond(replacement.request("snapshot"), configuration)
+            replacement.respond(replacement.request("modelsSnapshot"), catalogueResult)
+            retry.await()
+            assertEquals("chat", repository.state.value.models.single().id)
+            assertTrue(runtimeFailures.isEmpty())
+            assertTrue(uncaught.isEmpty(), uncaught.toString())
+        }
+    }
+
     @Test fun managementFramesRespectLimitsAcrossReadsAndPreserveUtf8AndFinalFrame() {
         val text = "汉字🙂".repeat(1500)
         val source = "{\"text\":${JsonPrimitive(text)}}\n{\"id\":2}"
@@ -332,18 +429,31 @@ class OmpAgentManagementRepositoryTest {
         private val local = LocalContainerRuntime(RuntimePaths(directory.resolve("runtime")))
         private val processes = Channel<Transport>(Channel.UNLIMITED)
         private val transports = CopyOnWriteArrayList<Transport>()
+        val opening = Channel<Unit>(Channel.UNLIMITED)
+        private val containerState = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("fixture", "验证", directory.path), running = true)))
+        val failureGenerations = CopyOnWriteArrayList<Long>()
         val uncaught = CopyOnWriteArrayList<Throwable>()
         val runtimeFailures = CopyOnWriteArrayList<String>()
         private val owner = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, failure -> uncaught += failure })
         private val runtime = object : ContainerRuntime by local {
-            override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = processes.receive()
+            override val containers = containerState
+            override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                opening.send(Unit)
+                return processes.receive()
+            }
         }
         val repository = OmpAgentManagementRepository(
             runtime, AgentConfigurationContext("fixture", "验证"),
             { directory.resolve("agent").apply { mkdirs() } },
             { guest, _ -> directory.resolve("agent").resolve(guest.removePrefix("/root/.omp/agent/")) },
-            owner, { _, _ -> }, { _, _ -> }, { emptyMap() }, {}, { runtimeFailures += it },
+            owner, { _, _ -> }, { _, _ -> }, { emptyMap() }, {}, { generation, message -> failureGenerations += generation; runtimeFailures += message },
         )
+        fun stopContainer() {
+            containerState.value = containerState.value.map { it.copy(running = false, stopGeneration = it.stopGeneration + 1) }
+        }
+        fun restartContainer() {
+            containerState.value = containerState.value.map { it.copy(running = true) }
+        }
         suspend fun launchTransport(): Transport = Transport().also { transport ->
             transports += transport
             processes.send(transport)
@@ -371,6 +481,7 @@ class OmpAgentManagementRepositoryTest {
         private val stderr = PipedInputStream(4096)
         private val errors = PipedOutputStream(stderr)
         private val exited = CountDownLatch(1)
+        val destroyed = CompletableDeferred<Unit>()
         private val requests = Channel<JsonObject>(Channel.UNLIMITED)
         @Volatile var failWrites = false
         private val input = object : OutputStream() {
@@ -416,6 +527,7 @@ class OmpAgentManagementRepositoryTest {
         @Synchronized override fun destroy() {
             if (!isAlive) return
             exited.countDown()
+            destroyed.complete(Unit)
             events.close()
             errors.close()
         }
