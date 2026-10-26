@@ -163,7 +163,7 @@ private fun RulesBrowser(app: AppCoordinator, config: ContainerConfig, onBack: (
             }
             Column(Modifier.widthIn(max = AgentPageMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 20.dp)) {
                 Text("用户规则", fontSize = 30.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp))
-                Text("${config.name} · ${config.user}", style = MaterialTheme.typography.bodyLarge,
+                Text("${config.displayName} · ${config.user}", style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
                 Text(root ?: "正在读取容器内 HOME…", style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))

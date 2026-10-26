@@ -128,6 +128,9 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - PRoot/Proroot 启动前为宿主补充 GID 追加缺失的容器组名，保留已有 `/etc/group` 条目并原子更新，解决 `groups: cannot find name for ...`，不屏蔽报错。DNS 继续使用已有的默认网络监听与客体配置更新，无需替换 PRoot 二进制或重新导入 Rootfs。
 - 工具链安装/卸载先确认，取消不执行，执行期间禁止重复触发；同一行卡片按较高内容等高，长版本自动换行。Git 版本去掉 `git version` 前缀。
 - rootfs 支持 `.tar.gz`、`.tar.xz`、`.tar.zst` 导入，导出为 `.tar.zst`。归档路径和符号链接受边界检查；克隆/导出保留可执行及访问权限。文件系统允许时保留真实硬链接；Android 等环境拒绝创建硬链接时，导入器改为复制普通文件并保留权限和修改时间，不生成替代符号链接。此时文件不再共享 inode，可能增加磁盘占用。体积统计不遍历运行时挂载和 PRoot/QEMU 的临时宿主视图。
+- 容器详情右上角的编辑按钮位于删除按钮左侧，打开当前主题 Material 3 底部面板，可修改标题、描述、分发版本号与图标。图标支持离线 Material Symbols、恢复发行版默认头像，以及系统文件选择的 PNG/JPEG/WebP/GIF/BMP 图片；图片上限 10 MiB、1600 万像素，保存为不超过 512×512、512 KiB 的 PNG 静态头像。
+- 四项信息保存在容器当前用户有效 HOME 的 `~/.wawlink/container.json`，字段为 `title`、`description`、`version`、`icon`。`icon` 为空表示默认头像，Material Symbols 小写名称表示内置图标，`data:image/png;base64,...` 表示内嵌图片；图片与文字同文件原子保存，不依赖宿主路径或容器 ID。标题最多 120 字符、描述 4000 字符、分发版本号 64 字符；分发版本号不替换 Linux 发行版版本。导出/导入保留全部信息，克隆保留描述、版本与图标并使用输入的新标题；使用非 root 用户制作的容器，导入后选择同一用户读取其 HOME。
+- 容器信息读写无需启动引擎，保存不重启已运行容器或中断会话；文件只在容器内持久化。缺少文件的旧容器保留原名称与发行版头像，新建/导入无信息容器写入初始标题。JSON 最大 1 MiB，读取失败保留原文件并显示错误；拒绝链接、特殊文件、越界及宿主挂载中的信息路径。外部修改触发冲突，图片选择取消不改草稿，保存失败保留草稿；关闭未保存编辑及重新读取后覆盖均需确认。Rootfs 分发仍包含用户自行配置的认证与数据，分发前须自行清理秘密信息。
 - 导入时以解压目录的真实路径统一校验符号链接，支持 Android 应用数据父目录的路径别名及合法的 `node_modules/.bin` 相对链接；仍拒绝作为解压目录的符号链接、路径穿越和真正逃逸的链接链。
 - Android 容器启动及执行命令前使用当前默认网络的 DNS，并在网络变化时原子更新已运行容器的 `/etc/resolv.conf`；断网时保留最后一份有效配置。显式绑定 `/etc/resolv.conf` 或 `/etc` 时，以用户挂载为准。现有 Rootfs 的旧 DNS 会在运行时修正，无需重新下载或导入归档。
 - Bun 会缓存 DNS 服务器；默认网络的 DNS 变化后，OMP 在下一次空闲发送时重启子进程并续接原会话，不中断正在执行的任务，不自动重发请求。独立宿主接入时，将同一个 `StateFlow<String?>` 同时传给 `RuntimePaths.resolvConf` 与 `OmpProcessPool` 的 `resolvConf` 参数；`null` 表示不覆盖现有 DNS。
@@ -606,3 +609,10 @@ Android Debug APK 构建通过，默认产物为 `app-android/build/outputs/apk/
 
 Android Debug APK 构建及 v2 签名校验通过，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 65,053,733 bytes，SHA-256：`d5eae4db478f4d916ac2ef04ea3cd8f4d735b2d70537f7bbaabd6521b884c80a`。未运行 Android 模拟器、Android 真机验收或模型请求；更新 APK 无需重新导入 Rootfs。
 
+### 可分发容器信息（2026-10-26）
+
+容器详情新增删除按钮左侧的编辑入口与 Material 3 bottom sheet，支持标题、描述、独立分发版本及内置/图片图标。17 项定向回归通过（容器信息 9、动作运行身份 1、引擎与脚本边界 7），Desktop 测试源码编译与 Android Debug APK 构建通过；删除既有引擎测试中已失效的固定默认 PATH 断言，不改变当前 PATH 行为。
+
+真实 x86_64 PRoot 读取 `~/.wawlink/container.json`，保存图标和文字期间原有客体进程存活且运行代次未变；外部改写被拒绝覆盖，Rootfs 导出/导入保留四字段，克隆只改变明确输入的标题，新运行时读取不启动容器。实际桌面操作验证 460 / 360 像素布局、内置图标、系统图片选择/缩放/保存、多行描述、放弃修改、冲突保留草稿及确认重新读取后的重试保存。临时 smoke Rootfs 文件字节合计 1,577,744 bytes、归档 753,428 bytes，仅用于验证，不替换交付 Rootfs。
+
+默认 APK `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 65,053,733 bytes，SHA-256：`2bed4278b055fc1e32a57861c9a61643a0a3c159881f3a8691f810bb7f8ee18f`，APK v2 签名通过。未运行 Android 模拟器、Android 真机验收或模型请求；桌面检查不替代手机图片选择、软键盘与系统返回验收。更新 APK 即可使用已有容器，无需重新导入 Rootfs。

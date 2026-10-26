@@ -175,7 +175,7 @@ internal fun ContainerFilesScreen(app: AppCoordinator, host: HostFiles, config: 
                 FileIconButton("arrow_back", "返回", { if (!browserBack()) onBack() })
                 Row(Modifier.weight(1f).fillMaxHeight().clickable(enabled = !busy, onClickLabel = "打开路径菜单") { pathSheet = true }.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(if (onChooseFiles != null) "容器文件 · ${pickedPaths.size} 项" else if (onChooseDirectory != null) "选择工作区 · ${config.name}" else config.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (onChooseFiles != null) "容器文件 · ${pickedPaths.size} 项" else if (onChooseDirectory != null) "选择工作区 · ${config.displayName}" else config.displayName, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(path, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Symbol("expand_more")

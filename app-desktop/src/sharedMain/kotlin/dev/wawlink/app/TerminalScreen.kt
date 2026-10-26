@@ -36,7 +36,7 @@ internal fun TerminalScreen(app: AppCoordinator, config: ContainerConfig, onBack
     MaterialTheme(colorScheme = colors) {
         Surface(Modifier.fillMaxSize(), color = Color.White) {
             Column(Modifier.fillMaxSize().imePadding()) {
-                AgentTopBar("${config.name} · 终端", onBack)
+                AgentTopBar("${config.displayName} · 终端", onBack)
                 val connected = session
                 if (connected != null) {
                     val alive by connected.isAlive.collectAsState()

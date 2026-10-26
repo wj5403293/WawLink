@@ -53,6 +53,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
     private val engines = RuntimeEngines(paths)
+    private val metadataStore = ContainerMetadataStore(engines)
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val stateFile = File(paths.dataDir, "containers.json")
     private val rootfsDir = File(paths.dataDir, "rootfs")
@@ -64,6 +65,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     private var nextRunGeneration = 0L
     private val errors = mutableMapOf<String, String>()
     private val dnsErrors = mutableMapOf<String, String>()
+    private val metadataErrors = mutableMapOf<String, String>()
     private val sizes = mutableMapOf<String, Long>()
     private val idleJobs = mutableMapOf<String, Job>()
     private val packageLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
@@ -95,9 +97,10 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
                 catch (failure: Exception) { errors[config.id] = "预置 rootfs 无效：${failure.message}" }
             }
         }
-        configurations.values.forEach { config ->
+        configurations.values.toList().forEach { config ->
             try { engines.validateRoot(config); sizes[config.id] = sizeOf(config) }
             catch (failure: Exception) { errors[config.id] = "rootfs 不可访问：${failure.message}" }
+            refreshMetadata(config)
         }
         publish()
         paths.resolvConf?.let { resolver ->
@@ -129,7 +132,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         return RootfsArchives.size(root, excluded)
     }
     private fun publish() {
-        _containers.value = configurations.values.map { ContainerInfo(it, keepers[it.id]?.process?.isAlive == true, sizes[it.id] ?: 0, errors[it.id] ?: dnsErrors[it.id], runGenerations[it.id] ?: 0) }
+        _containers.value = configurations.values.map { ContainerInfo(it, keepers[it.id]?.process?.isAlive == true, sizes[it.id] ?: 0, errors[it.id] ?: dnsErrors[it.id], runGenerations[it.id] ?: 0, metadataErrors[it.id]) }
     }
     private fun persist() {
         val temp = File(paths.dataDir, "containers.json.tmp")
@@ -137,6 +140,36 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         try { Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
         catch (_: AtomicMoveNotSupportedException) { Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.REPLACE_EXISTING) }
     }
+
+    /** Metadata failures are independent of engine/config repair and never start a guest. */
+    private fun refreshMetadata(config: ContainerConfig): ContainerMetadataSnapshot? = try {
+        metadataStore.read(config).also { snapshot ->
+            configurations[config.id] = config.copy(metadata = snapshot.value)
+            metadataErrors.remove(config.id)
+        }
+    } catch (failure: Exception) {
+        if (failure is CancellationException) throw failure
+        configurations[config.id] = config.copy(metadata = ContainerMetadata())
+        metadataErrors[config.id] = "容器信息读取失败：${failure.message}"
+        null
+    }
+
+    override suspend fun readMetadata(id: String): ContainerMetadataSnapshot = withContext(Dispatchers.IO) { mutex.withLock {
+        ensureOpen()
+        val snapshot = refreshMetadata(config(id))
+        publish()
+        snapshot ?: throw IllegalStateException(metadataErrors.getValue(id))
+    } }
+
+    override suspend fun saveMetadata(id: String, metadata: ContainerMetadata, expectedRevision: String?): ContainerMetadataSnapshot = withContext(Dispatchers.IO) { mutex.withLock {
+        ensureOpen()
+        val current = config(id)
+        val snapshot = metadataStore.save(current, metadata, expectedRevision)
+        configurations[id] = current.copy(metadata = snapshot.value)
+        metadataErrors.remove(id)
+        publish()
+        snapshot
+    } }
 
     private fun updateDns(config: ContainerConfig, content: String) {
         try {
@@ -155,15 +188,28 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         }
     }
 
-    override suspend fun register(config: ContainerConfig) = withContext(Dispatchers.IO) {
+    override suspend fun register(config: ContainerConfig) = register(config, initialTitle = null)
+
+    private suspend fun register(config: ContainerConfig, initialTitle: String?) = withContext(Dispatchers.IO) {
         mutex.withLock {
             ensureOpen()
             require(!configurations.containsKey(config.id)) { "容器 ID 已存在：${config.id}" }
             engines.validateRoot(config)
             require(config.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}")) && config.name.isNotBlank()) { "容器 ID 或名称无效" }
             require(configurations.values.none { File(it.rootfsPath).canonicalPath == File(config.rootfsPath).canonicalPath }) { "此 rootfs 已注册为另一个容器" }
-            if (config.isDefault) configurations.replaceAll { _, existing -> existing.copy(isDefault = false) }
             configurations[config.id] = config.copy(rootfsPath = File(config.rootfsPath).canonicalPath, isDefault = config.isDefault || configurations.isEmpty())
+            val snapshot = refreshMetadata(configurations.getValue(config.id))
+            if (initialTitle != null && snapshot != null && snapshot.revision == null) {
+                try {
+                    val saved = metadataStore.save(config, ContainerMetadata(title = initialTitle), null)
+                    configurations[config.id] = configurations.getValue(config.id).copy(metadata = saved.value)
+                } catch (failure: Throwable) {
+                    configurations.remove(config.id)
+                    metadataErrors.remove(config.id)
+                    throw failure
+                }
+            }
+            if (config.isDefault) configurations.replaceAll { key, existing -> existing.copy(isDefault = key == config.id) }
             sizes[config.id] = sizeOf(config)
             persist()
             publish()
@@ -256,8 +302,9 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             val running = keepers[config.id]?.process?.isAlive == true
             if (running) stopLocked(config.id)
             if (config.isDefault) configurations.replaceAll { _, value -> value.copy(isDefault = false) }
-            configurations[config.id] = config
-            if (configurations.values.none { it.isDefault }) configurations[config.id] = config.copy(isDefault = true)
+            configurations[config.id] = config.copy(metadata = previous.metadata)
+            if (configurations.values.none { it.isDefault }) configurations[config.id] = configurations.getValue(config.id).copy(isDefault = true)
+            refreshMetadata(configurations.getValue(config.id))
             persist()
             publish()
             if (running) startLocked(config.id)
@@ -280,6 +327,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         configurations.remove(id)
         errors.remove(id)
         dnsErrors.remove(id)
+        metadataErrors.remove(id)
         sizes.remove(id)
         if (id == "ubuntu-main") debugRootfsRemoved = true
         if (configurations.isNotEmpty() && configurations.values.none { it.isDefault }) {
@@ -289,7 +337,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     } }
 
     override suspend fun clone(id: String, name: String): ContainerConfig = withContext(Dispatchers.IO) {
-        require(name.isNotBlank()) { "克隆名称不能为空" }
+        ContainerMetadataStore.validate(ContainerMetadata(title = name))
         mutex.withLock {
             ensureOpen()
             val original = config(id)
@@ -301,7 +349,10 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             try {
                 RootfsArchives.export(File(original.rootfsPath), archive)
                 RootfsArchives.extract(archive, target)
-                val copied = original.copy(id = newId, name = name, rootfsPath = target.canonicalPath, isDefault = false)
+                val copiedConfig = original.copy(id = newId, name = name, rootfsPath = target.canonicalPath, isDefault = false)
+                val previous = metadataStore.read(copiedConfig)
+                val metadata = metadataStore.save(copiedConfig, previous.value.copy(title = name), previous.revision)
+                val copied = copiedConfig.copy(metadata = metadata.value)
                 configurations[newId] = copied
                 sizes[newId] = sizeOf(copied)
                 persist(); publish()
@@ -322,7 +373,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     private fun finishDeployment(id: String) { synchronized(_deployments) { _deployments.value = _deployments.value.filterNot { it.id == id } } }
 
     override suspend fun installDistro(distro: DistroSpec, name: String, mirror: MirrorSource, engine: ContainerEngineType): ContainerConfig = withContext(Dispatchers.IO) {
-        ensureOpen(); require(name.isNotBlank()) { "容器名称不能为空" }
+        ensureOpen(); ContainerMetadataStore.validate(ContainerMetadata(title = name))
         val id = UUID.randomUUID().toString()
         deployment(DeploymentProgress(id, name, 0f, "读取发行者 SHA256 元数据"))
         try {
@@ -336,7 +387,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     }
 
     override suspend fun importRootfs(source: String, name: String, engine: ContainerEngineType, expectedSha256: String?): ContainerConfig = withContext(Dispatchers.IO) {
-        ensureOpen(); require(name.isNotBlank()) { "容器名称不能为空" }
+        ensureOpen(); ContainerMetadataStore.validate(ContainerMetadata(title = name))
         val id = UUID.randomUUID().toString()
         try { deploy(id, name, source, expectedSha256, engine, null, null, if (expectedSha256 == null) "导入归档（未提供发行者 SHA256）" else "导入并校验 SHA256") }
         catch (failure: Throwable) {
@@ -373,7 +424,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             val config = ContainerConfig(id, name, target.canonicalPath, distroId, distro?.version ?: os["VERSION_ID"] ?: "custom", distro?.arch ?: detectArch(target), engine, link2symlink = paths.isAndroid, shell = if (File(target, "bin/bash").exists()) "/bin/bash" else "/bin/sh")
             engines.validateRoot(config)
             deployment(DeploymentProgress(id, name, .98f, "保存容器配置"))
-            register(config)
+            register(config, initialTitle = name)
             finishDeployment(id)
             return containers.value.first { it.config.id == id }.config
         } catch (failure: Throwable) { RootfsArchives.deleteTree(target); throw failure }

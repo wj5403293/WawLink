@@ -187,10 +187,14 @@ internal fun FeatureContainerSheet(
                 .selectable(selected, role = Role.RadioButton, onClick = { onSelect(container.config.id) })
                 .heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Symbol("deployed_code", tint = foreground)
+                ContainerAvatar(container.config, round = container.running, size = 32.dp)
                 Column(Modifier.weight(1f)) {
-                    Text(container.config.name, fontSize = 18.sp, fontWeight = FontWeight.Medium,
+                    Text(container.config.displayName, fontSize = 18.sp, fontWeight = FontWeight.Medium,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, color = foreground)
+                    if (container.config.metadata.description.isNotBlank()) Text(container.config.metadata.description,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, color = foreground.copy(alpha = .8f))
+                    if (container.config.metadata.version.isNotBlank()) Text("版本 ${container.config.metadata.version}",
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, color = foreground.copy(alpha = .8f))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Box(Modifier.size(10.dp).background(if (container.running) colors.tertiary else colors.outline, CircleShape))
                         Text(if (container.running) "运行中" else "已停止", fontSize = 15.sp,

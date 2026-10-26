@@ -50,7 +50,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
             (filter != "运行中" || session.state.status == SessionStatus.RUNNING) &&
             (filter != "待批准" || session.state.status == SessionStatus.WAITING) &&
             (filter != "已置顶" || r.pinned) && (environment == null || environment == r.containerId) &&
-            (query.isBlank() || "${r.title} ${r.workspace} ${c?.name.orEmpty()} ${c?.distro.orEmpty()}".contains(query.trim(), true))
+            (query.isBlank() || "${r.title} ${r.workspace} ${c?.displayName.orEmpty()} ${c?.distro.orEmpty()}".contains(query.trim(), true))
     }
     fun exitBatch() { batch = false; selected = emptySet() }
     SideEffect {
@@ -110,7 +110,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                         AgentIconButton("deployed_code", "按容器筛选", { environmentMenu = true }, filled = environment != null)
                         DropdownMenu(environmentMenu, { environmentMenu = false }) {
                             DropdownMenuItem({ Text("全部容器") }, { environment = null; environmentMenu = false })
-                            containers.forEach { c -> DropdownMenuItem({ Text(c.config.name) }, { environment = c.config.id; environmentMenu = false }, leadingIcon = { Symbol("deployed_code") }, trailingIcon = { if (environment == c.config.id) Symbol("check") }) }
+                            containers.forEach { c -> DropdownMenuItem({ Text(c.config.displayName) }, { environment = c.config.id; environmentMenu = false }, leadingIcon = { ContainerAvatar(c.config, size = 24.dp) }, trailingIcon = { if (environment == c.config.id) Symbol("check") }) }
                         }
                     }
                 }
@@ -127,7 +127,7 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
                         SectionLabel(title, icon, "${items.size}")
                         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             items.forEachIndexed { index, session ->
-                                SessionCard(session, containers.firstOrNull { it.config.id == session.record.containerId }?.config?.name ?: "容器已移除", expanded == session.record.id && !batch, batch, session.record.id in selected, index == 0, index == items.lastIndex,
+                                SessionCard(session, containers.firstOrNull { it.config.id == session.record.containerId }?.config?.displayName ?: "容器已移除", expanded == session.record.id && !batch, batch, session.record.id in selected, index == 0, index == items.lastIndex,
                                     onExpand = { val id = session.record.id; if (batch) { expanded = null; selected = if (id in selected) selected - id else selected + id } else expanded = if (expanded == id) null else id },
                                     onLongPress = { expanded = null; batch = true; selected = selected + session.record.id },
                                     onEnter = { onEnterSession(session.record.id) }, onFork = { app.launch { val id = app.fork(session.record.id); onEnterSession(id) } },
@@ -145,9 +145,20 @@ internal fun HomeScreen(app: AppCoordinator, files: HostFiles, onSettings: () ->
     }
     editing?.let { record -> SessionEditor(app, files, record, { editing = null }) { editing = null } }
     switching?.let { record -> AgentActionSheet({ switching = null }, title = "切换绑定容器") {
-        containers.forEach { c -> AgentActionRow(c.config.name, "${c.config.distro} ${c.config.version}", "deployed_code", {
-            app.launch { app.editSession(record.id, record.title, record.workspace, c.config.id, manualTitle = false); switching = null }
-        }) { if (record.containerId == c.config.id) Symbol("check_circle") } }
+        containers.forEach { c ->
+            Row(Modifier.fillMaxWidth().clickable {
+                app.launch { app.editSession(record.id, record.title, record.workspace, c.config.id, manualTitle = false); switching = null }
+            }.heightIn(min = 64.dp).padding(horizontal = 24.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                ContainerAvatar(c.config, size = 32.dp)
+                Column(Modifier.weight(1f)) {
+                    Text(c.config.displayName, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(c.config.metadata.description.ifBlank { "${c.config.distro} ${c.config.version}" },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                if (record.containerId == c.config.id) Symbol("check_circle")
+            }
+        }
     } }
     if (deleting.isNotEmpty()) AlertDialog(onDismissRequest = { deleting = emptySet() }, title = { Text("删除 ${deleting.size} 个会话？") }, text = { Text("将停止相关进程并永久删除会话历史，无法撤销。") }, confirmButton = { TextButton({ val ids = deleting; deleting = emptySet(); app.launch { app.deleteSessions(ids) }; exitBatch() }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton({ deleting = emptySet() }) { Text("取消") } })
 }
@@ -243,7 +254,7 @@ internal fun SessionEditor(app: AppCoordinator, files: HostFiles, record: Sessio
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             HostField("任务描述或标题", title, { title = it })
             SectionLabel("选择运行容器", "deployed_code")
-            HostChips(containers.map { it.config.id }, containerId, { id -> containers.first { it.config.id == id }.config.name }, { containerId = it }, "deployed_code")
+            HostChips(containers.map { it.config.id }, containerId, { id -> containers.first { it.config.id == id }.config.displayName }, { containerId = it }, "deployed_code")
             OutlinedTextField(workspace, { workspace = it }, Modifier.fillMaxWidth().padding(vertical = 6.dp), label = { Text("工作区目录") }, singleLine = true, shape = RoundedCornerShape(16.dp), trailingIcon = {
                 IconButton({ pickingWorkspace = true }, enabled = !saving && containers.any { it.config.id == containerId }) { Symbol("folder_open", contentDescription = "浏览容器目录选择工作区") }
             })

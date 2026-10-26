@@ -25,15 +25,15 @@ internal class ContainerFeatureScriptActions(private val runtime: ContainerRunti
                 }
                 var process: Process? = null
                 try {
-                    val config = runtime.containers.value.firstOrNull { it.config.id == containerId && it.running }?.config
+                    val container = runtime.containers.value.firstOrNull { it.config.id == containerId && it.running }
                         ?: error("容器未运行")
                     validate()
                     ensureActive()
-                    check(runtime.containers.value.any { it.running && it.config == config }) { "容器已停止或运行身份已变化" }
+                    check(runtime.containers.value.any { it.running && it.config.id == containerId && it.runGeneration == container.runGeneration }) { "容器已停止或运行身份已变化" }
                     val child = withContext(NonCancellable) {
                         invocation.job.ensureActive()
-                        check(runtime.containers.value.any { it.running && it.config == config }) { "容器已停止或运行身份已变化" }
-                        runtime.openProcess(containerId, listOf("/bin/sh", "-c", featureScriptActionSupervisor(feature, script)), "/", mapOf(
+                        check(runtime.containers.value.any { it.running && it.config.id == containerId && it.runGeneration == container.runGeneration }) { "容器已停止或运行身份已变化" }
+                        runtime.openRunningProcess(containerId, listOf("/bin/sh", "-c", featureScriptActionSupervisor(feature, script)), "/", mapOf(
                             "WAWLINK_FEATURE_ID" to feature.id,
                             "WAWLINK_FEATURE_DIR" to feature.directory,
                             "WAWLINK_ACTION_ID" to action.id,

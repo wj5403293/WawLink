@@ -26,8 +26,11 @@ data class ContainerConfig(
     val autoSleep: Boolean = true,
     val mounts: List<ContainerMount> = emptyList(),
     val environment: Map<String, String> = emptyMap(),
-)
-data class ContainerInfo(val config: ContainerConfig, val running: Boolean = false, val sizeBytes: Long = 0, val error: String? = null, val runGeneration: Long = 0)
+    @kotlinx.serialization.Transient val metadata: ContainerMetadata = ContainerMetadata(),
+) {
+    val displayName: String get() = metadata.title.ifBlank { name }
+}
+data class ContainerInfo(val config: ContainerConfig, val running: Boolean = false, val sizeBytes: Long = 0, val error: String? = null, val runGeneration: Long = 0, val metadataError: String? = null)
 data class DeploymentProgress(val id: String, val name: String, val progress: Float, val phase: String, val error: String? = null)
 enum class MirrorSource(val label: String) { TSINGHUA("清华镜像"), ALIYUN("阿里镜像"), USTC("中科大镜像"), OFFICIAL("官方源") }
 data class DistroSpec(val id: String, val name: String, val version: String, val arch: String = "arm64", val icon: String = "deployed_code")
@@ -56,6 +59,8 @@ interface ContainerRuntime : AutoCloseable {
     suspend fun start(id: String)
     suspend fun stop(id: String)
     suspend fun update(config: ContainerConfig)
+    suspend fun readMetadata(id: String): ContainerMetadataSnapshot
+    suspend fun saveMetadata(id: String, metadata: ContainerMetadata, expectedRevision: String?): ContainerMetadataSnapshot
     suspend fun delete(id: String)
     suspend fun clone(id: String, name: String): ContainerConfig
     suspend fun setDefault(id: String)

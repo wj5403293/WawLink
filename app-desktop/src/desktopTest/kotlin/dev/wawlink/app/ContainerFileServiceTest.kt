@@ -40,6 +40,7 @@ class ContainerFileServiceTest {
         override suspend fun prepareMountSource(source: String, readWrite: Boolean): String = error("Unexpected mount access request")
         override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean = error("Unexpected rootfs export")
         override suspend fun pickImportFiles(): List<HostImportFile> = error("Unexpected import picker")
+        override suspend fun pickContainerIcon(): HostImportFile? = error("Unexpected icon picker")
         override suspend fun openFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit) {
             val output = ByteArrayOutputStream(); write(output)
             opened.add(Triple(name, mimeType, output.toByteArray()))

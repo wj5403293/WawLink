@@ -23,6 +23,7 @@ interface HostFiles {
     suspend fun prepareMountSource(source: String, readWrite: Boolean): String
     suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean
     suspend fun pickImportFiles(): List<HostImportFile>
+    suspend fun pickContainerIcon(): HostImportFile?
     suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean
     suspend fun openFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit)
 }
@@ -142,7 +143,7 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             var previous = emptyMap<String, List<String>>()
             features.errors.collect { failures ->
                 failures.forEach { (id, messages) ->
-                    val name = runtime.containers.value.firstOrNull { it.config.id == id }?.config?.name ?: id
+                    val name = runtime.containers.value.firstOrNull { it.config.id == id }?.config?.displayName ?: id
                     messages.filterNot { it in previous[id].orEmpty() }.forEach { message ->
                         showError(IllegalStateException("$name：$message"))
                     }

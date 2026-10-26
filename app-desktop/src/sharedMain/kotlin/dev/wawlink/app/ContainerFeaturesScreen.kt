@@ -277,10 +277,10 @@ internal fun ContainerFeaturesScreen(
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(Modifier.weight(1f).height(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainer).clickable(enabled = !working && !editing) { choosingContainer = true }.padding(start = 10.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.surface, CircleShape), contentAlignment = Alignment.Center) {
-                            Symbol("deployed_code")
+                            if (container != null) ContainerAvatar(container.config, round = true, size = 40.dp) else Symbol("deployed_code")
                             Box(Modifier.align(Alignment.BottomEnd).size(12.dp).background(if (container?.running == true) LocalAgentColors.current.tertiary else MaterialTheme.colorScheme.outline, CircleShape).border(2.dp, MaterialTheme.colorScheme.surface, CircleShape))
                         }
-                        Text(container?.config?.name ?: "选择容器", Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(container?.config?.displayName ?: "选择容器", Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Symbol("unfold_more")
                     }
                     Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceContainer, CircleShape), contentAlignment = Alignment.Center) {

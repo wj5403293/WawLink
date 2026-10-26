@@ -49,7 +49,7 @@ internal fun FeatureCardsSettings(app: AppCoordinator) {
     }
     SectionLabel("功能卡片", "dashboard_customize")
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        HostRow("隐藏卡片", container?.config?.name?.let { "当前容器：$it · 已隐藏 ${hidden.size} 项" } ?: "尚未选择容器", "visibility_off") {
+        HostRow("隐藏卡片", container?.config?.displayName?.let { "当前容器：$it · 已隐藏 ${hidden.size} 项" } ?: "尚未选择容器", "visibility_off") {
             if (loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
             AgentIconButton("refresh", "刷新隐藏功能目录", { refresh++ }, enabled = containerId != null && !loading)
         }

@@ -69,14 +69,23 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
     private data class Identity(val uid: String, val gid: String, val name: String, val home: String)
     private fun identity(config: ContainerConfig): Identity {
         if (config.user == "root" || config.user == "0") return Identity("0", "0", "root", "/root")
+        val root = File(config.rootfsPath).canonicalFile.toPath()
         val passwd = File(config.rootfsPath, "etc/passwd")
-        require(passwd.canonicalFile.toPath().startsWith(File(config.rootfsPath).canonicalFile.toPath())) { "用户数据库路径越界" }
-        val parts = passwd.takeIf { it.isFile }?.readLines()?.map { it.split(':') }?.firstOrNull {
+        require(passwd.canonicalFile.toPath().startsWith(root)) { "用户数据库路径越界" }
+        require(Files.isRegularFile(passwd.canonicalFile.toPath(), NOFOLLOW_LINKS)) { "用户数据库不是普通文件" }
+        val parts = passwd.readLines().map { it.split(':') }.firstOrNull {
             it.size >= 7 && (it[0] == config.user || it[2] == config.user)
         } ?: error("容器用户“${config.user}”不存在，请先在容器内创建该用户")
         require(parts[2].matches(Regex("[0-9]+")) && parts[3].matches(Regex("[0-9]+"))) { "容器用户 UID/GID 无效" }
         require(parts[5].startsWith('/')) { "容器用户主目录无效" }
         return Identity(parts[2], parts[3], parts[0], parts[5])
+    }
+
+    /** Same HOME as builder(), without probing engines or launching a guest process. */
+    fun home(config: ContainerConfig): String = home(config, identity(config))
+
+    private fun home(config: ContainerConfig, user: Identity): String = (config.environment["HOME"] ?: user.home).also {
+        require(it.startsWith('/') && !it.startsWith("//") && '\u0000' !in it && it.split('/').none { part -> part == "." || part == ".." }) { "容器 HOME 必须是有效的绝对路径" }
     }
 
     fun validate(config: ContainerConfig) {
@@ -86,7 +95,7 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         require(config.shell.startsWith('/') && '\u0000' !in config.shell) { "Shell 必须使用容器内绝对路径" }
         val selectedShell = File(root, config.shell.trimStart('/')).canonicalFile
         require(selectedShell.toPath().startsWith(root.toPath()) && selectedShell.isFile && selectedShell.canExecute()) { "选定 Shell 不存在或不可执行：${config.shell}；请先安装它或改用 /bin/sh" }
-        identity(config)
+        home(config)
         config.environment.forEach { (key, value) ->
             require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && '\u0000' !in value) { "环境变量格式无效：$key" }
         }
@@ -220,7 +229,7 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         require(cwd.startsWith('/') && '\u0000' !in cwd && !cwd.split('/').contains("..")) { "工作目录必须是容器内绝对路径" }
         val root = validateRoot(config)
         val user = identity(config)
-        val env = linkedMapOf("HOME" to user.home, "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        val env = linkedMapOf("HOME" to home(config, user), "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         env.putAll(config.environment)
         environment.forEach { (key, value) -> require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && '\u0000' !in value) { "进程环境变量无效：$key" }; env[key] = value }
         env["PATH"] = env.getValue("HOME").trimEnd('/') + "/.wawlink/bin:" + env.getValue("PATH")

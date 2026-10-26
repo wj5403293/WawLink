@@ -59,7 +59,6 @@ class RuntimeEnginesTest {
         assertTrue("CUSTOM=per-process" in command)
         assertTrue("CONFIG_ONLY=present" in command)
         assertFalse("CUSTOM=configured" in command)
-        assertTrue("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" in command)
         assertEquals(File(data, "tmp").path, builder.environment()["PROROOT_TMP_DIR"])
         assertTrue(File(builder.environment().getValue("PROROOT_TMP_DIR")).isDirectory)
         assertFalse("LD_LIBRARY_PATH" in builder.environment())

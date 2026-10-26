@@ -29,9 +29,9 @@ internal fun bytesLabel(bytes: Long): String = when {
     bytes >= 1024 -> "%.1f KB".format(bytes.toDouble() / 1024)
     else -> "$bytes B"
 }
-@Composable internal fun DistroAvatar(distro: String, round: Boolean = false) {
+@Composable internal fun DistroAvatar(distro: String, round: Boolean = false, size: androidx.compose.ui.unit.Dp = 48.dp) {
     val color = when (distro.lowercase()) { "ubuntu" -> Color(0xFFD9460F); "debian" -> Color(0xFFA80030); "alpine" -> Color(0xFF0D597F); "arch" -> Color(0xFF1793D1); "fedora" -> Color(0xFF294172); "kali" -> Color(0xFF268BEE); else -> MaterialTheme.colorScheme.primary }
-    Box(Modifier.size(48.dp).background(color, RoundedCornerShape(if (round) 24.dp else 16.dp)), contentAlignment = Alignment.Center) { Text(distro.take(1).uppercase(), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+    Box(Modifier.size(size).background(color, RoundedCornerShape(if (round) size / 2 else size / 3)), contentAlignment = Alignment.Center) { Text(distro.take(1).uppercase(), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
 }
 @Composable internal fun ContainersHome(app: AppCoordinator, onDetail: (String) -> Unit) {
     val containers by app.runtime.containers.collectAsState()
@@ -64,7 +64,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                 }
             }
         }
-        val visible = containers.filter { c -> (filter != "运行中" || c.running) && (filter != "已停止" || !c.running) && "${c.config.name} ${c.config.distro} ${c.config.version}".contains(query.trim(), true) }
+        val visible = containers.filter { c -> (filter != "运行中" || c.running) && (filter != "已停止" || !c.running) && "${c.config.displayName} ${c.config.name} ${c.config.distro} ${c.config.version} ${c.config.metadata.description} ${c.config.metadata.version}".contains(query.trim(), true) }
         SectionLabel("已安装容器", "dns", "${visible.size}")
         if (visible.isEmpty()) EmptyHost("没有匹配的容器", "deployed_code")
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -74,15 +74,18 @@ internal fun bytesLabel(bytes: Long): String = when {
                 Column(Modifier.fillMaxWidth().clip(shape).background(MaterialTheme.colorScheme.surfaceContainerLow)
                     .border(if (selected) 3.dp else 0.dp, if (selected) MaterialTheme.colorScheme.primary else Color.Transparent, shape)) {
                     Row(Modifier.fillMaxWidth().selectable(selected = selected, role = Role.RadioButton) { app.launch { app.selectContainer(c.config.id) } }.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        DistroAvatar(c.config.distro, c.running)
+                        ContainerAvatar(c.config, c.running)
                         Column(Modifier.weight(1f)) {
-                            Text(c.config.name, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(c.config.displayName, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (c.config.metadata.description.isNotBlank()) Text(c.config.metadata.description, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (c.config.metadata.version.isNotBlank()) Text("版本 ${c.config.metadata.version}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                             Row(Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) { Meta("terminal", "${c.config.distro} ${c.config.version}"); Meta("hard_drive", bytesLabel(c.sizeBytes)); Meta("forum", "${sessions.count { it.record.containerId == c.config.id && !it.record.archived }}") }
                         }
-                        AgentIconButton("more_vert", "${c.config.name} 容器设置", { onDetail(c.config.id) })
+                        AgentIconButton("more_vert", "${c.config.displayName} 容器设置", { onDetail(c.config.id) })
                         Switch(c.running, { run -> app.launch { if (run) app.runtime.start(c.config.id) else app.runtime.stop(c.config.id) } })
                     }
                     c.error?.let { Text(it, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
+                    c.metadataError?.let { Text("容器信息读取失败：$it · 请进入设置重试或编辑", Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
                 }
             }
         }
@@ -184,21 +187,26 @@ internal fun bytesLabel(bytes: Long): String = when {
     var userEditor by remember { mutableStateOf(false) }
     var userName by remember(c.user) { mutableStateOf(c.user) }
     var clone by remember { mutableStateOf(false) }
-    var cloneName by remember { mutableStateOf("${c.name}-copy") }
+    var cloneName by remember { mutableStateOf("${c.displayName}-copy") }
     var delete by remember { mutableStateOf(false) }
+    var metadataEditor by remember(c.id) { mutableStateOf(false) }
+    var metadataRetryBusy by remember(c.id) { mutableStateOf(false) }
     val uiScope = rememberCoroutineScope()
     suspend fun probe() { probeError = null; try { tools = withContext(Dispatchers.IO) { app.runtime.probeToolchains(c.id) } } catch (e: Exception) { probeError = e.message ?: e.toString() } }
     LaunchedEffect(c.id, c.engine, c.user) { probe() }
     fun update(next: ContainerConfig) { app.launch { app.runtime.update(next) } }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-        AgentTopBar(c.name, onBack, actions = {
+        AgentTopBar(c.displayName, onBack, actions = {
+            AgentIconButton("edit", "编辑容器信息", { metadataEditor = true })
             AgentIconButton("delete", "删除容器", { delete = true })
             Switch(info.running, { run -> app.launch { if (run) app.runtime.start(c.id) else app.runtime.stop(c.id) } })
             Spacer(Modifier.width(8.dp))
         })
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(top = 4.dp, bottom = 120.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(26.dp)).padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) { DistroAvatar(c.distro, info.running); Column { Text("${c.distro} ${c.version}", fontSize = 19.sp, fontWeight = FontWeight.SemiBold); Text("${c.arch} · ${bytesLabel(info.sizeBytes)} · ${if (info.running) "运行中" else "已休眠"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) { ContainerAvatar(c, info.running); Column(Modifier.weight(1f)) { Text(c.displayName, fontSize = 19.sp, fontWeight = FontWeight.SemiBold); Text("发行版：${c.distro} ${c.version}", color = MaterialTheme.colorScheme.onSurfaceVariant); Text("${c.arch} · ${bytesLabel(info.sizeBytes)} · ${if (info.running) "运行中" else "已休眠"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                if (c.metadata.description.isNotBlank()) Text(c.metadata.description, style = MaterialTheme.typography.bodyLarge)
+                if (c.metadata.version.isNotBlank()) Text("分发版本号：${c.metadata.version}", color = MaterialTheme.colorScheme.primary)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     DetailAction(if (c.isDefault) "当前容器" else "选择容器", "check_circle", c.isDefault) { app.launch { app.selectContainer(c.id) } }
                     DetailAction("文件", "folder_open") { onFiles(c.id) }
@@ -209,6 +217,25 @@ internal fun bytesLabel(bytes: Long): String = when {
                 }
             }
             info.error?.let { Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error) }
+            info.metadataError?.let { failure ->
+                Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                    Text("容器信息未成功读取：$failure", color = MaterialTheme.colorScheme.error)
+                    Row {
+                        TextButton({
+                            if (!metadataRetryBusy) {
+                                metadataRetryBusy = true
+                                uiScope.launch {
+                                    try { app.runtime.readMetadata(c.id) }
+                                    catch (cancelled: CancellationException) { throw cancelled }
+                                    catch (failure: Exception) { app.showError(failure) }
+                                    finally { metadataRetryBusy = false }
+                                }
+                            }
+                        }, enabled = !metadataRetryBusy) { Text(if (metadataRetryBusy) "读取中…" else "重试读取") }
+                        TextButton({ metadataEditor = true }) { Text("编辑信息") }
+                    }
+                }
+            }
             SectionLabel("运行引擎", "deployed_code")
             DetailSegments(ContainerEngineType.entries, c.engine, { it.name.lowercase() }, { update(c.copy(engine = it)) }, enabled = { app.isAndroid || it != ContainerEngineType.PROROOT })
             Text("切换引擎或配置会停止相关进程并应用新配置。chroot 需要 Root 权限。${if (!app.isAndroid) "proroot 仅支持 Android。" else "proroot 仅支持 root 登录身份。"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
@@ -254,12 +281,15 @@ internal fun bytesLabel(bytes: Long): String = when {
             c.environment.forEach { (key, value) -> DetailRow(key, value, "data_object", { envEditor = key to value; addEnv = true }) { AgentIconButton("close", "删除变量", { update(c.copy(environment = c.environment - key)) }) } }
         }
     }
+    if (metadataEditor) key(c.id, c.rootfsPath, c.user, c.environment["HOME"]) {
+        ContainerMetadataSheet(app, files, c) { metadataEditor = false }
+    }
     pendingTool?.let { tool ->
         val operation = if (tool.installed) "卸载" else "安装"
         AlertDialog(
             onDismissRequest = { if (toolBusy == null) pendingTool = null },
             title = { Text("确认${operation} ${tool.title}？") },
-            text = { Text("将在容器「${c.name}」内${operation}工具链「${tool.title}」。${if (tool.installed) "卸载可能同时移除不再需要的依赖软件包。" else "安装将下载软件包并占用容器存储空间。"}") },
+            text = { Text("将在容器「${c.displayName}」内${operation}工具链「${tool.title}」。${if (tool.installed) "卸载可能同时移除不再需要的依赖软件包。" else "安装将下载软件包并占用容器存储空间。"}") },
             confirmButton = {
                 TextButton({
                     if (toolBusy == null && pendingTool != null) {
@@ -281,7 +311,7 @@ internal fun bytesLabel(bytes: Long): String = when {
         )
     }
     if (clone) AgentSheet("克隆容器", { clone = false }) { HostField("新容器名称", cloneName, { cloneName = it }); HostAction("开始克隆", "content_copy", { app.launch { app.runtime.clone(c.id, cloneName); clone = false } }, Modifier.fillMaxWidth(), enabled = cloneName.isNotBlank()) }
-    if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text("删除容器 ${c.name}？") }, text = { Text("将停止相关进程并删除此容器。受管导入的 rootfs 会永久删除；外部注册的开发 rootfs 将保留。存在关联会话时请先切换或删除会话。") }, confirmButton = { TextButton({ app.launch { app.deleteContainer(c.id); delete = false; onBack() } }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton({ delete = false }) { Text("取消") } })
+    if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text("删除容器 ${c.displayName}？") }, text = { Text("将停止相关进程并删除此容器。受管导入的 rootfs 会永久删除；外部注册的开发 rootfs 将保留。存在关联会话时请先切换或删除会话。") }, confirmButton = { TextButton({ app.launch { app.deleteContainer(c.id); delete = false; onBack() } }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton({ delete = false }) { Text("取消") } })
     if (addMount) MountSheet(mountEditor, c.engine == ContainerEngineType.CHROOT, files, { addMount = false }) { mount ->
         app.runtime.update(c.copy(mounts = if (mountEditor == null) c.mounts + mount else c.mounts.map { if (it == mountEditor) mount else it }))
         addMount = false

@@ -357,7 +357,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         }
         val setup = ompSetup
         if (setup != null) {
-            val containerName = containers.firstOrNull { it.config.id == setup.containerId }?.config?.name.orEmpty()
+            val containerName = containers.firstOrNull { it.config.id == setup.containerId }?.config?.displayName.orEmpty()
             AlertDialog(
                 onDismissRequest = { app.dismissOmpSetup(setup) },
                 title = { Text(if (setup.repair) "修复 OMP" else "安装 OMP") },

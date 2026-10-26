@@ -71,6 +71,16 @@ private class DesktopHostFiles : HostFiles {
         if (chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) emptyList()
         else chooser.selectedFiles.map { file -> HostImportFile(file.name) { file.inputStream() } }
     }
+    override suspend fun pickContainerIcon(): HostImportFile? = withContext(Dispatchers.Swing) {
+        val chooser = JFileChooser().apply {
+            dialogTitle = "选择容器图标"
+            fileSelectionMode = JFileChooser.FILES_ONLY
+            isAcceptAllFileFilterUsed = false
+            fileFilter = FileNameExtensionFilter("图片 (*.png, *.jpg, *.jpeg, *.webp, *.gif, *.bmp)", "png", "jpg", "jpeg", "webp", "gif", "bmp")
+        }
+        if (chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) null
+        else chooser.selectedFile.let { file -> HostImportFile(file.name) { file.inputStream() } }
+    }
     override suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean {
         val target = withContext(Dispatchers.Swing) {
             val chooser = JFileChooser().apply { dialogTitle = "保存文件"; selectedFile = File(name) }
@@ -122,7 +132,7 @@ private class DesktopHostFiles : HostFiles {
     }
     override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean {
         val destination = withContext(Dispatchers.Swing) {
-            val chooser = JFileChooser().apply { dialogTitle = "导出容器归档"; selectedFile = File("${container.name}.tar.zst") }
+            val chooser = JFileChooser().apply { dialogTitle = "导出容器归档"; selectedFile = File("${hostFileName(container.displayName)}.tar.zst") }
             if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
                 val file = chooser.selectedFile
                 if (file.exists() && javax.swing.JOptionPane.showConfirmDialog(null, "文件已存在，是否替换？", "确认替换", javax.swing.JOptionPane.YES_NO_OPTION) != javax.swing.JOptionPane.YES_OPTION) null else file

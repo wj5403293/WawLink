@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity(), HostFiles {
     private var exportResult: CancellableContinuation<Uri?>? = null
     private var fileImportResult: CancellableContinuation<List<Uri>>? = null
     private var fileExportResult: CancellableContinuation<Uri?>? = null
+    private var iconResult: CancellableContinuation<Uri?>? = null
     private var installPermissionResult: CancellableContinuation<Unit>? = null
     private var mountDirectoryResult: CancellableContinuation<Uri?>? = null
     private var storageAccessResult: CancellableContinuation<Boolean>? = null
@@ -60,6 +61,9 @@ class MainActivity : ComponentActivity(), HostFiles {
     }
     private val pickContainerFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> fileImportResult?.let { continuation -> fileImportResult = null; if (continuation.isActive) continuation.resume(uris) } }
     private val saveContainerFile = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri -> fileExportResult?.let { continuation -> fileExportResult = null; if (continuation.isActive) continuation.resume(uri) } }
+    private val pickIcon = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        iconResult?.let { continuation -> iconResult = null; if (continuation.isActive) continuation.resume(uri) }
+    }
     private val pickAttachments = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> attachmentResult?.let { continuation -> attachmentResult = null; if (continuation.isActive) continuation.resume(uris) } }
     private val pickArchive = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> importResult?.let { continuation -> importResult = null; if (continuation.isActive) continuation.resume(uri) } }
     private val saveArchive = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zstd")) { uri -> exportResult?.let { continuation -> exportResult = null; if (continuation.isActive) continuation.resume(uri) } }
@@ -180,6 +184,20 @@ class MainActivity : ComponentActivity(), HostFiles {
             HostImportFile(displayName(uri, preserveWhitespace = true)) { contentResolver.openInputStream(uri) ?: error("无法读取所选文档") }
         } }
     }
+    override suspend fun pickContainerIcon(): HostImportFile? {
+        val uri = withContext(Dispatchers.Main.immediate) {
+            check(iconResult == null) { "图标选择器已打开" }
+            suspendCancellableCoroutine<Uri?> { continuation ->
+                iconResult = continuation
+                continuation.invokeOnCancellation { iconResult = null }
+                try { pickIcon.launch(arrayOf("image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp")) }
+                catch (failure: Exception) { iconResult = null; throw failure }
+            }
+        } ?: return null
+        return withContext(Dispatchers.IO) {
+            HostImportFile(displayName(uri, preserveWhitespace = true)) { contentResolver.openInputStream(uri) ?: error("无法读取所选图片") }
+        }
+    }
     override suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean {
         val uri = withContext(Dispatchers.Main.immediate) {
             check(fileExportResult == null) { "导出选择器已打开" }
@@ -267,7 +285,7 @@ class MainActivity : ComponentActivity(), HostFiles {
             suspendCancellableCoroutine<Uri?> { continuation ->
                 exportResult = continuation
                 continuation.invokeOnCancellation { exportResult = null }
-                saveArchive.launch("${container.name}.tar.zst")
+                saveArchive.launch("${hostFileName(container.displayName)}.tar.zst")
             }
         } ?: return false
         return withContext(Dispatchers.IO) {
