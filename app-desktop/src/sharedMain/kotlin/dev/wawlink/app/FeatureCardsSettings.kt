@@ -30,6 +30,7 @@ internal fun FeatureCardsSettings(app: AppCoordinator) {
         val id = containerId ?: return@LaunchedEffect
         loading = true; error = null
         try {
+            app.featureCards.load(id)
             catalog = app.features.catalog(id)
             app.featureCards.reconcile(id, featureCardTitles(catalog).keys.toList())
         } catch (cancelled: CancellationException) { throw cancelled }

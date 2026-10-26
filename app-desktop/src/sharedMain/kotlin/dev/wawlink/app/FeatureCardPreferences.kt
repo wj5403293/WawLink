@@ -1,10 +1,8 @@
 package dev.wawlink.app
 
-import java.io.File
-import java.io.FileOutputStream
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import dev.wawlink.runtime.ContainerFeaturePreferences
+import dev.wawlink.runtime.ContainerRuntime
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,26 +20,31 @@ data class FeatureCardLayout(
     val colors: Map<String, String> = emptyMap(),
 )
 
-/** Disk is committed before publishing; navigation cannot interrupt an in-flight preference change. */
-class FeatureCardPreferences(private val file: File) {
+/** Guest storage is committed before publishing; navigation cannot interrupt an in-flight change. */
+class FeatureCardPreferences(runtime: ContainerRuntime) {
+    private val storage = ContainerFeaturePreferences(runtime)
     private val mutex = Mutex()
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
-    private val _state = MutableStateFlow(load())
+    private val _state = MutableStateFlow<Map<String, FeatureCardLayout>>(emptyMap())
     val state: StateFlow<Map<String, FeatureCardLayout>> = _state.asStateFlow()
 
-    private fun load(): Map<String, FeatureCardLayout> = try {
-        if (!file.exists()) emptyMap() else Json.parseToJsonElement(file.readText()).jsonObject.mapValues { (_, element) ->
-            val value = element.jsonObject
-            FeatureCardLayout(
-                value["order"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }.distinct(),
-                value["hidden"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }.toSet(),
-                value["colors"]?.jsonObject.orEmpty().mapValues { it.value.jsonPrimitive.content }.filterValues(::validColor),
-            )
+    suspend fun load(containerId: String) = access(containerId)
+
+    private fun parse(document: String?): FeatureCardLayout {
+        if (document == null) return FeatureCardLayout()
+        val value = Json.parseToJsonElement(document).jsonObject
+        fun string(element: JsonElement): String {
+            require(element is JsonPrimitive && element.isString) { "功能卡片设置包含非字符串值" }
+            return element.content
         }
-    } catch (failure: Exception) {
-        _error.value = "无法读取功能卡片设置：${failure.message}"
-        emptyMap()
+        val colors = value["colors"]?.jsonObject.orEmpty().mapValues { string(it.value) }
+        require(colors.values.all(::validColor)) { "功能卡片颜色必须为 #RRGGBB" }
+        return FeatureCardLayout(
+            value["order"]?.jsonArray.orEmpty().map(::string).distinct(),
+            value["hidden"]?.jsonArray.orEmpty().map(::string).toSet(),
+            colors,
+        )
     }
 
     suspend fun reconcile(containerId: String, keys: List<String>) = change(containerId) { current ->
@@ -70,31 +73,30 @@ class FeatureCardPreferences(private val file: File) {
         it.copy(order = it.order - key, hidden = it.hidden - key, colors = it.colors - key)
     }
 
-    private suspend fun change(containerId: String, transform: (FeatureCardLayout) -> FeatureCardLayout) = withContext(NonCancellable + Dispatchers.IO) {
+    private suspend fun change(containerId: String, transform: (FeatureCardLayout) -> FeatureCardLayout) =
+        withContext(NonCancellable) { access(containerId, transform) }
+
+    private suspend fun access(containerId: String, transform: (FeatureCardLayout) -> FeatureCardLayout = { it }) = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val current = _state.value
-            val layout = transform(current[containerId] ?: FeatureCardLayout())
-            if (current[containerId] == layout) return@withLock
-            val next = current + (containerId to layout)
-            val document = buildJsonObject {
-                next.forEach { (id, entry) -> put(id, buildJsonObject {
-                    put("order", JsonArray(entry.order.map(::JsonPrimitive)))
-                    put("hidden", JsonArray(entry.hidden.map(::JsonPrimitive)))
-                    put("colors", buildJsonObject { entry.colors.forEach { (key, color) -> put(key, color) } })
-                }) }
-            }
-            file.parentFile?.mkdirs()
-            val temporary = File.createTempFile("feature-cards-", ".tmp", file.absoluteFile.parentFile)
             try {
-                FileOutputStream(temporary).use { stream ->
-                    stream.write(document.toString().toByteArray(Charsets.UTF_8))
-                    stream.fd.sync()
+                val document = storage.read(containerId)
+                val current = parse(document)
+                val layout = transform(current)
+                if (layout != current) {
+                    val next = buildJsonObject {
+                        put("order", JsonArray(layout.order.map(::JsonPrimitive)))
+                        put("hidden", JsonArray(layout.hidden.map(::JsonPrimitive)))
+                        put("colors", buildJsonObject { layout.colors.forEach { (key, color) -> put(key, color) } })
+                    }
+                    storage.write(containerId, next.toString(), document)
                 }
-                try { Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE) }
-                catch (_: AtomicMoveNotSupportedException) { Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING) }
-                _state.value = next
+                _state.value = _state.value + (containerId to layout)
                 _error.value = null
-            } finally { temporary.delete() }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                _error.value = "无法读取或保存功能卡片设置：${failure.message}"
+                throw failure
+            }
         }
     }
 

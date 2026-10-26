@@ -631,7 +631,7 @@ private object FeatureRunningOnly : AbstractCoroutineContextElement(Key) {
     object Key : CoroutineContext.Key<FeatureRunningOnly>
 }
 
-internal suspend fun featureCommand(runtime: ContainerRuntime, containerId: String, script: String, environment: Map<String, String> = emptyMap(), runningOnly: Boolean = false): ByteArray = coroutineScope {
+internal suspend fun featureCommand(runtime: ContainerRuntime, containerId: String, script: String, environment: Map<String, String> = emptyMap(), runningOnly: Boolean = false, stdinBytes: ByteArray? = null): ByteArray = coroutineScope {
     val owner = currentCoroutineContext().job
     val requireRunning = runningOnly || currentCoroutineContext()[FeatureRunningOnly.Key] != null
     var child: Process? = null
@@ -642,18 +642,29 @@ internal suspend fun featureCommand(runtime: ContainerRuntime, containerId: Stri
             else runtime.openProcess(containerId, listOf("/bin/sh", "-c", script), "/", environment)).also { child = it }
         }
         currentCoroutineContext().ensureActive()
-        process.outputStream.close()
         val stdout = async(Dispatchers.IO) { process.inputStream.use { featureReadBounded(it, 4 * 1024 * 1024) } }
         val stderr = async(Dispatchers.IO) { process.errorStream.use { featureReadBounded(it, 32_768).toString(Charsets.UTF_8) } }
-        withTimeout(20_000) { runInterruptible(Dispatchers.IO) { process.waitFor() } }
-        val output = stdout.await(); val error = stderr.await()
-        check(process.exitValue() == 0) { "容器功能命令失败（${process.exitValue()}）：$error${output.toString(Charsets.UTF_8).takeLast(32_768)}" }
-        output
+        val stdin = async(Dispatchers.IO) {
+            try {
+                runInterruptible { process.outputStream.use { if (stdinBytes != null) it.write(stdinBytes) } }
+                Result.success(Unit)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { Result.failure<Unit>(failure) }
+        }
+        withTimeout(20_000) {
+            val written = stdin.await()
+            runInterruptible(Dispatchers.IO) { process.waitFor() }
+            val output = stdout.await(); val error = stderr.await()
+            check(process.exitValue() == 0) { "容器功能命令失败（${process.exitValue()}）：$error${output.toString(Charsets.UTF_8).takeLast(32_768)}" }
+            written.getOrThrow()
+            output
+        }
     } finally {
         child?.let { process ->
             if (process.isAlive) process.destroy()
             process.inputStream.close()
             process.errorStream.close()
+            process.outputStream.close()
         }
     }
 }

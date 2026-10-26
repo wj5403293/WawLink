@@ -136,17 +136,16 @@ internal fun ContainerFeaturesScreen(
     LaunchedEffect(containerId, refresh) {
         if (containerId == null) return@LaunchedEffect
         loading = true; error = null
-        try { catalog = service.catalog(containerId) }
+        try {
+            app.featureCards.load(containerId)
+            catalog = service.catalog(containerId)
+            app.featureCards.reconcile(containerId, featureCardTitles(catalog).keys.toList())
+        }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { report(failure) }
         finally { loading = false }
     }
     LaunchedEffect(containerId, entries) {
-        if (containerId != null) {
-            try { app.featureCards.reconcile(containerId, entries.map { it.key }) }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { report(failure) }
-        }
         selected = selected.intersect(byKey.keys)
     }
     fun moveOver(pointer: Offset) {
