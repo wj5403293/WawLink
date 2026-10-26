@@ -43,7 +43,7 @@
 - 主会话运行中点按追加使用 OMP 原生 `steer`，长按使用原生 `followUp`，两种方式均保留附件；本地预览、编辑、停止与恢复不得丢失队列种类。主输入框没有文字和附件时，点击排队消息编辑应在成功撤出队列后将原始文字和附件放回输入框并聚焦；输入框已有内容时保留行内编辑，不覆盖草稿，撤回失败不伪造成功。
 - 加载状态使用 Compose Material 3 标准进度组件，不使用旋转图标模拟；静态“运行中”筛选、部署等语义使用对应的 Material Symbols 图标，不把进度圆圈当图标。
 - 新会话默认开启免审批；应用设置提供“新会话默认免审批”并持久化，仅影响之后创建的会话。会话内仍可独立切换；开启时立即放行已等待及后续工具审批，不自动回答普通提问。
-- 思考节点可归入创建时正在执行的 Todo 子任务；没有活动 Todo 时保持扁平。流式更新、完整快照和历史重放保留同一节点的归属与 ID，不因任务切换迁移或重复。
+- 思考节点与模型正文归入创建时正在执行的 Todo 子任务；没有活动 Todo 时保持扁平，任务内正文不再追加到聊天最底部。流式更新、完整快照和历史重放保留同一节点的归属与 ID，不因任务切换迁移或重复。
 - 用户消息按发送时的 Todo 与前置节点固定位置；后续工具、思考、任务切换、排队消费、完整快照和历史重放不得重新归属或改变顺序。
 - 返回页面、进入设置或切换会话时保留滚动与展开状态；草稿按会话隔离。弹出菜单缩放/淡入淡出时保留外部阴影，选中背景覆盖完整列表项。
 - 模型选择按钮始终显示当前模型图标，列表项显示各自模型图标，保留品牌原色；未匹配品牌时，以模型 ID 首字符的大写单字标识加圆形底色显示，底色按字母稳定生成，同字母同色，不得套用服务商图标或通用脑图标。品牌资源参照 Kelivo，来源可核实的 MIT 图标与差异记录位于 `agent-ui/src/commonMain/composeResources/files/model-icons/`，不得复制许可来源未核实的资源。
@@ -59,7 +59,7 @@
 - 长思考及工具内容展开后，标题滚出可视区时将概况吸附在 Todo 与子任务概况下方；各层可回跳，不遮挡原始标题。思考仅在展开动画期间冻结显示快照，结束后恢复平滑增量输出，复用已完成的 Markdown 段落；阅读、选择或上滑时不强制追尾，全文查看使用 Markdown。
 - 思考与工具左侧既有图标点击后直接全屏查看该节点完整内容，折叠或展开时均可用，并提供裁剪在图标轮廓内的 Material 3 波纹反馈与中文无障碍名称；标题仍负责展开/收起，打开和返回不改变展开状态。计划与任务组图标维持原有展开/收起行为，保留展开后的全文/详情入口。
 - 超长聊天性能优化不得通过截断历史或正文、关闭动画、禁用富媒体或删减交互换取性能；保持原有显示、选择复制、展开、吸顶回跳和阅读锚点。流式更新复用未变节点与已完成解析，追尾只滚动实际布局差值，不向 LazyColumn 发送极大滚动距离。
-- LLM 代码块、未展开工具的命令摘要、执行脚本及读取/写入/查找的代码共用成熟库高亮；未知语言保留纯文本。全屏代码只读且可选择、复制原文，Android 使用 Sora Editor 与内置 TextMate 语法、依赖和明暗主题，Desktop 使用原生桌面代码组件，不使用 WebView 冒充 Sora；HTML 中的 JavaScript/CSS 也需高亮。
+- LLM 代码块、未展开工具的命令摘要、执行脚本及读取/写入/查找的代码共用成熟库高亮；未知语言保留纯文本。全屏代码只读且可选择、复制原文，默认开启自动换行，开关位于右上角三点 popup menu 的“自动换行”项；换行只改变显示，不改原文。Android 使用 Sora Editor 与内置 TextMate 语法、依赖和明暗主题，Desktop 使用原生桌面代码组件，不使用 WebView 冒充 Sora；HTML 中的 JavaScript/CSS 也需高亮。
 - 容器终端使用独立页面与真实 PTY；Android 直接移植 Love2Droid 的 Termux 终端模块、Maple Mono 字体与两行等宽快捷键栏，保留上游许可，不叠加另一套键栏。终端挂载和窗口获焦后建立输入连接，点击终端唤出软键盘，快捷键不抢输入焦点；Desktop 使用成熟终端组件。支持 ANSI、控制键、交互式程序及窗口尺寸更新，离开终端回收其进程。
 - 工具链卡片点击只弹出安装或卸载确认，取消不执行；确认后避免重复触发。同一行卡片按较高内容等高，版本允许换行，Git 仅显示版本号，不重复 `git version`。
 - 用户发送消息、继续下一轮或收到完整状态时，Todo 内容和状态未变化就不追加计划卡片；真正变化才追加，保留先前计划快照及用户消息位置。
@@ -93,13 +93,13 @@
   - `src/commonMain/kotlin/dev/wawlink/ui/AgentChatScreen.kt` 使用原生 `SnapshotStateMap` 保存相对所属 Lazy 行的吸顶几何，普通滚动不再重写每个节点的坐标；候选只取可见根项，历史计划二分定位，吸顶观察隔离于聊天与输入区。保留有限距离追尾、三层吸顶及各层回跳，不通过结构相等的自定义 Map 包装几何状态。
   - 同目录的 `SessionHistorySheet.kt` 实现历史树、时间线、回退、复制、预览、标签和历史 Ask；`AgentHubScreen.kt`、`SubagentScreen.kt` 实现运行总览、活动与独立子代理会话/概况/产物/任务页面；`AgentChatNavigation.kt` 保存跨页精确定位及返回请求，不用相同文本猜测原生节点。
   - `Markdown.kt` 的大块拆分在有界后台队列执行，普通行独立重组、无内联代码时跳过子组合布局、无链接时跳过点击/布局观察；无待显示增量时平滑输出挂起。`MarkdownParts.kt` 的 `StableMarkdownBuffer` 仅保留已完成段落与扫描游标，不重复扫描未闭合围栏的旧行，不持有逐段 `StringBuilder` 或重复解析器。超长分隔线使用迭代识别，保留原文选择复制与富媒体安全边界。
-  - 同目录的 `CodeLanguage.kt`、`HighlightedCode.kt`、`CodeDetailScreen.kt` 提供语言识别、后台高亮与全屏入口；`src/androidMain/kotlin/dev/wawlink/ui/OfflineTextMate.android.kt` 串行复用明/暗两套行内语法注册表，原生 Sora 编辑器仍独立持有分析器；`CodeDetailScreen.android.kt` 接入只读 Sora，`src/desktopMain/kotlin/dev/wawlink/ui/HighlightedCode.desktop.kt` 与 `CodeDetailScreen.desktop.kt` 接入 RSyntaxTextArea。
+  - 同目录的 `CodeLanguage.kt`、`HighlightedCode.kt`、`CodeDetailScreen.kt` 提供语言识别、后台高亮与全屏入口，以及默认开启的自动换行和三点菜单开关；`src/androidMain/kotlin/dev/wawlink/ui/OfflineTextMate.android.kt` 串行复用明/暗两套行内语法注册表，原生 Sora 编辑器仍独立持有分析器；`CodeDetailScreen.android.kt` 接入只读 Sora，`src/desktopMain/kotlin/dev/wawlink/ui/HighlightedCode.desktop.kt` 与 `CodeDetailScreen.desktop.kt` 接入 RSyntaxTextArea，全屏查看器沿用桌面混合画布以保证菜单位于原生编辑器上方。
   - `src/commonMain/composeResources/files/code/` 保存精确版本来源与许可，`textmate/` 保存语法依赖、主题、索引与哈希；`CodeLanguageTest.kt` 覆盖语言别名、路径选择器和未知语言，`src/androidUnitTest/kotlin/dev/wawlink/ui/OfflineTextMateTokenizerTest.kt` 与 `src/desktopTest/kotlin/dev/wawlink/ui/NativeCodeHighlightTest.kt` 覆盖真实词法器的嵌入语言、多行及颜色边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/AgentManagementScreen.kt` 为新 Agent 设置入口，`ManagementComponents.kt` 提供原型一致的页面、作用域、候选模型链与配置编辑控件；`ManagementAgentsScreen.kt`、`ManagementAdvisorsScreen.kt` 管理定义、运行覆盖及顾问，`ManagementRolesScreen.kt`、`ManagementPoliciesScreen.kt`、`ManagementRuntimeScreen.kt` 分别管理角色、模型策略与原生运行设置，`ManagementNativeProviderScreen.kt` 编辑完整原生服务及模型覆盖。
   - 同目录的 `EditableCodeScreen.kt` 提供带保存与舍弃确认的全屏可编辑原文入口；`src/androidMain/kotlin/dev/wawlink/ui/EditableCodeScreen.android.kt` 接入可编辑 Sora 与既有离线 TextMate，`src/desktopMain/kotlin/dev/wawlink/ui/EditableCodeScreen.desktop.kt` 接入可编辑 RSyntaxTextArea。
   - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除、无效输入和模型子表单状态保存，以及思考默认值的无操作、整段清除、继承与未知字段保留；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
-  - 同目录的 `OmpEventReducer.kt` 在归并器内部按稳定 ID 定位当前节点，只复制变更节点的祖先兄弟列表，外部整体替换自动失效索引；重复终态与工具输出的冗余渲染被消除。完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考归属。`OmpProcessPool.kt` 的事件日志逐条写入并关闭缓冲 UTF-8 writer，不额外构造整条换行字符串及其 UTF-8 字节数组。
+  - 同目录的 `OmpEventReducer.kt` 在归并器内部按稳定 ID 定位当前节点，只复制变更节点的祖先兄弟列表，外部整体替换自动失效索引；重复终态与工具输出的冗余渲染被消除。完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考/模型正文归属。`OmpProcessPool.kt` 的事件日志逐条写入并关闭缓冲 UTF-8 writer，不额外构造整条换行字符串及其 UTF-8 字节数组。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生轻量历史索引与独立运行实例接入 Kotlin 状态流，按会话、节点与版本缓存所选详情，保留完整快照分页与增量刷新。`omp-management/session.mjs` 以会话生命周期内的顺序定时扫描处理原子请求，不依赖 Proroot 未翻译的原始 inotify 路径；通道状态按原生进程实例隔离，初始化/排空错误交给调用页，本地超时不冒充页面取消。它加载的 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs` 分别负责原生操作分发、完整树索引/按需详情及注册表首屏/异步持久发现/增量活动摘要；原生模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖完整匹配快照、过期详情拒绝、正文复制边界、Hub 与历史解耦、分支返回及稳定消息身份。
   - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。

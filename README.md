@@ -99,7 +99,7 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - 点击思考或工具左侧图标，可直接进入该节点的现有全屏内容页，无需先展开；图标保留原有外形并带 Material 3 波纹与中文无障碍名称。标题仍控制展开/收起，打开和返回不改变展开状态，计划与任务组图标行为不变；展开后的全文/详情入口继续保留。
 - 超长聊天保留完整历史、正文和既有动画/富媒体/交互。吸顶几何改为相对所属 Lazy 行记录，滚动时不重写每个节点的绝对坐标，候选仅取可见根项并隔离观察；追尾仍按实际尾项和底部留白计算有限距离。思考折叠预览只准备可见宽度所需的头部/尾部文字，不删改全文；普通段落跳过内联代码专用子组合布局，大块 Markdown 后台准备，高亮注册表在 Android 串行复用。
 - Markdown 代码块、未展开工具的命令摘要、执行脚本与文件内容共用原生离线高亮；Android 使用 Sora TextMate，Desktop 使用 RSyntaxTextArea 3.6.0。语言依据显式标记、工具名、文件后缀或 shebang 识别，未知显式语言保留纯文本。读取路径支持行号、范围、raw、归档成员和查询选择器，不将这些选择器误当后缀。
-- 读取、写入、创建及查找代码可打开全屏只读查看器，支持行号、选择和复制原文；Android 使用 Sora Editor 0.23.6，Desktop 使用 RSyntaxTextArea 3.6.0，不以网页组件替代 Sora。内置 34 项 TextMate 语言映射、完整语法依赖及明暗主题，包含 HTML/JavaScript/CSS、TypeScript/JSX/TSX、Shell、Python、Kotlin、Java、C/C++/C#、Go、Rust、JSON/YAML/TOML、SQL 等；HTML 内嵌脚本与样式保持跨行状态。来源、哈希、差异和完整许可位于 `agent-ui/src/commonMain/composeResources/files/code/`。
+- 读取、写入、创建及查找代码可打开全屏只读查看器，支持行号、选择和复制原文，默认开启自动换行；右上角三点菜单的“自动换行”项可切换，换行不改变原文或复制内容。Android 使用 Sora Editor 0.23.6，Desktop 使用 RSyntaxTextArea 3.6.0，不以网页组件替代 Sora；桌面全屏窗口沿用混合画布，避免新菜单被原生编辑器遮挡。内置 34 项 TextMate 语言映射、完整语法依赖及明暗主题，包含 HTML/JavaScript/CSS、TypeScript/JSX/TSX、Shell、Python、Kotlin、Java、C/C++/C#、Go、Rust、JSON/YAML/TOML、SQL 等；HTML 内嵌脚本与样式保持跨行状态。来源、哈希、差异和完整许可位于 `agent-ui/src/commonMain/composeResources/files/code/`。
 - 内联代码参照 Kelivo，使用带 5×3 dp 留白、6 dp 圆角的中性浅底胶囊与深色等宽文字；长代码可分段换行，原文仍参与选择复制。Markdown 表格使用统一列宽、对齐网格、细边框与浅表头，保留左右/居中对齐和转义竖线，窄屏多列表格可横向滚动。Markdown 中的绝对路径、带目录相对路径和文件链接可点击；相对路径以当前会话工作区解析，打开、安装和下载均通过当前容器的文件服务，不把容器路径当宿主文件；同样支持 `app-release.apk (app/build/outputs/apk/release/app-release.apk)` 这种输出格式。
 - 聊天文件路径操作仅保留对应类型的动作：目录为“打开”“打包下载”；普通文件为“打开”“打开所在文件夹”“编辑”“下载”。目录在当前容器的独立浏览器中打开，返回保留聊天滚动和草稿；文件打开复用系统查看器及 APK 安装器。编辑使用原生代码编辑器，可显式保存并确认舍弃；通过客体进程暂存后原子替换，保留文件权限，保存失败保留草稿，检测到外部内容变化时拒绝覆盖。仅支持最大 2 MiB 的有效 UTF-8 文本，拒绝二进制、链接、虚拟路径与挂载根，未知语言仍可作为纯文本编辑。
 - Slash 菜单从当前会话 OMP 的原生命令目录加载并跟随动态更新；第一次输入 `/` 时才启动目录查询，不发送用户 prompt。当前内置命令匹配中文描述与 Material Symbols 图标；未知、扩展或被自定义覆盖的命令仍显示，使用默认图标且不显示描述。无参数 `/model`、`/cost` 保留应用内快捷入口，带参数的命令交给 OMP 原生解析。
@@ -107,7 +107,7 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 - Agent 正文与 ask 富预览共用 Markdown、SVG/Mermaid 代码块与 Markdown 图像显示。点击图片进入原生全屏，可缩放、拖动、复位并保存；PNG/JPEG/GIF/WebP 保存已加载的原始文件，不截屏或转码，动画图像显示首帧但保留原始动画字节。SVG 保存安全校验后的矢量内容；全屏与保存不重复下载或解码，取消保存不提示成功，失败可重试。Mermaid 12.2.0 随 UI 离线打包，本轮不新增 Mermaid 导出。图像来源仅 HTTP(S) 与图像 data URL，不读取宿主文件；SVG 不允许脚本、外部资源、实体、事件或 foreignObject，错误内容显示中文原因。
 - 用户消息与运行中追加消息即时本地显示，发送失败只撤回对应的未接收消息并显示原因；收到原生用户消息后，后续模型执行失败仍保留该消息。消息按发送时的 Todo 与前置节点定位，后续工具、思考、任务切换及历史重放不改变其位置。加载状态使用 Material 3 标准进度组件。
 - 应用设置中的“新会话默认免审批”默认开启并持久化，只影响以后创建的会话；会话内仍能单独切换。开启免审批会立即回复已等待和后续工具审批，不自动回答普通提问，不改写全局工具权限配置；关闭时在下一轮启动恢复原生审批模式。
-- 新思考节点跟随当前活动 Todo 子任务；没有活动 Todo 时保持扁平。任务切换、完整快照与历史重放不迁移或重复既有思考节点。
+- 新思考节点和模型正文跟随创建时的活动 Todo 子任务，正文显示在任务子级；没有活动 Todo 时保持扁平。任务切换、完整快照与历史重放不迁移或重复既有节点，不改变用户消息锚点；Todo 全部完成或清空后的新总结仍显示在顶层。
 - 用户消息和新一轮执行不重复追加未改变的 Todo；原生更新、提醒和完整状态按内容、状态与阶段判重，真正变化才生成新计划卡片，先前快照和用户消息位置保持不变。
 - 返回聊天、切换会话或进入设置后，保留各会话的滚动位置、Todo/思考/工具展开状态及未发送草稿；主页筛选和相关设置页的滚动、展开状态独立保存。不跨会话共享草稿，也不承诺结束应用进程后恢复所有临时 UI 状态。
 - 页面进入保持原有右侧滑入和非线性曲线；返回时当前页向右退出、上一级从左侧恢复。主页底栏“会话、容器、功能”按位置定向切换，保留各页已有状态。
@@ -288,6 +288,8 @@ const sdk = await wawlink.lua(`
 Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/libs/`。外部宿主需同时引入协议库及 Compose / 协程等正常运行依赖；不需要引入 OMP 驱动或容器模块。
 
 富图形的 Android 宿主需要可用且较新的 Android System WebView。Desktop 同时需要当前平台的 OpenJFX 21.0.13 `base/graphics/controls/media/web` 运行依赖（兼容 JDK 17），Linux 需要 GTK 3 及 JavaFX WebKit 的原生库；Gradle 工程已按平台声明。富图形在桌面使用无窗口 WebView/Canvas 生成原生 Compose 图片，不嵌入 Swing 子窗口，不需要 interop blending 参数；全屏代码查看单独使用原生 Swing 代码组件。Mermaid 来源与 MIT 许可位于 `agent-ui/src/commonMain/composeResources/files/rich/`；分发 OpenJFX 运行库时保留其 GPL/ClassPath exception 及 WebKit 第三方通知。
+
+Desktop 宿主若使用全屏代码查看器，需在创建界面前设置 JVM 属性 `compose.interop.blending=true` 与 `compose.swing.render.on.graphics=true`，使混合画布中的三点菜单显示在原生编辑器上方；本项目桌面入口已设置。
 
 `dev.wawlink.ui` 的入口：
 

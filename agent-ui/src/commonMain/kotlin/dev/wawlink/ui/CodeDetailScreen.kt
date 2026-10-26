@@ -1,5 +1,6 @@
 package dev.wawlink.ui
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -17,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -31,6 +33,8 @@ fun CodeDetailScreen(title: String, text: String, language: String?, onBack: () 
     val clipboard = LocalClipboardManager.current
     val canonical = remember(language, title, text) { inferCodeLanguage(language, title, text) }
     var selectionRequest by remember { mutableStateOf(0) }
+    var wordWrap by rememberSaveable { mutableStateOf(true) }
+    var more by remember { mutableStateOf(false) }
     PlatformCodeDetail(onBack) {
         Surface(Modifier.fillMaxSize(), color = colors.surface) {
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
@@ -42,9 +46,21 @@ fun CodeDetailScreen(title: String, text: String, language: String?, onBack: () 
                     }
                     AgentIconButton("select_all", "全选代码", { selectionRequest++ })
                     AgentIconButton("content_copy", "复制全部代码", { clipboard.setText(AnnotatedString(text)) })
+                    Box {
+                        AgentIconButton("more_vert", "更多操作", { more = true })
+                        ManagementMenu(more, { more = false }) {
+                            ManagementMenuItem(
+                                text = { Text("自动换行") },
+                                onClick = { wordWrap = !wordWrap; more = false },
+                                selected = wordWrap,
+                                leadingIcon = { Symbol("wrap_text") },
+                                trailingIcon = { if (wordWrap) Symbol("check", contentDescription = "已开启") },
+                            )
+                        }
+                    }
                 }
                 HorizontalDivider(color = colors.outlineVariant)
-                PlatformCodeViewer(text, canonical ?: "text", Modifier.fillMaxWidth().weight(1f), selectionRequest)
+                PlatformCodeViewer(text, canonical ?: "text", Modifier.fillMaxWidth().weight(1f), selectionRequest, wordWrap)
             }
         }
     }
@@ -54,4 +70,4 @@ fun CodeDetailScreen(title: String, text: String, language: String?, onBack: () 
 internal expect fun PlatformCodeDetail(onBack: () -> Unit, title: String = "代码详情", content: @Composable () -> Unit)
 
 @Composable
-internal expect fun PlatformCodeViewer(text: String, language: String?, modifier: Modifier, selectionRequest: Int)
+internal expect fun PlatformCodeViewer(text: String, language: String?, modifier: Modifier, selectionRequest: Int, wordWrap: Boolean)

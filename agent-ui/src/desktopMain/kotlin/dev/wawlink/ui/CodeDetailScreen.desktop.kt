@@ -1,31 +1,33 @@
 package dev.wawlink.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.awt.ComposePanel
 import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.WindowPosition
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.window.AwtWindow
 import java.awt.MouseInfo
 import java.awt.GraphicsEnvironment
-import androidx.compose.ui.window.DialogWindow
-import androidx.compose.ui.window.rememberDialogState
+import java.awt.KeyboardFocusManager
 import java.awt.Font
 import javax.swing.JComponent
+import javax.swing.JDialog
 import javax.swing.KeyStroke
 import javax.swing.AbstractAction
 import java.awt.event.ActionEvent
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -35,34 +37,51 @@ import org.fife.ui.rsyntaxtextarea.SyntaxScheme
 import org.fife.ui.rsyntaxtextarea.TokenTypes
 import org.fife.ui.rtextarea.RTextScrollPane
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal actual fun PlatformCodeDetail(onBack: () -> Unit, title: String, content: @Composable () -> Unit) {
-    val density = LocalDensity.current.density
+    val close by rememberUpdatedState(onBack)
+    val latestContent by rememberUpdatedState(content)
+    val appearance by rememberUpdatedState(LocalAgentAppearance.current)
+    val colors by rememberUpdatedState(LocalAgentColors.current)
+    val owner = remember { KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow }
     val screen = remember {
         (MouseInfo.getPointerInfo()?.device ?: GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice).defaultConfiguration.bounds
     }
-    DialogWindow(onCloseRequest = onBack, title = title, undecorated = true, resizable = false,
-        state = rememberDialogState(position = WindowPosition.Absolute((screen.x / density).dp, (screen.y / density).dp),
-            width = (screen.width / density).dp, height = (screen.height / density).dp),
-        onPreviewKeyEvent = { event ->
-            (event.type == KeyEventType.KeyDown && event.key == Key.Escape).also { if (it) onBack() }
-        },
-    ) {
-        // Swing focus can consume events before Compose's preview dispatcher sees them.
-        window.rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("ESCAPE"), "closeCode")
-        window.rootPane.actionMap.put("closeCode", object : AbstractAction() {
-            override fun actionPerformed(event: ActionEvent?) = onBack()
-        })
-        content()
-    }
+    // Match the desktop host's Swing/Compose canvas: a ComposeWindow leaves popups
+    // underneath native Swing editors on Linux, even with interop blending enabled.
+    AwtWindow(create = {
+        JDialog(owner).apply {
+            this.title = title
+            isUndecorated = true
+            isResizable = false
+            defaultCloseOperation = JDialog.DO_NOTHING_ON_CLOSE
+            bounds = screen
+            contentPane = ComposePanel().apply {
+                setContent { AgentTheme(appearance, colors) { latestContent() } }
+            }
+            addWindowListener(object : WindowAdapter() {
+                override fun windowClosing(event: WindowEvent) { close() }
+            })
+            // Swing focus can consume Escape before Compose sees it.
+            rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("ESCAPE"), "closeCode")
+            rootPane.actionMap.put("closeCode", object : AbstractAction() {
+                override fun actionPerformed(event: ActionEvent?) = close()
+            })
+        }
+    }, dispose = { window ->
+        (window.contentPane as ComposePanel).dispose()
+        window.dispose()
+    })
 }
 
-private class DesktopCodeView : RTextScrollPane(RSyntaxTextArea()) {
+private class DesktopCodeView(wordWrap: Boolean) : RTextScrollPane(RSyntaxTextArea()) {
     val area = textArea as RSyntaxTextArea
     init {
         area.apply {
             isEditable = false
-            lineWrap = false
+            lineWrap = wordWrap
+            wrapStyleWord = true
             isCodeFoldingEnabled = false
             isAutoIndentEnabled = false
             font = Font(Font.MONOSPACED, Font.PLAIN, 15)
@@ -82,8 +101,13 @@ private class DesktopCodeView : RTextScrollPane(RSyntaxTextArea()) {
     var selectionRequest = 0
 }
 @Composable
-internal actual fun PlatformCodeViewer(text: String, language: String?, modifier: Modifier, selectionRequest: Int) {
+internal actual fun PlatformCodeViewer(text: String, language: String?, modifier: Modifier, selectionRequest: Int, wordWrap: Boolean) {
     val colors = LocalAgentColors.current
+    val density = LocalDensity.current
+    var nativeScale by remember {
+        mutableFloatStateOf(GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration.defaultTransform.scaleX.toFloat())
+    }
+    val nativeDensity = remember(nativeScale, density.fontScale) { Density(nativeScale, density.fontScale) }
     var document by remember(text, language) { mutableStateOf<RSyntaxDocument?>(null) }
     LaunchedEffect(text, language) {
         document = withContext(Dispatchers.Default) {
@@ -96,7 +120,14 @@ internal actual fun PlatformCodeViewer(text: String, language: String?, modifier
             doc
         }
     }
-    SwingPanel(factory = { DesktopCodeView() }, modifier = modifier, background = colors.surface, update = { view ->
+    // SwingPanel uses native pixels; the Compose theme's content zoom must not shrink its bounds.
+    CompositionLocalProvider(LocalDensity provides nativeDensity) {
+    SwingPanel(factory = { DesktopCodeView(wordWrap).apply {
+        addPropertyChangeListener("graphicsConfiguration") {
+            graphicsConfiguration?.defaultTransform?.scaleX?.toFloat()?.let { nativeScale = it }
+        }
+    } }, modifier = modifier, background = colors.surface, update = { view ->
+        if (view.area.lineWrap != wordWrap) view.area.lineWrap = wordWrap
         val next = document
         if (next != null && view.document !== next) {
             val start = view.area.selectionStart.coerceAtMost(text.length)
@@ -127,6 +158,7 @@ internal actual fun PlatformCodeViewer(text: String, language: String?, modifier
             view.selectionRequest = selectionRequest
         }
     })
+    }
 }
 
 internal fun desktopSyntaxStyle(language: String?): String = when (language) {

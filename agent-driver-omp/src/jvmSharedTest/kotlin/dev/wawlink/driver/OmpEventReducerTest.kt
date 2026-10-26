@@ -404,24 +404,24 @@ class OmpEventReducerTest {
         assertTrue(reducer.hasConfirmedUser(user.id))
     }
 
-    @Test fun thinkingSnapshotsBelongToActiveTodoWithoutGroupingOtherMessages() {
-        val reducer = reducer()
+    @Test fun modelTextAndThinkingShareActiveTodoWithoutChangingChildOrder() {
+        val reducer = reducer { 1_000L }
         reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
         val message = """{"role":"assistant","content":[{"type":"thinking","thinking":"分析"},{"type":"text","text":"说明"}]}"""
         reducer.accept("""{"type":"message_start","messageId":"msg-1","message":$message}""")
         val group = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
         val thinking = group.children.filterIsInstance<ThinkingNodeItem>().single()
+        val text = group.children.filterIsInstance<AssistantMessageItem>().single()
         assertEquals("分析", thinking.text)
+        assertEquals("说明", text.markdownText)
         assertTrue(thinking.isStreaming)
-        assertEquals(GroupStats(), group.stats)
-        assertTrue(reducer.state.feed.none { it is ThinkingNodeItem })
-        assertEquals("说明", reducer.state.feed.filterIsInstance<AssistantMessageItem>().single().markdownText)
+        assertTrue(text.isStreaming)
+        assertEquals(listOf(thinking.id, text.id), group.children.map { it.id })
+        assertTrue(reducer.state.feed.none { it is ThinkingNodeItem || it is AssistantMessageItem })
         reducer.accept("""{"type":"message_end","messageId":"msg-1","message":$message}""")
         reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[$message]}""")
-        val final = allItems(reducer.state.feed).filterIsInstance<ThinkingNodeItem>().single()
-        assertEquals(thinking.id, final.id)
-        assertFalse(final.isStreaming)
-        assertEquals(final, reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single().children.single())
+        assertEquals(listOf(thinking.copy(isStreaming = false), text.copy(isStreaming = false)),
+            reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single().children)
     }
 
     @Test fun streamingThinkingKeepsItsOriginalTodoAcrossTaskChangesAndEndReplay() {
@@ -475,6 +475,70 @@ class OmpEventReducerTest {
         assertEquals(listOf("开始完成", "收尾"), thinking.map { it.text })
         assertTrue(thinking.all { !it.isStreaming })
         assertEquals(2, allItems(reducer.state.feed).filterIsInstance<ThinkingNodeItem>().size)
+    }
+
+    @Test fun textKeepsItsFirstTodoAndUserAnchorAcrossTaskSwitchesAndFinalSnapshots() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
+        reducer.updateEvent("""{"type":"text_delta","contentIndex":0,"delta":"读取"}""")
+        val original = allItems(reducer.state.feed).filterIsInstance<AssistantMessageItem>().single()
+        reducer.addUserMessage(UserMessageItem("continue", "继续"))
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"completed"},{"content":"Edit","status":"in_progress"}]}""")
+        reducer.updateEvent("""{"type":"text_delta","contentIndex":0,"delta":"完成"}""")
+        reducer.updateEvent("""{"type":"text_delta","contentIndex":1,"delta":"编辑说明"}""")
+        val full = """{"role":"assistant","content":[{"type":"text","text":"读取完成"},{"type":"text","text":"编辑说明"}]}"""
+        reducer.updateEvent("""{"type":"text_delta","contentIndex":1,"delta":"编辑说明","partial":$full}""", full)
+        reducer.accept("""{"type":"todo_auto_clear"}""")
+        reducer.accept("""{"type":"message_end","messageId":"msg-1","message":$full}""")
+        reducer.accept("""{"type":"agent_end","isTerminal":true,"messages":[$full]}""")
+        val groups = reducer.state.feed.filterIsInstance<StepGroupNodeItem>()
+        assertEquals(listOf("Read", "Edit"), groups.map { it.title })
+        assertEquals(listOf(original.id, "continue"), groups[0].children.map { it.id })
+        assertEquals(original.copy(markdownText = "读取完成", isStreaming = false), groups[0].children.first())
+        assertEquals(listOf("编辑说明"), groups[1].children.filterIsInstance<AssistantMessageItem>().map { it.markdownText })
+        assertTrue(allItems(reducer.state.feed).filterIsInstance<AssistantMessageItem>().all { !it.isStreaming })
+        assertTrue(reducer.state.feed.none { it is AssistantMessageItem })
+    }
+
+    @Test fun textWithoutActiveTodoStaysFlatAfterTodoAppearsOrCompletes() {
+        val reducer = reducer()
+        reducer.updateEvent("""{"type":"text_delta","contentIndex":0,"delta":"开场"}""")
+        val first = reducer.state.feed.filterIsInstance<AssistantMessageItem>().single()
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
+        reducer.updateEvent("""{"type":"text_end","contentIndex":0,"content":"开场完成"}""")
+        reducer.updateEvent("""{"type":"text_end","contentIndex":1,"content":"任务说明"}""")
+        reducer.accept("""{"type":"command_output","text":"命令输出"}""")
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"completed"}]}""")
+        reducer.updateEvent("""{"type":"text_end","contentIndex":2,"content":"最终总结"}""")
+        assertEquals(listOf("开场完成", "命令输出", "最终总结"),
+            reducer.state.feed.filterIsInstance<AssistantMessageItem>().map { it.markdownText })
+        assertEquals(first.copy(markdownText = "开场完成", isStreaming = false),
+            reducer.state.feed.filterIsInstance<AssistantMessageItem>().first())
+        assertEquals(listOf("任务说明"), reducer.state.feed.filterIsInstance<StepGroupNodeItem>().single()
+            .children.filterIsInstance<AssistantMessageItem>().map { it.markdownText })
+    }
+
+    @Test fun textOnlyNativeHistoryRestoresTodoChildrenAcrossUserBoundaries() {
+        val reducer = OmpEventReducer(ChatSessionUiState("session")) { 100_000L }
+        val records = Json.parseToJsonElement("""[
+            {"id":"todo","parentId":null,"type":"message","message":{"role":"toolResult","toolCallId":"init","toolName":"todo","content":[],"details":{"tasks":[{"content":"Read","status":"in_progress"}]}}},
+            {"id":"first","parentId":"todo","type":"message","message":{"role":"assistant","content":[{"type":"text","text":"第一轮"}]}},
+            {"id":"user","parentId":"first","type":"message","message":{"role":"user","content":"继续"}},
+            {"id":"second","parentId":"user","type":"message","message":{"role":"assistant","content":[{"type":"thinking","narration":true,"thinking":"第二轮"}]}},
+            {"id":"done","parentId":"second","type":"message","message":{"role":"toolResult","toolCallId":"done","toolName":"todo","content":[],"details":{"tasks":[{"content":"Read","status":"completed"}]}}},
+            {"id":"summary","parentId":"done","type":"message","message":{"role":"assistant","content":[{"type":"text","text":"总结"}]}}
+        ]""").jsonArray.map { it.jsonObject }
+        reducer.restoreNativeBranch(records, "summary")
+        val feed = reducer.state.feed
+        val groups = feed.filterIsInstance<StepGroupNodeItem>()
+        assertEquals(listOf("Read", "Read"), groups.map { it.title })
+        assertEquals(listOf("第一轮", "第二轮"), groups.map { it.children.filterIsInstance<AssistantMessageItem>().single().markdownText })
+        assertTrue(groups.all { it.state == NodeStatus.OK && it.startedAtMillis == null })
+        assertTrue(feed.indexOf(groups[0]) < feed.indexOf(feed.filterIsInstance<UserMessageItem>().single()))
+        assertTrue(feed.indexOf(groups[1]) > feed.indexOf(feed.filterIsInstance<UserMessageItem>().single()))
+        assertEquals(listOf("总结"), feed.filterIsInstance<AssistantMessageItem>().map { it.markdownText })
+        reducer.restoreNativeBranch(records, "summary")
+        assertEquals(groups.map { it.children.map(FeedItem::id) }, reducer.state.feed.filterIsInstance<StepGroupNodeItem>().map { it.children.map(FeedItem::id) })
     }
 
     @Test fun nestedDeltasAndFinalSnapshotsDoNotDuplicateTextOrUsage() {

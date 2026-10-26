@@ -385,7 +385,7 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
                 val streaming = nodeId !in completedBlocks
                 val narration = full?.array("content")?.getOrNull(index)?.asObject()?.bool("narration") == true
                 if (thinking && !narration) put(thinkingNode(nodeId, streaming, text))
-                else put(AssistantMessageItem(nodeId, text, streaming))
+                else put(AssistantMessageItem(nodeId, text, streaming), groupWithTodo = true)
             }
             type.startsWith("toolcall_") -> {
                 val key = "$id:$index"
@@ -442,17 +442,19 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
                     val streaming = nodeId !in completedBlocks
                     when (block.string("type")) {
                         "thinking" -> if (block.bool("narration") == true) {
-                            put(AssistantMessageItem(nodeId, block.string("thinking").orEmpty(), streaming))
+                            put(AssistantMessageItem(nodeId, block.string("thinking").orEmpty(), streaming),
+                                groupWithTodo = true, historical = historical)
                         } else {
-                            if (historical && item(nodeId) == null) ensureActiveGroup(historical = true)
-                            put(thinkingNode(nodeId, streaming, block.string("thinking").orEmpty()))
+                            put(thinkingNode(nodeId, streaming, block.string("thinking").orEmpty()), historical = historical)
                         }
-                        "text" -> put(AssistantMessageItem(nodeId, block.string("text").orEmpty(), streaming))
+                        "text" -> put(AssistantMessageItem(nodeId, block.string("text").orEmpty(), streaming),
+                            groupWithTodo = true, historical = historical)
                         "image" -> {
                             val mime = block.string("mimeType")
                             val data = block.string("data")
                             if (mime in imageMimeTypes && !data.isNullOrBlank())
-                                put(AssistantMessageItem(nodeId, "![图像](data:$mime;base64,$data)", streaming))
+                                put(AssistantMessageItem(nodeId, "![图像](data:$mime;base64,$data)", streaming),
+                                    groupWithTodo = true, historical = historical)
                         }
                         "toolCall" -> block.string("id")?.let { tool(it, block.string("name").orEmpty(),
                             block.obj("arguments") ?: JsonObject(emptyMap()), block.string("intent"), historical) }
@@ -1087,10 +1089,11 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
         }
     }
 
-    private fun put(value: FeedItem) {
+    private fun put(value: FeedItem, groupWithTodo: Boolean = value is ThinkingNodeItem, historical: Boolean = false) {
         ensureFeedLocations()
+        // Existing blocks keep their first location across task changes and full snapshots.
         feedLocations[value.id]?.let { replaceFeedItem(it, value); return }
-        if (value is ThinkingNodeItem && value.isStreaming) ensureActiveGroup()
+        if (groupWithTodo) ensureActiveGroup(historical)
         if (value is UserMessageItem) {
             planAfterUser = true
             reserveUserPosition(value.id)
@@ -1098,7 +1101,7 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
             state = state.copy(feed = placeUserMessage(state.feed, value, userPositions.getValue(value.id), userPositions))
             return
         }
-        val groupLocation = if (value is ThinkingNodeItem) activeGroup?.let { feedLocations[it] } else null
+        val groupLocation = if (groupWithTodo) activeGroup?.let { feedLocations[it] } else null
         val group = groupLocation?.node as? StepGroupNodeItem
         if (groupLocation != null && group != null) {
             replaceFeedItem(groupLocation, group.copy(children = group.children + value))

@@ -66,7 +66,7 @@ internal actual fun PlatformCodeDetail(onBack: () -> Unit, title: String, conten
 }
 
 @Composable
-internal actual fun PlatformCodeViewer(text: String, language: String?, modifier: Modifier, selectionRequest: Int) {
+internal actual fun PlatformCodeViewer(text: String, language: String?, modifier: Modifier, selectionRequest: Int, wordWrap: Boolean) {
     val context = rememberAgentViewContext()
     val colors = LocalAgentColors.current
     val dark = colors.surface.luminance() < 0.5f
@@ -74,7 +74,7 @@ internal actual fun PlatformCodeViewer(text: String, language: String?, modifier
     val editor = remember(context) {
         CodeEditor(context).apply {
             isEditable = false
-            isWordwrap = false
+            isWordwrap = wordWrap
             isLineNumberEnabled = true
             setTypefaceText(Typeface.MONOSPACE)
             setTextSize(15f)
@@ -93,6 +93,7 @@ internal actual fun PlatformCodeViewer(text: String, language: String?, modifier
         if (selectionRequest > 0) editor.selectAll()
     }
     key(editor) { AndroidView(factory = { editor }, modifier = modifier, update = { view ->
+        if (view.isWordwrap != wordWrap) view.isWordwrap = wordWrap
         if (applied.text != text) {
             view.setText(text)
             applied.text = text
