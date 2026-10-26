@@ -27,7 +27,7 @@ internal object RootfsArchives {
     private val runtimeMounts = setOf("proc", "sys", "dev", "host-rootfs")
 
     private fun member(root: Path, name: String): Path {
-        require('\u0000' !in name && '\\' !in name && !name.startsWith('/')) { "归档包含非法绝对路径：$name" }
+        require('\u0000' !in name && !name.startsWith('/') && (File.separatorChar != '\\' || '\\' !in name)) { "归档包含非法绝对路径：$name" }
         val path = root.resolve(name).normalize()
         require(path.startsWith(root)) { "归档路径越界：$name" }
         return path
@@ -90,7 +90,7 @@ internal object RootfsArchives {
                         directoryModes += target to entry.mode
                     }
                     entry.isSymbolicLink -> {
-                        require('\u0000' !in entry.linkName && '\\' !in entry.linkName && entry.linkName.isNotEmpty()) { "非法符号链接：${entry.name}" }
+                        require('\u0000' !in entry.linkName && entry.linkName.isNotEmpty() && (File.separatorChar != '\\' || '\\' !in entry.linkName)) { "非法符号链接：${entry.name}" }
                         symlinks += target to entry.linkName
                     }
                     entry.isLink -> hardlinks += target to member(root, entry.linkName.removePrefix("./"))

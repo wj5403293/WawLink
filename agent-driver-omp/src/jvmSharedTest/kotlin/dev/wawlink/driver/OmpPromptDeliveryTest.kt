@@ -612,6 +612,16 @@ class OmpPromptDeliveryTest {
                     inspectionFinished.complete(Unit)
                     return FinishedProcess("WAWLINK_OMP_CHECK\t$installationState\tinstallation check\n")
                 }
+                // Bootstrap is a real short-lived shell process, not the chat transport.
+                if (arguments.firstOrNull() == "/bin/sh" && arguments.getOrNull(1) == "-c") {
+                    val home = File(directory, "home").apply { mkdirs() }
+                    return ProcessBuilder(arguments).directory(directory).apply {
+                        environment().clear()
+                        environment().putAll(environment)
+                        environment()["PATH"] = System.getenv("PATH")
+                        environment()["HOME"] = home.absolutePath
+                    }.start()
+                }
                 if (arguments.firstOrNull() == "/usr/local/bin/bun") {
                     check(withManagement) { "未配置默认模型" }
                     return if (managementStarts.getAndIncrement() == 0) managementTransport else managementReplacements.receive()

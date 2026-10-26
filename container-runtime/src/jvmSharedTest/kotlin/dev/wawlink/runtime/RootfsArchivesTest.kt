@@ -198,6 +198,24 @@ class RootfsArchivesTest {
         assertFalse(File(directory, "outside").exists())
     }
 
+    @Test fun preservesSystemdEscapesInLinuxFilenamesAndLinkTargets() = fixture { directory ->
+        val unit = "usr/lib/systemd/system/system-systemd\\x2dcryptsetup.slice"
+        val image = archive(directory, listOf(
+            TarArchiveEntry(unit) to "[Unit]\nDescription=Cryptsetup slice\n",
+            link("etc/systemd/system/cryptsetup.slice", "/$unit"),
+            hardlink("usr/lib/systemd/system/copy.slice", unit),
+        ))
+        val root = File(directory, "root")
+        if (File.separatorChar == '\\') {
+            assertFailsWith<IllegalArgumentException> { RootfsArchives.extract(image, root) }
+        } else {
+            RootfsArchives.extract(image, root)
+            assertEquals("[Unit]\nDescription=Cryptsetup slice\n", File(root, unit).readText())
+            assertEquals(File(root, unit).readText(), File(root, "etc/systemd/system/cryptsetup.slice").readText())
+            assertTrue(Files.isSameFile(File(root, unit).toPath(), File(root, "usr/lib/systemd/system/copy.slice").toPath()))
+        }
+    }
+
     @Test fun rejectsParentTraversalWithoutWritingOutside() = fixture { directory ->
         val image = archive(directory, listOf(TarArchiveEntry("../escaped", true) to "bad"))
         assertFailsWith<IllegalArgumentException> { RootfsArchives.extract(image, File(directory, "root")) }

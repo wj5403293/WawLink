@@ -21,45 +21,87 @@ internal object DistroSources {
         "arch" to ("archlinux" to "dc56b998ffa2663209417396c8d70caf87c8052acf41e9a2c6daf24cbd181533"),
         "fedora" to ("fedora" to "5f51f3f2da790732fc6b720eefe5ec44841cf8edb21dfa342005257c4665bb8c"),
     )
+    private val snapshotLink = Regex("href=[\"']([0-9]{8}_[0-9]{2}(?::|%3[Aa])[0-9]{2})/[\"']")
+    private val encodedColon = Regex("%3[Aa]")
+    private val checksumColumns = Regex("\\s+")
+    private val sha256Pattern = Regex("[0-9a-fA-F]{64}")
+    private val domesticHosts = setOf("mirrors.tuna.tsinghua.edu.cn", "mirrors.aliyun.com", "mirrors.ustc.edu.cn")
 
-    fun resolve(spec: DistroSpec, mirror: MirrorSource): DistroDownload {
+    fun resolve(spec: DistroSpec, mirror: MirrorSource): DistroDownload = resolve(spec, mirror, ::text)
+
+    internal fun resolve(spec: DistroSpec, mirror: MirrorSource, metadata: (String) -> String): DistroDownload {
         require(spec in catalog) { "不支持的发行版版本或架构：${spec.id} ${spec.version} ${spec.arch}" }
-        require(spec.id != "fedora" || mirror in setOf(MirrorSource.ALIYUN, MirrorSource.OFFICIAL)) { "Fedora 41 已结束维护，清华/中科大不提供此版本归档；请选择阿里镜像或官方源" }
+        require(spec.id != "fedora" || mirror == MirrorSource.OFFICIAL) {
+            "Fedora 41 缺少可校验的国内 ARM64 rootfs 归档；国内现有 OCI/虚拟机镜像不能直接导入。请选择官方源，不会自动切换源或升级版本"
+        }
+        if (mirror != MirrorSource.OFFICIAL && spec.id == "ubuntu") {
+            val base = "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-cdimage/ubuntu-base/releases/24.04/release"
+            val filename = "ubuntu-base-24.04.5-base-arm64.tar.gz"
+            val pinned = "a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2"
+            require(checksum(metadata("$base/SHA256SUMS"), filename) == pinned) { "清华 Ubuntu Base SHA256 与固定校验值不符" }
+            return DistroDownload("$base/$filename", pinned, "下载清华 Ubuntu Base 24.04.5 rootfs（固定 SHA256，清华元数据）；${mirror.label}用于软件源")
+        }
+        if (mirror != MirrorSource.OFFICIAL && (spec.id == "debian" || spec.id == "arch" || spec.id == "kali")) {
+            // Only the rootfs member is importable; disk.qcow2, metadata and OCI bundles are not root filesystems.
+            val branch = when (spec.id) {
+                "debian" -> "debian/bookworm"
+                "arch" -> "archlinux/current"
+                else -> "kali/current"
+            }
+            val base = "https://mirrors.tuna.tsinghua.edu.cn/lxc-images/images/$branch/arm64/default"
+            val snapshot = snapshotLink.findAll(metadata("$base/"))
+                .map { it.groupValues[1].replace(encodedColon, ":") }
+                .maxOrNull() ?: error("清华 ${spec.name} 元数据缺少 ARM64 rootfs 快照")
+            val directory = "$base/${snapshot.replace(":", "%3A")}"
+            val filename = "rootfs.tar.xz"
+            return DistroDownload("$directory/$filename", checksum(metadata("$directory/SHA256SUMS"), filename),
+                "下载清华 ${spec.name} rootfs（快照 $snapshot，清华 SHA256）；${mirror.label}用于软件源")
+        }
         published[spec.id]?.let { (prefix, checksum) ->
             return DistroDownload(
                 "https://github.com/termux/proot-distro/releases/download/v4.17.3/$prefix-aarch64-pd-v4.17.3.tar.xz",
-                checksum, "下载发行者基础镜像；${mirror.label}用于软件源",
+                checksum, "下载官方渠道 proot-distro 基础镜像（发行者固定 SHA256）；官方软件源",
             )
         }
         if (spec.id == "alpine") {
-            val official = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64"
-            val metadata = text("$official/latest-releases.yaml")
-            val block = metadata.split(Regex("(?m)^-\\s*$")).firstOrNull { it.contains("flavor: alpine-minirootfs") }
-                ?: error("Alpine 官方元数据缺少 minirootfs")
-            val filename = Regex("(?m)^  file: (alpine-minirootfs-[A-Za-z0-9.\\-]+\\.tar\\.gz)$").find(block)?.groupValues?.get(1)
-                ?: error("Alpine 官方镜像文件名无效")
-            val checksum = Regex("(?m)^  sha256: ([0-9a-f]{64})$").find(block)?.groupValues?.get(1)
-                ?: error("Alpine 官方 SHA256 缺失")
             val base = when (mirror) {
                 MirrorSource.TSINGHUA -> "https://mirrors.tuna.tsinghua.edu.cn/alpine"
                 MirrorSource.ALIYUN -> "https://mirrors.aliyun.com/alpine"
                 MirrorSource.USTC -> "https://mirrors.ustc.edu.cn/alpine"
                 MirrorSource.OFFICIAL -> "https://dl-cdn.alpinelinux.org/alpine"
             }
-            return DistroDownload("$base/v3.21/releases/aarch64/$filename", checksum, "下载 ${mirror.label} Alpine 镜像（官方 SHA256）")
+            val directory = "$base/v3.21/releases/aarch64"
+            val filename = "alpine-minirootfs-3.21.9-aarch64.tar.gz"
+            val pinned = "a389940ee42579ead202fb91607fb25698a58a3a5b55c15b4603e5d39cfa4492"
+            require(checksum(metadata("$directory/$filename.sha256"), filename) == pinned) { "${mirror.label} Alpine minirootfs SHA256 与固定校验值不符" }
+            return DistroDownload("$directory/$filename", pinned, "下载${mirror.label} Alpine 3.21.9 minirootfs（固定 SHA256，同源元数据）")
         }
         val base = "https://kali.download/nethunter-images/current/rootfs"
         val filename = "kali-nethunter-rootfs-minimal-arm64.tar.xz"
-        val checksum = text("$base/SHA256SUMS").lineSequence().map { it.trim().split(Regex("\\s+")) }
-            .firstOrNull { it.size == 2 && it[1].removePrefix("*") == filename }?.firstOrNull()
-            ?: error("Kali 官方 SHA256SUMS 缺少镜像记录")
-        require(checksum.matches(Regex("[0-9a-fA-F]{64}"))) { "Kali 官方校验和无效" }
-        return DistroDownload("$base/$filename", checksum, "下载 Kali 官方基础镜像；${mirror.label}用于软件源")
+        return DistroDownload("$base/$filename", checksum(metadata("$base/SHA256SUMS"), filename), "下载 Kali 官方基础镜像（官方 SHA256）")
+    }
+
+    private fun checksum(metadata: String, filename: String): String {
+        val records = metadata.lineSequence().map { it.trim().split(checksumColumns) }
+            .filter { it.size == 2 && it[1].removePrefix("*") == filename }.toList()
+        require(records.size == 1 && sha256Pattern.matches(records.single()[0])) {
+            "SHA256 元数据缺少唯一有效的 $filename 记录"
+        }
+        return records.single()[0].lowercase()
+    }
+
+    internal fun redirectTarget(current: URI, location: String, domesticHost: String?): URI {
+        val next = current.resolve(location)
+        require((next.scheme == "http" || next.scheme == "https") && !(current.scheme == "https" && next.scheme != "https")) { "拒绝不安全的下载重定向" }
+        require(domesticHost == null || next.host == domesticHost) { "国内镜像禁止跨站重定向：${next.host}" }
+        return next
     }
 
     private fun connect(url: String): HttpURLConnection {
         var current = URI(url)
-        require(current.scheme in setOf("http", "https")) { "只支持 HTTP/HTTPS 下载地址" }
+        // Keep domestic metadata and archives on their selected provider, including every redirect hop.
+        val domesticHost = current.host?.takeIf { it in domesticHosts }
+        require(current.scheme == "http" || current.scheme == "https") { "只支持 HTTP/HTTPS 下载地址" }
         repeat(8) {
             val connection = current.toURL().openConnection() as HttpURLConnection
             connection.connectTimeout = 30_000
@@ -68,12 +110,10 @@ internal object DistroSources {
             connection.setRequestProperty("User-Agent", "WawLink/1.0")
             connection.setRequestProperty("Accept-Encoding", "identity")
             val code = connection.responseCode
-            if (code in listOf(301, 302, 303, 307, 308)) {
-                val location = connection.getHeaderField("Location") ?: error("下载重定向缺少目标地址")
-                val next = current.resolve(location)
+            if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                val location = connection.getHeaderField("Location")
                 connection.disconnect()
-                require(next.scheme in setOf("http", "https") && !(current.scheme == "https" && next.scheme != "https")) { "拒绝不安全的下载重定向" }
-                current = next
+                current = redirectTarget(current, location ?: error("下载重定向缺少目标地址"), domesticHost)
             } else {
                 if (code !in 200..299) { connection.disconnect(); error("下载失败：HTTP $code（${current.host}）") }
                 return connection
@@ -91,7 +131,7 @@ internal object DistroSources {
                 while (true) {
                     val count = input.read(buffer)
                     if (count < 0) break
-                    require(output.size() + count <= 4 * 1024 * 1024) { "官方校验元数据过大" }
+                    require(output.size() + count <= 4 * 1024 * 1024) { "镜像校验元数据过大" }
                     output.write(buffer, 0, count)
                 }
                 output.toByteArray()
@@ -102,7 +142,7 @@ internal object DistroSources {
 
     fun transfer(source: String, target: File, expectedSha256: String?, progress: (Long, Long) -> Unit) {
         val expected = expectedSha256?.trim()?.lowercase()
-        require(expected == null || expected.matches(Regex("[0-9a-f]{64}"))) { "SHA256 应为 64 位十六进制字符串" }
+        require(expected == null || sha256Pattern.matches(expected)) { "SHA256 应为 64 位十六进制字符串" }
         var connection: HttpURLConnection? = null
         val local = if (source.startsWith("file:")) File(URI(source)) else File(source)
         val remote = source.startsWith("http://") || source.startsWith("https://")
@@ -134,6 +174,7 @@ internal object DistroSources {
 
     fun configure(root: File, distro: String, mirror: MirrorSource) {
         writeGuest(root, "etc/resolv.conf", "nameserver 223.5.5.5\nnameserver 1.1.1.1\n")
+        writeGuest(root, "etc/wawlink-install-source", if (mirror == MirrorSource.OFFICIAL) "official\n" else "domestic\n")
         val domain = when (mirror) {
             MirrorSource.TSINGHUA -> "mirrors.tuna.tsinghua.edu.cn"
             MirrorSource.ALIYUN -> "mirrors.aliyun.com"
@@ -143,21 +184,20 @@ internal object DistroSources {
         when (distro) {
             "ubuntu" -> {
                 val base = if (domain.isEmpty()) "https://ports.ubuntu.com/ubuntu-ports" else "https://$domain/ubuntu-ports"
-                // Disable deb822 entries so apt does not keep using the old, conflicting mirror.
-                val sources = File(root, "etc/apt/sources.list.d")
-                sources.listFiles().orEmpty().filter { it.name.endsWith(".sources") || it.name.endsWith(".list") }.forEach { file ->
-                    require(file.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "软件源路径越界" }
-                    FilesHelper.remove(file)
-                }
+                // Disable both deb822 and legacy entries to prevent a second, overseas source surviving import.
+                clearGuestSources(root, "etc/apt/sources.list.d", setOf("sources", "list"))
                 writeGuest(root, "etc/apt/sources.list", "deb $base noble main universe restricted multiverse\ndeb $base noble-updates main universe restricted multiverse\ndeb $base noble-security main universe restricted multiverse\n")
             }
             "debian" -> {
                 val base = if (domain.isEmpty()) "https://deb.debian.org/debian" else "https://$domain/debian"
                 val security = if (domain.isEmpty()) "https://security.debian.org/debian-security" else "https://$domain/debian-security"
-                File(root, "etc/apt/sources.list.d").listFiles().orEmpty().filter { it.name.endsWith(".sources") || it.name.endsWith(".list") }.forEach(FilesHelper::remove)
+                clearGuestSources(root, "etc/apt/sources.list.d", setOf("sources", "list"))
                 writeGuest(root, "etc/apt/sources.list", "deb $base bookworm main contrib non-free non-free-firmware\ndeb $base bookworm-updates main contrib non-free non-free-firmware\ndeb $security bookworm-security main contrib non-free non-free-firmware\n")
             }
-            "kali" -> writeGuest(root, "etc/apt/sources.list", "deb ${if (domain.isEmpty()) "https://http.kali.org/kali" else "https://$domain/kali"} kali-rolling main contrib non-free non-free-firmware\n")
+            "kali" -> {
+                clearGuestSources(root, "etc/apt/sources.list.d", setOf("sources", "list"))
+                writeGuest(root, "etc/apt/sources.list", "deb ${if (domain.isEmpty()) "https://http.kali.org/kali" else "https://$domain/kali"} kali-rolling main contrib non-free non-free-firmware\n")
+            }
             "alpine" -> {
                 val base = if (domain.isEmpty()) "https://dl-cdn.alpinelinux.org/alpine" else "https://$domain/alpine"
                 writeGuest(root, "etc/apk/repositories", "$base/v3.21/main\n$base/v3.21/community\n")
@@ -169,7 +209,7 @@ internal object DistroSources {
             "fedora" -> {
                 // Fedora 41 is EOL; live mirrorlists no longer carry it. Use the actual archive.
                 val base = if (domain.isEmpty()) "https://archives.fedoraproject.org/pub/archive/fedora/linux" else "https://$domain/fedora-archive"
-                File(root, "etc/yum.repos.d").listFiles().orEmpty().filter { it.name.endsWith(".repo") }.forEach(FilesHelper::remove)
+                clearGuestSources(root, "etc/yum.repos.d", setOf("repo"))
                 writeGuest(root, "etc/yum.repos.d/wawlink.repo", "[fedora]\nname=Fedora 41 archive\nbaseurl=$base/releases/41/Everything/aarch64/os/\nenabled=1\ngpgcheck=1\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-41-aarch64\n[updates]\nname=Fedora 41 updates archive\nbaseurl=$base/updates/41/Everything/aarch64/\nenabled=1\ngpgcheck=1\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-41-aarch64\n")
             }
         }
@@ -186,5 +226,11 @@ internal object DistroSources {
         path.writeText(value)
     }
 
-    private object FilesHelper { fun remove(file: File) { java.nio.file.Files.deleteIfExists(file.toPath()) } }
+    private fun clearGuestSources(root: File, name: String, extensions: Set<String>) {
+        val directory = File(root, name)
+        require(directory.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "软件源路径越界：$name" }
+        directory.listFiles().orEmpty().filter { it.extension in extensions }.forEach { file ->
+            java.nio.file.Files.deleteIfExists(file.toPath())
+        }
+    }
 }

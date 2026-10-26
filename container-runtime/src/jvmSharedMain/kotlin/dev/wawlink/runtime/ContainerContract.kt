@@ -32,7 +32,7 @@ data class ContainerConfig(
 }
 data class ContainerInfo(val config: ContainerConfig, val running: Boolean = false, val sizeBytes: Long = 0, val error: String? = null, val runGeneration: Long = 0, val metadataError: String? = null)
 data class DeploymentProgress(val id: String, val name: String, val progress: Float, val phase: String, val error: String? = null)
-enum class MirrorSource(val label: String) { TSINGHUA("清华镜像"), ALIYUN("阿里镜像"), USTC("中科大镜像"), OFFICIAL("官方源") }
+enum class MirrorSource(val label: String) { OFFICIAL("官方源"), TSINGHUA("清华镜像"), ALIYUN("阿里镜像"), USTC("中科大镜像") }
 data class DistroSpec(val id: String, val name: String, val version: String, val arch: String = "arm64", val icon: String = "deployed_code")
 data class ToolchainInfo(val id: String, val title: String, val icon: String, val installed: Boolean, val version: String = "")
 data class RuntimePaths(

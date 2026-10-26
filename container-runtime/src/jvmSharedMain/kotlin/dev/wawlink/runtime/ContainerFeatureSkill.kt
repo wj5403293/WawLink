@@ -130,10 +130,22 @@ internal fun featureSkillInstallScript(content: String): String {
         set -eu
         case "${'$'}HOME" in /*) ;; *) echo '容器 HOME 无效' >&2; exit 1;; esac
         home=${'$'}(readlink -f -- "${'$'}HOME")
-        root="${'$'}home/.omp/agent/skills"
-        actual=${'$'}(readlink -m -- "${'$'}root")
-        case "${'$'}actual/" in "${'$'}home/"*) ;; *) echo 'Skill 目录通过符号链接越出 HOME' >&2; exit 1;; esac
-        mkdir -p -- "${'$'}root"
+        # Resolve each existing ancestor before creating the next: BusyBox has no readlink -m,
+        # and readlink -f cannot resolve an entire tree with missing intermediate directories.
+        root="${'$'}home"
+        for component in .omp agent skills; do
+            next="${'$'}{root%/}/${'$'}component"
+            if [ -e "${'$'}next" ] || [ -L "${'$'}next" ]; then
+                actual=${'$'}(readlink -f -- "${'$'}next")
+                case "${'$'}actual/" in "${'$'}{home%/}/"*) ;; *) echo 'Skill 目录通过符号链接越出 HOME' >&2; exit 1;; esac
+                [ -d "${'$'}actual" ] || { echo 'Skill 路径不是目录' >&2; exit 1; }
+            else
+                mkdir -- "${'$'}next"
+                actual=${'$'}(readlink -f -- "${'$'}next")
+                case "${'$'}actual/" in "${'$'}{home%/}/"*) ;; *) echo 'Skill 目录通过符号链接越出 HOME' >&2; exit 1;; esac
+            fi
+            root="${'$'}actual"
+        done
         dir="${'$'}root/wawlink-functions"
         [ ! -L "${'$'}dir" ] || exit 0
         mkdir -p -- "${'$'}dir"
@@ -175,7 +187,8 @@ internal fun featureSkillInstallScript(content: String): String {
         if [ -n "${'$'}digest" ]; then
             [ ! -L "${'$'}file" ] && [ -f "${'$'}file" ] || exit 0
             latest=${'$'}(sha256sum -- "${'$'}file"); [ "${'$'}{latest%% *}" = "${'$'}digest" ] || exit 0
-            chmod --reference="${'$'}file" -- "${'$'}stage/content"
+            mode=${'$'}(stat -c %a -- "${'$'}file")
+            chmod -- "${'$'}mode" "${'$'}stage/content"
         else
             [ ! -e "${'$'}file" ] && [ ! -L "${'$'}file" ] || exit 0
         fi

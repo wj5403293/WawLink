@@ -77,6 +77,8 @@
 - Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。
 - Proroot 五库按作者同一固定来源整套校验并原样打包；启动显式指定当前 APK 配套的 runtime/linker，不混用旧组件。OMP/Bun 启动修复须验证真实原生模块与 RPC，不靠屏蔽错误、禁用原生模块或伪造成功输出，也不要求重建已有 Rootfs。
 - 在线镜像安装完成后检查容器内 OMP，缺失或损坏时弹出安装/修复确认；OMP 运行进程或原生管理桥故障也须提示。只有用户同意才打开独立真实 PTY 终端并自动执行随应用打包的安装脚本，取消不执行，重组不重复安装。保留已有配置、认证、工作区与会话，安装失败保留终端真实原因；不要求重导入 Rootfs，也不复制宿主认证。
+- 在线发行版的“官方源”置于最左并默认选中；选择清华、阿里或中科大时，Rootfs 与 OMP/Bun 安装下载均使用可用国内来源，不回退国外、不悄悄升级发行版。Rootfs 供应站可与所选软件源不同，界面须如实说明；没有同版本可校验国内归档时明确报错。校验保留固定发布者哈希或镜像快照 SHA256，不把镜像校验值冒充独立上游签名。选择记录保存在客体内，随导出迁移；不改用户全局 npm 配置。
+- OMP 安装按 Ubuntu、Debian、Kali、Alpine、Arch ARM、Fedora 的真实包管理器准备完整依赖，保留原生模块及生命周期脚本。Alpine 使用隔离的完整 glibc 运行库，不用 musl Bun 加 gcompat 冒充兼容，不替换 Alpine 的 musl 系统库；内置 Skill 引导兼容最小 BusyBox 客体。
 
 ## 项目结构与索引
 
@@ -111,6 +113,7 @@
   - `src/jvmSharedMain/resources/omp-management/diagnostics.mjs` 统一原生配置诊断与敏感值清理，保留字段路径和可得语法位置，不转发源文本片段、凭据或 HTTP 响应正文。
   - `src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpAgentManagementRepositoryTest.kt` 覆盖首屏与模型分阶段加载、无效模型配置修复、原生进程退出后恢复、目录分页完整性及 JSONL 大小/格式边界。
 - `container-runtime/`：三引擎、Rootfs、发行版、包管理与流式终端；`src/jvmSharedMain/kotlin/dev/wawlink/runtime/RuntimeDns.kt` 负责边界安全的原子 DNS 更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeDnsTest.kt` 覆盖链接边界与配置切换。
+  - 同目录的 `DistroSources.kt` 负责官方/国内 Rootfs 路由、完整性校验、同站 HTTPS 重定向及客体软件源与安装来源记录；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/DistroSourcesTest.kt` 覆盖快照选择、错误校验值、国内源不外逃与软件源边界。`RootfsArchives.kt` / `RootfsArchivesTest.kt` 同时保留 Linux systemd 文件名中的字面反斜杠及链接目标，不放宽目录穿越保护。
   - 同目录的 `RuntimeIdentity.kt` 负责 PRoot/Proroot 补充组名的边界检查与原子更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeIdentityTest.kt` 覆盖保留已有记录、幂等与链接越界；`ContainerFileService.kt` 通过客体进程提供文件枚举、流式导入导出、复制、重命名、删除及 UTF-8 文本原子保存，不访问宿主 Rootfs 路径。
   - `src/androidUnitTest/kotlin/dev/wawlink/runtime/ContainerFileTextTest.kt` 覆盖文本保存的精确字节与权限、2 MiB 边界、外部修改冲突、链接及挂载根保护与暂存文件清理；运行于 Android JVM，不冒充设备端编辑器或引擎验收。
   - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID 与账户环境。
@@ -164,6 +167,7 @@
 - 历史树与 Agent Hub 加载改造按用户当前要求不再运行 Desktop 测试或界面验收，只构建 APK 交由用户真机验证，并关闭本轮 Desktop 验证进程；不得把构建或此前的桌面观察写成 Android 真机验收结论。
 - 屏幕常亮开关本轮按用户要求不运行测试、模拟器或界面验收；修改后直接构建默认路径 Debug APK，交由用户真机验证。
 - 追加手势与空输入框撤回编辑本轮按用户要求不运行测试或打包，完成静态检查后直接提交本次变更；不把静态检查写成运行时或真机验收。
+- 多发行版镜像与 OMP 安装适配仅本轮获准在开发机的隔离 Linux PRoot/QEMU 客体中执行真实下载、导入、依赖安装与原生 RPC 验证；不使用 Android 模拟器，不把客体结果写成 Android 真机验收。
 - 每次修改完成并通过必要验证后，必须为本次修改创建 Git commit，提交仅包含本次任务的变更。
 - APK 交付统一使用 Gradle 默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`；后续更新覆盖这个产物，不再为每次任务复制或新增命名 APK。
 - 已确认：Rootfs 完整预装功能优先，不将 150–220 MB 作为硬上限；必须报告实际解压体积和归档体积。

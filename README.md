@@ -67,6 +67,27 @@ Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA2
 
 安装需要联网及容器内 root 身份，固定安装 OMP 18.12.6、Bun 1.3.14 和完整运行依赖，校验上游包完整性、真实原生模块与 RPC `ready/get_state`，校验后才切换安装，切换失败恢复旧程序。无 CA 的 Debian/Ubuntu 基础镜像通过保留 APT 签名及包哈希校验的临时 HTTP 源安装证书，之后使用原 HTTPS 源；不修改用户源配置或关闭 TLS 校验。安装期间请留在终端，失败原因和 Shell 会保留；返回后重新自检，成功才刷新已有 OMP 控制器。不会复制开发机认证或发起模型推理。
 
+在线发行版安装默认选择最左侧“官方源”。清华、阿里和中科大选项同时控制软件包源与安装下载策略：
+
+| 发行版 | 选择国内软件源后的 Rootfs 来源 | 完整性依据 |
+| --- | --- | --- |
+| Ubuntu 24.04 | 清华 Ubuntu Base 24.04.5 ARM64 | 固定发布者 SHA256，并核对镜像元数据 |
+| Debian 12、Arch ARM、Kali Rolling | 清华 LXC 对应分支的 ARM64 `rootfs.tar.xz` | 同一明确快照的 SHA256；不是独立上游签名认证 |
+| Alpine 3.21 | 所选国内站的 minirootfs 3.21.9 ARM64 | 固定发布者 SHA256，并核对同源元数据 |
+| Fedora 41 | 暂无同版本可校验的直接导入国内归档，明确报错 | 可手动选择官方源；不回退、不升级到其他版本、不将 OCI 当作 Rootfs |
+
+下载进度明确区分 Rootfs 供应站与所选软件源。国内 Rootfs 的元数据和归档重定向不跨出供应站，禁止 HTTPS 降级；镜像不可用或校验失败直接报告错误。APT 导入配置会移除基础镜像中仍启用的旧 `.list` / `.sources`，不关闭软件包签名校验。Fedora 41 已结束维护，官方软件源使用真实归档仓库。
+
+选择保存在客体 `/etc/wawlink-install-source`，随 Rootfs 导出、导入和克隆保留。选择任意国内源时，OMP/Bun 使用 `registry.npmmirror.com`，仍核验固定 npm SHA512；官方使用 `registry.npmjs.org`。无记录的旧容器仅识别应用支持的三个镜像站，否则使用官方。安装只设置进程级 npm registry，不覆盖用户全局 `.npmrc`。
+
+国内 x86_64 安装还从华为 NuGet 镜像预取 ONNX 1.30.0 的完整 CUDA/TensorRT provider 文件，按 NuGet 发布者 SHA512 校验，再执行未修改的上游 postinstall；不设置跳过安装开关。ARM64 对应文件已包含在 npm 包中。下载提供库文件并不代表设备具备 NVIDIA 驱动或 GPU 能力。
+
+Alpine 安装保持 musl 系统不变，在 `/opt/omp/.wawlink-runtime` 放置固定哈希的 Debian glibc/GCC 运行库，通过独立 GNU multiarch 目录链接供 OMP/Bun 使用；不向 musl 子进程导出兼容库路径，不覆盖外来的 glibc 兼容目录。Bun 自启动、原生模块和 RPC 均参与安装校验，失败恢复旧程序及运行库链接。最小 BusyBox 客体的内置 Skill 安装逐级解析已有目录，不依赖 GNU `readlink -m`。
+
+Arch ARM 先初始化并填充发行版密钥环，回收该密钥环的 GPG 辅助进程；安装命令为不支持 Landlock/seccomp 下载沙箱的 PRoot/Proroot 使用进程级 `--disable-sandbox`。不修改全局 `pacman.conf`，不关闭包签名或依赖校验。
+
+Fedora 安装先更新 `sqlite-libs`，修复旧基础镜像的 SQLite 不含新 Node 所需 session 符号、但 SONAME 依赖仍被判为满足的问题；随后正常安装并执行完整 Node/npm 生命周期脚本，不绕过原生加载错误。
+
 ### 桌面路径覆盖
 
 | 环境变量 | 用途 |
@@ -616,3 +637,26 @@ Android Debug APK 构建及 v2 签名校验通过，默认产物 `app-android/bu
 真实 x86_64 PRoot 读取 `~/.wawlink/container.json`，保存图标和文字期间原有客体进程存活且运行代次未变；外部改写被拒绝覆盖，Rootfs 导出/导入保留四字段，克隆只改变明确输入的标题，新运行时读取不启动容器。实际桌面操作验证 460 / 360 像素布局、内置图标、系统图片选择/缩放/保存、多行描述、放弃修改、冲突保留草稿及确认重新读取后的重试保存。临时 smoke Rootfs 文件字节合计 1,577,744 bytes、归档 753,428 bytes，仅用于验证，不替换交付 Rootfs。
 
 默认 APK `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 65,053,733 bytes，SHA-256：`2bed4278b055fc1e32a57861c9a61643a0a3c159881f3a8691f810bb7f8ee18f`，APK v2 签名通过。未运行 Android 模拟器、Android 真机验收或模型请求；桌面检查不替代手机图片选择、软键盘与系统返回验收。更新 APK 即可使用已有容器，无需重新导入 Rootfs。
+
+### 国内下载与多发行版安装（2026-10-26）
+
+官方源位于最左并默认选中。国内选择联动 Rootfs、系统软件源、Bun 和 OMP/npm 下载；Fedora 41 缺少同版本可校验的国内 Rootfs 时明确报错，不回退国外或更换发行版。来源、完整性依据及 x86_64 ONNX 额外依赖的国内路径见上方安装说明。
+
+本轮在隔离 Linux PRoot/QEMU 客体中实际下载并用生产导入器导入六种 ARM64 Rootfs，执行完整系统依赖与 OMP 安装。Ubuntu 24.04、Debian 12、Arch ARM、Alpine 3.21、Fedora 41、Kali 均通过 OMP 18.12.6 / Bun 1.3.14、真实原生模块加载及 RPC `ready/get_state` 检查；Fedora 使用显式官方源，其余五种发行版走国内下载。另在原生 x86_64 Alpine 验证隔离 glibc、国内 ONNX 完整依赖及真实 RPC。没有禁用原生模块、跳过生命周期脚本或复制开发机认证。
+
+导入期间发现 LXC 的合法 systemd 文件名含字面反斜杠，已修复导入器错误拒绝该名称的问题，保留目录穿越和链接边界。最小 BusyBox 的 Skill 引导、Arch 密钥环与 PRoot 下载沙箱、Fedora SQLite/Node ABI 均已在对应真实客体安装中验证。
+
+本轮实际下载归档与安装完成后的客体体积如下。后者是解压、系统依赖及 OMP 安装后所有普通文件的逻辑字节合计，包含当时的包缓存，不是仅基础镜像的解压大小，也不是重新打包的交付归档；未为限制体积删减依赖。
+
+| ARM64 发行版 | 基础 Rootfs 归档（MiB） | 完整安装后客体（MiB） |
+| --- | ---: | ---: |
+| Ubuntu 24.04 | 28.55 | 1963.98 |
+| Debian 12 | 90.61 | 2031.37 |
+| Arch ARM | 170.01 | 2471.77 |
+| Alpine 3.21 | 3.65 | 1301.42 |
+| Fedora 41 | 30.49 | 1549.48 |
+| Kali | 73.97 | 2271.20 |
+
+`container-runtime:desktopTest` 的 85 项及 `agent-driver-omp:desktopTest` 的 134 项全部通过，无失败或跳过。消息发送测试的隔离客体现在真实执行短生命周期 Skill 引导，不再将其误接为聊天 RPC 进程。实际桌面界面确认官方源最左且默认选中；本轮未使用 Android 模拟器、Android 真机或真实模型推理，客体和桌面结果不替代手机端验收。
+
+默认 APK `app-android/build/outputs/apk/debug/app-android-debug.apk` 构建及 v2 签名校验通过，65,053,733 bytes，SHA-256：`dcc6cecf351172dd6b8ea0b93460182f50879ef1814290614717b38441a20639`。更新 APK 即可使用新安装/修复逻辑，已有容器不需要重新导入；Rootfs 仍与 APK 分开。

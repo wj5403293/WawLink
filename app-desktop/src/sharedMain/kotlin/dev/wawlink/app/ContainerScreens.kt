@@ -101,7 +101,7 @@ internal fun bytesLabel(bytes: Long): String = when {
 @Composable internal fun InstallContainerScreen(app: AppCoordinator, files: HostFiles, rootfs: Boolean, onBack: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf(if (rootfs) "导入 rootfs" else "发行版库") }
     var query by rememberSaveable { mutableStateOf("") }
-    var mirror by rememberSaveable { mutableStateOf(MirrorSource.TSINGHUA) }
+    var mirror by rememberSaveable { mutableStateOf(MirrorSource.OFFICIAL) }
     var engine by rememberSaveable { mutableStateOf(ContainerEngineType.PROOT) }
     var expanded by rememberSaveable { mutableStateOf<String?>(app.runtime.catalog.firstOrNull()?.id) }
     var sourceType by rememberSaveable { mutableStateOf("本地文件") }
@@ -120,7 +120,7 @@ internal fun bytesLabel(bytes: Long): String = when {
             if (engine == ContainerEngineType.CHROOT) Text("chroot 需要系统 Root 权限。无权限时会显示实际错误，请改用 proot。", Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.error, fontSize = 15.sp)
             if (tab == "发行版库") {
                 HostField("搜索 Linux 发行版", query, { query = it })
-                HostChips(MirrorSource.entries, mirror, { it.label }, { mirror = it }, "language", enabled = { expanded != "fedora" || it == MirrorSource.ALIYUN || it == MirrorSource.OFFICIAL })
+                HostChips(MirrorSource.entries, mirror, { it.label }, { mirror = it }, "language")
                 SectionLabel("可安装发行版", "explore")
                 app.runtime.catalog.filter { "${it.name} ${it.version}".contains(query.trim(), true) }.forEach { distro ->
                     key(distro.id) {
@@ -129,10 +129,6 @@ internal fun bytesLabel(bytes: Long): String = when {
                     Column(Modifier.fillMaxWidth().padding(bottom = 3.dp).background(if (open) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(if (open) 26.dp else 20.dp)).animateContentSize()) {
                         Row(Modifier.fillMaxWidth().clickable {
                             expanded = if (open) null else distro.id
-                            if (!open && distro.id == "fedora" && mirror != MirrorSource.ALIYUN && mirror != MirrorSource.OFFICIAL) {
-                                mirror = MirrorSource.OFFICIAL
-                                app.report("Fedora 41 不支持清华/中科大归档源，已明确改选官方源，也可选择阿里镜像。")
-                            }
                         }.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             DistroAvatar(distro.name, open)
                             Column(Modifier.weight(1f)) { Text("${distro.name} ${distro.version}", fontSize = 19.sp, fontWeight = FontWeight.SemiBold); Text("${distro.arch} · ${mirror.label}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }

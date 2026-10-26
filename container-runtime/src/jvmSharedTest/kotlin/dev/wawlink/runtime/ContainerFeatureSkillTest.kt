@@ -3,23 +3,36 @@ package dev.wawlink.runtime
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.attribute.FileTime
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import kotlin.test.*
 
 /** Execute the production guest installer with real files, including release-to-release transitions. */
 class ContainerFeatureSkillTest {
-    private class Fixture : AutoCloseable {
+    private class Fixture(busybox: File? = System.getenv("WAWLINK_TEST_BUSYBOX")?.let(::File)) : AutoCloseable {
         val home = Files.createTempDirectory("wawlink-skill-中文 '").toFile()
         val directory = File(home, ".omp/agent/skills/wawlink-functions")
         val file = File(directory, "SKILL.md")
         val record = File(directory, ".wawlink-builtin.sha256")
-        fun install(content: String = FEATURE_SKILL) {
-            val process = ProcessBuilder("/bin/sh", "-c", featureSkillInstallScript(content)).apply {
+        private val shell = if (busybox == null) listOf("/bin/sh") else {
+            val binary = busybox.canonicalFile
+            require(binary.canExecute()) { "WAWLINK_TEST_BUSYBOX must name an executable BusyBox binary" }
+            val tools = File(home, ".busybox-bin").apply { mkdir() }
+            // No host utilities on PATH: unsupported applets/options must fail, not use GNU tools.
+            for (applet in listOf("readlink", "mkdir", "wc", "cat", "sha256sum", "mktemp", "rm", "rmdir", "base64", "stat", "chmod", "mv")) {
+                Files.createSymbolicLink(File(tools, applet).toPath(), binary.toPath())
+            }
+            listOf(binary.path, "sh")
+        }
+        fun install(content: String = FEATURE_SKILL, succeeds: Boolean = true) {
+            val process = ProcessBuilder(shell + listOf("-c", featureSkillInstallScript(content))).apply {
                 environment()["HOME"] = home.path
+                if (shell.size > 1) environment()["PATH"] = File(home, ".busybox-bin").path
                 redirectErrorStream(true)
             }.start()
             val output = process.inputStream.bufferedReader().use { it.readText() }
-            assertEquals(0, process.waitFor(), output)
+            val exit = process.waitFor()
+            if (succeeds) assertEquals(0, exit, output) else assertNotEquals(0, exit, output)
             assertFalse(directory.listFiles().orEmpty().any { it.name.startsWith(".wawlink-skill.") })
         }
         fun seed(content: String) { directory.mkdirs(); file.writeText(content) }
@@ -119,6 +132,67 @@ class ContainerFeatureSkillTest {
                 assertEquals(FEATURE_SKILL, f.file.readText())
                 assertEquals(bad, f.record.readText())
             }
+        }
+    }
+
+    @Test fun validatesEveryAncestorBeforeCreatingMissingSkillDirectories() {
+        for (ancestor in listOf(".omp", ".omp/agent", ".omp/agent/skills")) {
+            val outside = Files.createTempDirectory("wawlink-skill-outside-").toFile()
+            try {
+                Fixture().use { f ->
+                    val link = File(f.home, ancestor)
+                    link.parentFile.mkdirs()
+                    Files.createSymbolicLink(link.toPath(), outside.toPath())
+                    f.install(succeeds = false)
+                    assertTrue(outside.listFiles().orEmpty().isEmpty(), "Escaping ancestor must not create directories outside HOME")
+                }
+            } finally {
+                outside.deleteRecursively()
+            }
+        }
+        Fixture().use { f ->
+            // Existing in-HOME aliases remain supported, even when descendants do not exist.
+            val inside = File(f.home, "agent-data").apply { mkdir() }
+            Files.createSymbolicLink(File(f.home, ".omp").toPath(), inside.toPath())
+            f.install()
+            assertEquals(FEATURE_SKILL, File(inside, "agent/skills/wawlink-functions/SKILL.md").readText())
+        }
+        Fixture().use { f ->
+            val absent = File(f.home, "absent")
+            Files.createSymbolicLink(File(f.home, ".omp").toPath(), absent.toPath())
+            f.install(succeeds = false)
+            assertFalse(absent.exists(), "Dangling ancestor must not be created through a symlink")
+        }
+    }
+
+    @Test fun actualBusyBoxInstallsBeforeCoreutilsAndPreservesUpgradeProtection() {
+        val busybox = System.getenv("WAWLINK_TEST_BUSYBOX")?.let(::File)
+            ?: listOf(File("/bin/busybox"), File("/usr/bin/busybox")).firstOrNull { it.canExecute() }
+        if (busybox == null) {
+            System.err.println("BusyBox regression skipped: set WAWLINK_TEST_BUSYBOX to run with an actual BusyBox binary")
+            return
+        }
+        Fixture(busybox).use { f ->
+            assertFalse(File(f.home, ".omp").exists())
+            val old = "BusyBox 初次安装\n"
+            val next = "BusyBox 原子升级\n"
+            f.install(old)
+            val mode = PosixFilePermissions.fromString("rwxr-x---")
+            Files.setPosixFilePermissions(f.file.toPath(), mode)
+            f.install(next)
+            assertEquals(next, f.file.readText())
+            assertEquals(mode, Files.getPosixFilePermissions(f.file.toPath()))
+            assertEquals(hash(next) + "\n", f.record.readText())
+            // Recover a publication interrupted after the two-sided record, before content.
+            f.record.writeText(hash(FEATURE_SKILL) + "\n" + hash(next) + "\n")
+            f.install()
+            assertEquals(FEATURE_SKILL, f.file.readText())
+            assertEquals(hash(FEATURE_SKILL) + "\n", f.record.readText())
+            f.file.appendText("用户修改\n")
+            val edited = f.file.readText()
+            f.install("不可覆盖\n")
+            assertEquals(edited, f.file.readText())
+            assertEquals(hash(FEATURE_SKILL) + "\n", f.record.readText())
         }
     }
 

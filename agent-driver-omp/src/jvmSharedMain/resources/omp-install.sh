@@ -1,6 +1,6 @@
 #!/bin/sh
-# Trusted, bundled installer. Pins match scripts/build-debug-rootfs.sh; additional
-# Bun libc/desktop pins are from bun-v1.3.14/SHASUMS256.txt (not a moving installer).
+# Trusted, bundled installer. OMP/Bun npm archives and the Alpine private glibc
+# runtime are pinned to publisher hashes; download selection never changes pins.
 set -eu
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 OMP_VERSION=18.12.6
@@ -133,13 +133,36 @@ case "$(uname -m)" in
     x86_64|amd64) arch=x64 ;;
     *) fail "Unsupported guest architecture: $(uname -m) (requires arm64 or x86_64)" ;;
 esac
+ID= VERSION_ID=
+[ -r /etc/os-release ] || fail 'Guest is missing /etc/os-release'
+. /etc/os-release
+case "$ID" in ubuntu|debian|kali|alpine|arch|archarm|fedora) ;; *) fail "Unsupported distribution: $ID" ;; esac
 musl=0
 for loader in /lib/ld-musl-*.so.1; do if [ -f "$loader" ]; then musl=1; fi; done
-case "$arch:$musl" in
-    aarch64:0) bun_asset=bun-linux-aarch64; bun_sha=a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b ;;
-    aarch64:1) bun_asset=bun-linux-aarch64-musl; bun_sha=b98e0ad3625c5c00d1d5b5ff55605c7adddbfae151861e68ade57b2d3b8703bb ;;
-    x64:0) bun_asset=bun-linux-x64-baseline; bun_sha=a063908ae08b7852ca10939bbdc6ceed3ddabce8fb9402dce83d65d73b36e6c7 ;;
-    x64:1) bun_asset=bun-linux-x64-musl-baseline; bun_sha=56a7d6806cf155536c0178f0ea5fbd098e684fa509ebdb4fc0a7e19fb65382dc ;;
+[ "$musl" -eq 0 ] || [ "$ID" = alpine ] || fail 'The private musl compatibility runtime is supported on Alpine only'
+source_mode=${WAWLINK_INSTALL_SOURCE:-}
+if [ -z "$source_mode" ] && [ -f /etc/wawlink-install-source ]; then
+    IFS= read -r source_mode < /etc/wawlink-install-source || fail 'Cannot read installation source selection'
+fi
+if [ -z "$source_mode" ]; then
+    # Older/imported containers have no marker. Recognize only the three exact
+    # application mirror hosts, never arbitrary substrings or user credentials.
+    source_mode=official
+    for sources in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources /etc/apk/repositories /etc/pacman.d/mirrorlist /etc/yum.repos.d/*.repo; do
+        [ -f "$sources" ] || continue
+        if grep -Eq 'https?://(mirrors\.tuna\.tsinghua\.edu\.cn|mirrors\.aliyun\.com|mirrors\.ustc\.edu\.cn)/' "$sources"; then source_mode=domestic; break; fi
+    done
+fi
+case "$source_mode" in
+    official) registry=https://registry.npmjs.org; runtime_repository=https://deb.debian.org/debian ;;
+    domestic) registry=https://registry.npmmirror.com; runtime_repository=https://mirrors.tuna.tsinghua.edu.cn/debian ;;
+    *) fail 'Installation source must be official or domestic' ;;
+esac
+case "$arch" in
+    aarch64) bun_asset=bun-linux-aarch64; triplet=aarch64-linux-gnu; runtime_loader=ld-linux-aarch64.so.1
+        bun_sha=5f94ac3d91ecfa260ef11fde7c8711b5cee04f64360e03df9620b1124c7871706e9b0930d1cfc4b0730dc07dc4806a420da67b21854f869086ff104e40713067 ;;
+    x64) bun_asset=bun-linux-x64-baseline; triplet=x86_64-linux-gnu; runtime_loader=ld-linux-x86-64.so.2
+        bun_sha=abff0474e0b4c9413c14f7a8395abcfcfc3923dfed25a62651f3bfb83500444c7c2149ce247d5127903706316aadef29bc9a22640f40a2f3c9ab916734d8d2c4 ;;
 esac
 # Minimal Debian/Ubuntu rootfs images do not contain a TLS trust store. Bootstrap
 # only ca-certificates through the same repositories over HTTP, keeping APT's
@@ -165,25 +188,41 @@ bootstrap_apt_certificates() (
     apt-get "$@" install -y --no-install-recommends ca-certificates
 )
 
-progress 'Installing distribution prerequisites (including complete native build/lifecycle support)'
-if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    if [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
-        progress 'Bootstrapping CA certificates with signed distribution packages'
-        bootstrap_apt_certificates
-    fi
-    apt-get -o APT::Update::Error-Mode=any update
-    apt-get install -y --no-install-recommends ca-certificates curl unzip tar gzip coreutils git ripgrep jq xz-utils zstd libatomic1 libstdc++6 python3 build-essential pkg-config nodejs npm
-elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache ca-certificates curl unzip tar gzip coreutils git ripgrep jq xz zstd libatomic libstdc++ python3 build-base pkgconf nodejs npm gcompat
-elif command -v pacman >/dev/null 2>&1; then
-    pacman -Syu --needed --noconfirm ca-certificates curl unzip tar gzip coreutils git ripgrep jq xz zstd gcc-libs python base-devel nodejs npm
-elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y ca-certificates curl unzip tar gzip coreutils git ripgrep jq xz zstd libatomic libstdc++ python3 gcc gcc-c++ make pkgconf-pkg-config nodejs npm
-else
-    fail 'Unsupported distribution: requires apt-get, apk, pacman or dnf'
-fi
-for tool in curl unzip tar sha256sum sha512sum mktemp install node npm; do
+progress "Installing $ID $VERSION_ID prerequisites ($source_mode downloads)"
+case "$ID" in
+    ubuntu|debian|kali)
+        export DEBIAN_FRONTEND=noninteractive
+        if [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
+            progress 'Bootstrapping CA certificates with signed distribution packages'
+            bootstrap_apt_certificates
+        fi
+        apt-get -o APT::Update::Error-Mode=any update
+        apt-get install -y --no-install-recommends ca-certificates curl tar gzip coreutils git ripgrep jq xz-utils zstd libatomic1 libstdc++6 python3 build-essential pkg-config nodejs npm
+        ;;
+    alpine)
+        # OMP's published .node files target glibc. A musl Bun plus gcompat is
+        # not an equivalent ABI; keep Alpine musl and isolate glibc below /opt/omp.
+        apk add --no-cache ca-certificates curl tar gzip coreutils git ripgrep jq xz zstd libatomic libstdc++ python3 build-base pkgconf nodejs npm binutils patchelf
+        ;;
+    arch|archarm)
+        if [ "$arch" = aarch64 ]; then keyring=archlinuxarm; else keyring=archlinux; fi
+        (
+            trap 'gpgconf --homedir /etc/pacman.d/gnupg --kill gpg-agent' 0
+            pacman-key --init
+            pacman-key --populate "$keyring"
+        )
+        # PRoot/Proroot cannot provide pacman's Landlock/seccomp downloader sandbox.
+        # Disable only that process-local sandbox; package signatures stay required.
+        pacman -Syu --disable-sandbox --needed --noconfirm "$keyring-keyring" ca-certificates curl tar gzip coreutils git ripgrep jq xz zstd gcc-libs python base-devel nodejs npm
+        ;;
+    fedora)
+        # Fedora 41's original sqlite-libs lacks session symbols required by the
+        # updated Node package, but its SONAME dependency still appears satisfied.
+        dnf upgrade -y --setopt=install_weak_deps=False sqlite-libs
+        dnf install -y --setopt=install_weak_deps=False ca-certificates curl-minimal tar gzip coreutils git ripgrep jq xz zstd libatomic libstdc++ python3 gcc gcc-c++ make pkgconf-pkg-config nodejs npm
+        ;;
+esac
+for tool in curl tar sha256sum sha512sum mktemp install node npm; do
     command -v "$tool" >/dev/null 2>&1 || fail "Missing required guest command: $tool"
 done
 mkdir -p /opt /usr/local/bin
@@ -218,6 +257,17 @@ cleanup() {
                 fi
             done
         fi
+        if [ "$musl" -eq 1 ]; then
+            for directory in lib usr/lib; do
+                key=$(printf '%s' "$directory" | tr / -)
+                if [ -f "$stage/changed-$key" ]; then
+                    rm -f -- "/$directory/$triplet" || exit 1
+                    if exists "$stage/previous-$key"; then
+                        mv "$stage/previous-$key" "/$directory/$triplet" || exit 1
+                    fi
+                fi
+            done
+        fi
         [ "$status" -ne 0 ] || status=1
     fi
     rm -rf -- "$stage"
@@ -234,28 +284,84 @@ trap 'exit 143' TERM HUP
 bin_stage=$(mktemp -d /usr/local/bin/.wawlink-omp.XXXXXX)
 fetch() {
     url=$1 destination=$2 checksum=$3 algorithm=$4
-    curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 30 --output "$destination.part" "$url"
+    curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 30 --output "$destination.part" "$url"
     printf '%s  %s\n' "$checksum" "$destination.part" | "$algorithm" --check -
     mv "$destination.part" "$destination"
 }
-progress "Downloading integrity-pinned Bun $BUN_VERSION ($bun_asset) and OMP $OMP_VERSION"
-fetch "https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION/$bun_asset.zip" "$stage/bun.zip" "$bun_sha" sha256sum
-fetch "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/-/pi-coding-agent-$OMP_VERSION.tgz" "$stage/omp.tgz" 5a8f85709ec0dd163f385b9a7e3e2171d2005dcfd6ecd3316da9f0421dc29b2f2ce7bfa284b38b800bfe1d13b11c192cb04320d0c692730910f71c2a2cf882fe sha512sum
-unzip -q "$stage/bun.zip" -d "$stage/bun"
-install -m755 "$stage/bun/$bun_asset/bun" "$bin_stage/bun"
+progress "Downloading integrity-pinned Bun $BUN_VERSION ($bun_asset) and OMP $OMP_VERSION from $registry"
+fetch "$registry/@oven/$bun_asset/-/$bun_asset-$BUN_VERSION.tgz" "$stage/bun.tgz" "$bun_sha" sha512sum
+fetch "$registry/@oh-my-pi/pi-coding-agent/-/pi-coding-agent-$OMP_VERSION.tgz" "$stage/omp.tgz" 5a8f85709ec0dd163f385b9a7e3e2171d2005dcfd6ecd3316da9f0421dc29b2f2ce7bfa284b38b800bfe1d13b11c192cb04320d0c692730910f71c2a2cf882fe sha512sum
+mkdir "$stage/bun" "$stage/omp" "$stage/home" "$stage/bin"
+tar -xzf "$stage/bun.tgz" -C "$stage/bun" --strip-components=1
+install -m755 "$stage/bun/bin/bun" "$bin_stage/bun"
+tar -xzf "$stage/omp.tgz" -C "$stage/omp" --strip-components=1
+if [ "$musl" -eq 1 ]; then
+    progress 'Installing private glibc runtime for OMP (Alpine system libraries unchanged)'
+    runtime="$stage/omp/.wawlink-runtime"
+    mkdir "$runtime"
+    # Debian bookworm publisher Packages indices: libc6 2.36-9+deb12u14 and
+    # GCC runtime 12.2.0-14+deb12u1. Extract only; never install .deb into Alpine.
+    case "$arch" in
+        aarch64)
+            packages='pool/main/g/glibc/libc6_2.36-9+deb12u14_arm64.deb 01f4330719fd4f65580e16ea5a0527f372fca750e8f588d26deaf09f2d3b1cf4
+pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_arm64.deb 576926b283613db80168ddf76380a3bd877602778cf0d226caa7bfbfa71eacf3
+pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_arm64.deb 26e138c677a985775331373828a6c286c551ff397cb735d00e2383cb273d1cb2
+pool/main/g/gcc-12/libatomic1_12.2.0-14+deb12u1_arm64.deb 1693aa13ce2b30d061a519fc28b77b9bab8c8e45804ced5969d99821e1bc2159'
+            ;;
+        x64)
+            packages='pool/main/g/glibc/libc6_2.36-9+deb12u14_amd64.deb ba4f88f73dbc3ae9055f3c20f4523bfdbaf1ad13ff95e258924f77d20b4fbedf
+pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_amd64.deb 3016e62cb4b7cd8038822870601f5ed131befe942774d0f745622cc77d8a88f7
+pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_amd64.deb 5cd3171216d4ab0fc911cfe9c35509bf2dd8f47761c43b7f6a4296701551a24d
+pool/main/g/gcc-12/libatomic1_12.2.0-14+deb12u1_amd64.deb fbd4e154a6b444229ea002cc209df099209c0adc09102e5fd21239a3d2b55e2d'
+            ;;
+    esac
+    printf '%s\n' "$packages" | while read -r package checksum; do
+        fetch "$runtime_repository/$package" "$stage/runtime.deb" "$checksum" sha256sum
+        ar p "$stage/runtime.deb" data.tar.xz > "$stage/runtime.tar.xz"
+        tar -xJf "$stage/runtime.tar.xz" -C "$runtime"
+    done
+    # GNU's multiarch lookup paths are separate from musl's /lib and /usr/lib.
+    # Never replace foreign compatibility runtimes or export LD_LIBRARY_PATH to
+    # musl children. RPATH rewriting corrupts this upstream Bun ELF on ARM64.
+    for directory in lib usr/lib; do
+        destination="/$directory/$triplet"
+        key=$(printf '%s' "$directory" | tr / -)
+        if exists "$destination"; then
+            [ -L "$destination" ] && [ "$(readlink "$destination")" = "/opt/omp/.wawlink-runtime/$directory/$triplet" ] || fail "Foreign glibc runtime at $destination; refusing to replace it"
+            cp -a -- "$destination" "$stage/previous-$key"
+        fi
+        : > "$stage/changed-$key"
+        ln -s "$runtime/$directory/$triplet" "$destination.wawlink-new"
+        mv -Tf "$destination.wawlink-new" "$destination"
+    done
+    patchelf --set-interpreter "$runtime/lib/$triplet/$runtime_loader" "$bin_stage/bun"
+fi
 [ "$("$bin_stage/bun" --version)" = "$BUN_VERSION" ] || fail 'Downloaded Bun cannot execute or has an unexpected version'
-mkdir "$stage/omp" "$stage/home" "$stage/bin"
 ln -s "$bin_stage/bun" "$stage/bin/bun"
 ln -s "$bin_stage/bun" "$stage/bin/bunx"
-tar -xzf "$stage/omp.tgz" -C "$stage/omp" --strip-components=1
 progress 'Installing full OMP dependency graph and all native lifecycle scripts'
 (
     cd "$stage/omp"
-    # An isolated HOME preserves user auth/config; no --ignore-scripts or omitted
-    # optional/native dependencies. Keep the upstream source layout and bun.lock.
+    # Process-local registry selection does not overwrite the user's npm config.
     export HOME="$stage/home" BUN_INSTALL_CACHE_DIR="$stage/cache" PATH="$stage/bin:$PATH"
-    # Copy files rather than PRoot link2symlink hardlinks into the disposable cache.
-    "$bin_stage/bun" install --backend copyfile --omit dev
+    export npm_config_registry="$registry" NPM_CONFIG_REGISTRY="$registry" BUN_CONFIG_REGISTRY="$registry"
+    "$bin_stage/bun" install --registry "$registry" --backend copyfile --omit dev
+    if [ "$source_mode" = domestic ] && [ "$arch" = x64 ]; then
+        # The fixed OMP package leaves these postinstalls untrusted until below.
+        # Supply the complete publisher-verified assets before executing the
+        # unmodified ONNX installer; never set its skip/disable switches.
+        "$bin_stage/bun" -e 'if (require("./node_modules/onnxruntime-node/package.json").version !== "1.30.0") throw new Error("Unpinned ONNX native package version")'
+        progress 'Downloading full ONNX native assets from domestic NuGet mirror'
+        fetch 'https://repo.huaweicloud.com/artifactory/api/nuget/v3/nuget-remote/microsoft.ml.onnxruntime.gpu.linux/1.30.0/microsoft.ml.onnxruntime.gpu.linux.1.30.0.nupkg' "$stage/onnx.nupkg" bc91ba46087f88ea389da28dce7fa75d9a192016ac1733f2b910f9d5293b82ea8e4bf87f6b0720d1884b60da9543ddb6f0645e1d96623f3febb58705e49c6e38 sha512sum
+        python3 - "$stage/onnx.nupkg" "$stage/omp/node_modules/onnxruntime-node/bin/napi-v6/linux/x64" <<'ONNX'
+import pathlib, shutil, sys, zipfile
+target = pathlib.Path(sys.argv[2])
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    for name in ('libonnxruntime_providers_cuda.so', 'libonnxruntime_providers_shared.so', 'libonnxruntime_providers_tensorrt.so'):
+        with archive.open('runtimes/linux-x64/native/' + name) as source, (target / name).open('wb') as destination:
+            shutil.copyfileobj(source, destination)
+ONNX
+    fi
     "$bin_stage/bun" pm trust --all
 )
 write_probe "$stage/check.mjs"
@@ -268,9 +374,20 @@ WRAPPER
 chmod 755 "$bin_stage/omp"
 ln -s bun "$bin_stage/bunx"
 progress 'Switching validated installation (previous files retained until final check)'
+if [ "$musl" -eq 1 ]; then
+    runtime=/opt/omp/.wawlink-runtime
+    patchelf --set-interpreter "$runtime/lib/$triplet/$runtime_loader" "$bin_stage/bun"
+fi
 if exists /opt/omp; then mv /opt/omp "$stage/previous-omp"; fi
 publish_started=1
 mv "$stage/omp" /opt/omp
+if [ "$musl" -eq 1 ]; then
+    for directory in lib usr/lib; do
+        destination="/$directory/$triplet"
+        ln -s "$runtime/$directory/$triplet" "$destination.wawlink-new"
+        mv -Tf "$destination.wawlink-new" "$destination"
+    done
+fi
 for name in bun bunx omp; do
     # Set the rollback marker before changing the existing destination.
     # A directory is never an executable and cannot be safely replaced here.
