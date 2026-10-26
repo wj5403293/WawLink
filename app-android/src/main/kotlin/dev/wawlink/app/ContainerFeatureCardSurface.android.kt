@@ -6,6 +6,7 @@ import android.net.Uri
 import android.graphics.Outline
 import android.view.View
 import android.view.ViewOutlineProvider
+import android.view.ViewGroup
 import android.webkit.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -43,6 +44,8 @@ internal fun AndroidFeatureSurface(
     val density = LocalDensity.current.density
     val holder = remember(origin, url, html) {
         val web = WebView(context)
+        // WRAP_CONTENT makes WebView treat the CSS viewport height as zero, even with an exact Compose size.
+        web.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         val bridge = FeatureAndroidLuaBridge(web, origin, if (onAction == null) null else { value -> action?.invoke(value) })
         AndroidFeatureWeb(web, bridge)
     }
