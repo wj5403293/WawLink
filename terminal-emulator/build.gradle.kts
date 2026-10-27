@@ -3,6 +3,7 @@ plugins { id("com.android.library") }
 android {
     namespace = "com.termux.emulator"
     compileSdk = 35
+    ndkVersion = "27.0.12077973"
     defaultConfig {
         minSdk = 26
         ndk { abiFilters += "arm64-v8a" }

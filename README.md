@@ -38,7 +38,7 @@ Android“应用设置 → 外观与显示 → 屏幕常亮”默认关闭，开
 
 ## 构建与运行
 
-构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35 与 Android NDK（编译终端 JNI）、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
+构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35、Build Tools 35.0.0 与 NDK 27.0.12077973（编译终端 JNI）、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
 
 在工程根目录执行：
 
@@ -89,6 +89,48 @@ Alpine 安装保持 musl 系统不变，在 `/opt/omp/.wawlink-runtime` 放置�
 Arch ARM 先初始化并填充发行版密钥环，回收该密钥环的 GPG 辅助进程；安装命令为不支持 Landlock/seccomp 下载沙箱的 PRoot/Proroot 使用进程级 `--disable-sandbox`。不修改全局 `pacman.conf`，不关闭包签名或依赖校验。
 
 Fedora 安装先更新 `sqlite-libs`，修复旧基础镜像的 SQLite 不含新 Node 所需 session 符号、但 SONAME 依赖仍被判为满足的问题；随后正常安装并执行完整 Node/npm 生命周期脚本，不绕过原生加载错误。
+
+### Release APK 与 GitHub Actions
+
+本地使用独立脚本完成原生资源准备、Release 编译、签名、证书核对、ZIP 对齐检查与 SHA-256 生成，不构建或内置 Rootfs：
+
+```bash
+# 首次准备 Android SDK；JDK 17 须已安装。
+sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.0.12077973'
+chmod 600 ~/.android/wsdx233.keystore ~/.android/.env
+./scripts/build-release.sh              # 默认 1.0.0
+./scripts/build-release.sh v1.0.1       # 指定下一版本
+```
+
+SDK 优先使用 `ANDROID_HOME`，其次为 `ANDROID_SDK_ROOT`，未设置时使用 `~/Android/Sdk`。签名读取 `~/.android/wsdx233.keystore`、别名 `wsdx233`，以及私有 Shell 环境文件 `~/.android/.env` 中的 `WSDX233_KEY_PASSWORD`；同一密码用于仓库与私钥。也可在签名进程环境中提供 `WSDX233_KEYSTORE_PATH` 与 `WSDX233_KEY_PASSWORD`，环境密码优先，不把密码放在命令参数、Gradle properties 或项目文件中。该 `.env` 是会被 Shell 加载的本机可信文件，不接收仓库下载的替代文件。
+
+固定输出为 `app-android/build/outputs/apk/release/app-android-release.apk` 和同目录的 `app-android-release.apk.sha256`；后续构建覆盖这两个产物。单独运行 `./gradlew :app-android:assembleRelease` 或 `./scripts/build-release.sh --unsigned v1.0.1` 只产生未签名 APK，不能直接安装。签名只在 Gradle 结束后的独立进程进行，构建子进程不继承上述密码或 Base64 私钥环境变量；缺少签名输入或证书不匹配时失败，不退回 Debug 签名。保留现有未混淆配置，不在发布环境配置中引入未经设备验证的 R8 裁剪。
+
+版本采用稳定的 `MAJOR.MINOR.PATCH`，不带前导零；次版本和修订号范围为 `0..999`。`versionCode = MAJOR × 1,000,000 + MINOR × 1,000 + PATCH`，须在 Android 的 `1..2,100,000,000` 范围内；例如 `1.0.0` 对应 `1000000`。本地参数与 tag 使用同一版本规则；可用 Gradle 属性 `-Pwawlink.version=1.0.1` 显式设置版本，默认版本在 `app-android/build.gradle.kts` 中维护。
+
+GitHub 私有仓库为 [wsdx233/WawLink](https://github.com/wsdx233/WawLink)，工作流位于 `.github/workflows/android-release.yml`，只在推送 `vMAJOR.MINOR.PATCH` tag 时运行，普通分支推送和 Pull Request 不触发发布。远端 `release` Environment 只允许 `v*` tag，保存两个 Environment Secrets：
+
+| Secret | 内容 |
+| --- | --- |
+| `WSDX233_KEYSTORE_BASE64` | keystore 原始字节的 Base64 编码；Base64 本身不是加密，必须作为 Secret 保存 |
+| `WSDX233_KEY_PASSWORD` | keystore 与 `wsdx233` 私钥密码 |
+
+上述环境和 Secrets 已配置；迁移仓库时需重新配置相同的 tag 部署限制与 Secrets，不把 `.env` 或 keystore 推送到 Git。所有 Action 固定完整提交 SHA；三个独立 runner 分别编译未签名 APK、签名并验签、创建 GitHub Release。仅签名步骤接收私钥 Secrets，仅发布任务获得 `contents: write`；签名临时文件放在 runner 私有临时目录，正常结束或失败后删除，另有 `always()` 清理。私钥不进入 Gradle、共享缓存或 artifact，artifact 只上传明确列出的 APK 和校验文件；未签名中间产物保留 1 天，签名产物保留 7 天，GitHub Release 附件持续保留。
+
+只给可信提交打 tag：拥有修改工作流并推送发布 tag 权限的人能改变签名流程，Environment Secrets 不是对仓库写入者的代码沙箱。密码或私钥轮换需在私有环境操作；签名脚本固定核对公开证书 SHA-256 `d40ca2e0088d61ac708cbc0b2b5772781b098ae1caeb5511a050ac4509a0f471`，更换签名证书也需显式更新这一身份约束，并处理 Android 的签名升级限制。
+
+发布命令（首次配置只推送 `main`，不自动创建发布 tag）：
+
+```bash
+git tag -a v1.0.0 -m 'WawLink 1.0.0'
+git push origin v1.0.0
+```
+
+工作流自动创建同名 GitHub Release 并附上签名 APK 与 SHA-256 文件，不自动创建缺失 tag、不覆盖已有 Release。同版本重建保持版本号，不把 Actions 的运行次数作为 Android 升级版本号。
+
+**安装注意：** 现有 Debug APK 与指定 Release keystore 的签名不同，同一包名不能直接覆盖安装。切换前先备份容器及其他可导出数据；卸载会清除应用私有数据，Rootfs 导出不等于全部应用数据备份。后续使用此同一 Release 签名并递增版本即可覆盖更新。
+
+本轮已在本机完成 Release 构建、APK v2/v3 验签、固定证书核对与 ZIP 对齐验证，并通过 Shell 语法和 `actionlint` 检查；未推送发布 tag，未将这些检查当作 GitHub runner、Android 设备安装或界面验收。
 
 ### 桌面路径覆盖
 

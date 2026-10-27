@@ -8,3 +8,12 @@ app-android/src/main/jniLibs/
 app-android/src/debug/assets/
 *.hprof
 /ref-plan/
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.key
+.env
+.env.*
+key.properties
+keystore.properties

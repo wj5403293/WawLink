@@ -145,6 +145,8 @@
 - `terminal-emulator/`、`terminal-view/`：从 Love2Droid 固定提交移植的 Android Termux 终端解析器、JNI PTY 与视图，仅构建 arm64-v8a；`terminal-emulator/NOTICE` 记录上游来源及修改，许可同时保存在模块 assets 与 `licenses/`。
 - `licenses/`：Termux 终端、JediTerm、pty4j、Love2Droid/r2droid、Maple Mono 及 LuaJ 的完整上游许可及来源；`LUAJ-LICENSE.txt` 同时随 `app-android/src/main/assets/licenses/` 打包。
 - `scripts/`：免 Docker Rootfs、Android 原生二进制与验证脚本。
+  - `scripts/build-release.sh` 先在不继承签名密码的子进程准备原生资源并编译 Release，`scripts/sign-release.sh` 在构建结束后独立读取本机私有环境或 CI Secrets，通过 SDK apksigner 签名、核对固定证书和 ZIP 对齐并生成 SHA-256；Gradle 不持有私钥。
+- `.github/workflows/android-release.yml`：`vMAJOR.MINOR.PATCH` tag 触发的 Android Release；编译、受 `release` Environment tag 限制的签名与发布分离为三个 runner，Action 固定提交 SHA，只有发布任务具备写权限，只上传 APK 与校验文件。
 - `ref-plan/`：用户提供的需求和视觉原型；不修改原型。
   - `ref-plan/agent-settings-capabilities.md`：以 OMP 18.12.6 为基准的 Agent 与 Models 设置原型能力清单，涵盖作用域、定义、角色、模型服务及高级配置；仅作设计能力说明，不代表已实现。
   - `ref-plan/plugin-skill-management-capabilities.md`：以本机 OMP 18.12.6 及同版本源码为依据的插件与 Skill 双页面功能边界调研，覆盖市场、npm/Git/本地来源、作用域、加载与更新、发布维护、安全和 RPC 接入限制；区分实测、源码能力与设计建议，不代表界面已实现。
@@ -171,7 +173,8 @@
 - 追加手势与空输入框撤回编辑本轮按用户要求不运行测试或打包，完成静态检查后直接提交本次变更；不把静态检查写成运行时或真机验收。
 - 多发行版镜像与 OMP 安装适配仅本轮获准在开发机的隔离 Linux PRoot/QEMU 客体中执行真实下载、导入、依赖安装与原生 RPC 验证；不使用 Android 模拟器，不把客体结果写成 Android 真机验收。
 - 每次修改完成并通过必要验证后，必须为本次修改创建 Git commit，提交仅包含本次任务的变更。
-- APK 交付统一使用 Gradle 默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`；后续更新覆盖这个产物，不再为每次任务复制或新增命名 APK。
+- Debug APK 交付统一使用 Gradle 默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`；Release 使用 `app-android/build/outputs/apk/release/app-android-release.apk` 与同目录 SHA-256 文件。后续更新覆盖对应固定产物，不按任务复制或新增命名 APK。
+- Release 使用用户私有的 `~/.android/wsdx233.keystore`、别名 `wsdx233` 与 `~/.android/.env` 中的 `WSDX233_KEY_PASSWORD`；本机私有文件保持 0600，不将密码、keystore 或 Base64 私钥提交或输出到日志。GitHub 私钥仅保存于限制 `v*` tag 的 `release` Environment Secrets，编译任务不得接触；不回退到 Debug 签名。既有 Debug 与 Release 签名不同，不声称可直接覆盖安装。
 - 已确认：Rootfs 完整预装功能优先，不将 150–220 MB 作为硬上限；必须报告实际解压体积和归档体积。
 - 已确认：依上游真实能力提供引擎；Proroot 仅 Android arm64，桌面使用 PRoot/QEMU 或 chroot；强制只读绑定仅 chroot 支持，其他引擎必须明确拒绝，禁止静默变为可写。
 - 真实模型验收仅使用用户确认的 `oc/deepseek-v4.1-flash`；不得将开发机认证复制进代码、Rootfs、APK 或交付报告。

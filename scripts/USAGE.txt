@@ -87,6 +87,33 @@ it under the container page's Rootfs import tab. Startup never unpacks an APK
 asset. Installing a same-signature APK update preserves existing containers;
 an unchanged Rootfs does not need to be downloaded or imported again.
 
+Signed Release APK (independent of Rootfs):
+  ./scripts/build-release.sh [vMAJOR.MINOR.PATCH]
+This provisions the same pinned native inputs and builds with JDK 17, Platform 35,
+Build Tools 35.0.0 and NDK 27.0.12077973. ANDROID_HOME/ANDROID_SDK_ROOT overrides
+the default ~/Android/Sdk. The version defaults to 1.0.0; versionCode is
+major*1000000 + minor*1000 + patch (minor/patch 0..999, Android code limits apply).
+The separate sign-release.sh reads ~/.android/wsdx233.keystore, alias wsdx233,
+and WSDX233_KEY_PASSWORD from the trusted ~/.android/.env or process environment.
+Keep both private files mode 0600; never commit or print their contents.
+WSDX233_KEYSTORE_PATH can override the local keystore path. Both store and key
+use the supplied password. No signing credentials are passed to Gradle.
+Output: app-android/build/outputs/apk/release/app-android-release.apk and
+app-android-release.apk.sha256 in the same directory. The signer checks the
+pinned certificate, APK signatures and alignment before replacing outputs.
+--unsigned builds only the unsigned intermediate APK for the isolated CI job.
+Direct Gradle assembleRelease also produces an unsigned, non-installable APK.
+
+.github/workflows/android-release.yml runs only on vMAJOR.MINOR.PATCH tag pushes.
+Separate build/sign/publish runners isolate the release Environment's
+WSDX233_KEYSTORE_BASE64 and WSDX233_KEY_PASSWORD secrets from Gradle and the
+publishing token. The release Environment allows only v* tags. Only explicit
+APK/checksum files are uploaded; the temporary key is deleted, never cached.
+See README.md for tag publication, environment setup and version constraints.
+The current Debug certificate differs: Android cannot install this Release over
+that Debug package. Back up exportable data before switching; uninstalling
+removes app-private data, and a Rootfs export is not a full application backup.
+
 Android refreshes guest /etc/resolv.conf from the active default network before
 starting/executing commands and on live DNS changes. Offline periods retain the
 last valid configuration; explicit /etc or /etc/resolv.conf bind mounts take
