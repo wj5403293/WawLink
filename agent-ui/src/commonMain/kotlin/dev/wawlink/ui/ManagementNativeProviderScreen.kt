@@ -55,6 +55,11 @@ internal fun changeModelThinkingField(draft: Map<String, Any?>, inherited: Map<S
     return if (next.isEmpty()) draft - "thinking" else draft + ("thinking" to next)
 }
 
+internal fun changeNativeObjectField(draft: Map<String, Any?>, key: String, initial: Map<String, Any?>, value: Map<String, Any?>): Map<String, Any?> {
+    if (value == initial) return draft
+    return if (value.isEmpty()) draft - key else draft + (key to value)
+}
+
 private val NativeModelEditSaver = Saver<NativeModelEdit?, String>(
     save = { edit -> edit?.let { configurationJson(mapOf("id" to it.id, "values" to it.values, "override" to it.override)).toString() } },
     restore = { text -> configurationMap(configurationFromJson(Json.parseToJsonElement(text))).let { NativeModelEdit(it["id"] as? String, configurationMap(it["values"]), it["override"] == true) } },
@@ -100,6 +105,10 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
         draft = if (value == null) draft - key else draft + (key to value)
         editedFields = (editedFields + key).distinct()
         dirty = true
+    }
+    fun changeObject(key: String, value: Map<String, Any?>) {
+        val next = changeNativeObjectField(draft, key, configurationMap(draft[key]), value)
+        if (next != draft) change(key, next[key])
     }
     fun leave() {
         if (providerId.isEmpty() && !dirty) {
@@ -283,8 +292,8 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
     if (discard) AlertDialog(onDismissRequest = { discard = false }, title = { Text("有未保存的修改") }, text = { Text("离开后未保存的修改会丢失。") }, confirmButton = { TextButton({ save { discard = false; leave() } }, enabled = document != null && !actions.busy) { Text("保存") } }, dismissButton = { Row { TextButton({ discard = false; dirty = false; editedFields = emptyList(); draft = configurationMap(configurationMap(document?.values?.get("providers"))[originalId]); id = originalId; leave() }) { Text("放弃修改") }; TextButton({ discard = false }) { Text("继续编辑") } } })
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("清除服务配置") }, text = { Text("删除用户配置，内置目录、认证记录和角色绑定不删除。引用自定义模型的角色可能失去候选。") }, confirmButton = { TextButton({ val source = document ?: return@TextButton; actions.launch("已清除服务配置") { repository.saveDocumentValues(source, source.values + ("providers" to (configurationMap(source.values["providers"]) - originalId))); dirty = false; leave() } }) { Text("清除", color = LocalAgentColors.current.error) } }, dismissButton = { TextButton({ confirmDelete = false }) { Text("取消") } })
     confirmTest?.let { selected -> AlertDialog(onDismissRequest = { confirmTest = null }, title = { Text("推理测试") }, text = { Text("将使用 ${selected.key} 发送一次真实请求，可能产生费用。") }, confirmButton = { TextButton({ confirmTest = null; actions.launch { val result = repository.probeModel(selected.provider, selected.id); testResult = "${result.message}，${result.latencyMs} 毫秒" } }) { Text("发送测试") } }, dismissButton = { TextButton({ confirmTest = null }) { Text("取消") } }) }
-    if (compatibility) NativeCompatSheet(configurationMap(draft["compat"]), draft["api"] as? String ?: descriptor?.api ?: nativeModel?.api, { compatibility = false }, onSave = { change("compat", it.takeIf { values -> values.isNotEmpty() }); compatibility = false })
-    if (postProcessing) NativeRemoteCompaction(configurationMap(draft["remoteCompaction"]), { postProcessing = false }) { change("remoteCompaction", it.takeIf { values -> values.isNotEmpty() }); postProcessing = false }
+    if (compatibility) NativeCompatSheet(configurationMap(draft["compat"]), draft["api"] as? String ?: descriptor?.api ?: nativeModel?.api, { compatibility = false }, onSave = { changeObject("compat", it); compatibility = false })
+    if (postProcessing) NativeRemoteCompaction(configurationMap(draft["remoteCompaction"]), { postProcessing = false }) { changeObject("remoteCompaction", it); postProcessing = false }
 }
 private data class NativeModelEdit(val id: String?, val values: Map<String, Any?>, val override: Boolean)
 
@@ -476,8 +485,8 @@ private fun NativeModelScreen(provider: String, providerApi: String?, edit: Nati
         if (confirmDiscard) AlertDialog(onDismissRequest = { confirmDiscard = false }, title = { Text("有未保存的修改") }, text = { Text("保存模型后仍需在服务页面保存配置。") }, confirmButton = { TextButton({ onSave(id.trim(), draft) }, enabled = id.isNotBlank() && !duplicateId && completeCost && completeThinking) { Text("保存") } }, dismissButton = { Row { TextButton(onBack) { Text("放弃修改") }; TextButton({ confirmDiscard = false }) { Text("继续编辑") } } })
         if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text(if (edit.override) "清除模型覆盖" else "删除模型") }, text = { Text("引用此模型的角色可能会跳过它；服务页面保存后生效。") }, confirmButton = { TextButton(onDelete) { Text("确认") } }, dismissButton = { TextButton({ delete = false }) { Text("取消") } })
         if (original) AgentSheet("原始值与覆盖", { original = false }) { Column(Modifier.verticalScroll(rememberScrollState())) { (base.keys + draft.keys).distinct().filter { base[it] != null || draft[it] != null }.forEach { key -> ManagementLayers(listOf(ManagementLayer(key, configurationDisplay(base[key]), "inventory_2"), ManagementLayer("本层覆盖", configurationDisplay(draft[key]), "edit", selected = key in draft))) } } }
-        if (compat) NativeCompatSheet(configurationMap(field("compat")), field("api") as? String, { compat = false }, onSave = { change("compat", it); compat = false })
-        if (remote) NativeRemoteCompaction(configurationMap(field("remoteCompaction")), { remote = false }) { change("remoteCompaction", it); remote = false }
+        if (compat) NativeCompatSheet(configurationMap(field("compat")), field("api") as? String, { compat = false }, onSave = { draft = changeNativeObjectField(draft, "compat", configurationMap(field("compat")), it); compat = false })
+        if (remote) NativeRemoteCompaction(configurationMap(field("remoteCompaction")), { remote = false }) { draft = changeNativeObjectField(draft, "remoteCompaction", configurationMap(field("remoteCompaction")), it); remote = false }
 }
 
 private val compatBooleanLabels = linkedMapOf(
@@ -506,14 +515,14 @@ private fun NativeCompatSheet(initial: Map<String, Any?>, api: String?, onDismis
                 NativeNumber("缓存最小词元数", draft["promptCacheMinimumTokens"], { change("promptCacheMinimumTokens", it) })
                 NativeNumber("缓存最多检查点", draft["promptCacheMaximumCheckpoints"], { change("promptCacheMaximumCheckpoints", it) })
             }
-            ManagementGroup("推理档位映射") { NativeStringMap(configurationMap(draft["reasoningEffortMap"]), { change("reasoningEffortMap", it) }) }
+            ManagementGroup("推理档位映射") { NativeStringMap(configurationMap(draft["reasoningEffortMap"]), { draft = changeNativeObjectField(draft, "reasoningEffortMap", configurationMap(draft["reasoningEffortMap"]), it) }) }
             listOf("openRouterRouting" to "OpenRouter 路由", "vercelGatewayRouting" to "Vercel 路由", "extraBody" to "额外请求体").forEach { (key, label) -> ManagementRow(label, configurationDisplay(draft[key]), "data_object", { extra = key }) }
             if (!conditional) ManagementGroup("思考时的条件覆盖") { ManagementRow("思考开启时", "${configurationMap(draft["whenThinking"]).size} 项覆盖", "call_split", { whenThinking = true }) }
             Button({ onSave(draft) }, modifier = Modifier.fillMaxWidth().padding(top = 20.dp).height(48.dp)) { Text("完成") }
         }
     }
-    extra?.let { key -> NativeObjectEditor(key, draft[key], { extra = null }) { change(key, it); extra = null } }
-    if (whenThinking) NativeCompatSheet(configurationMap(draft["whenThinking"]), api, { whenThinking = false }, { change("whenThinking", it); whenThinking = false }, conditional = true)
+    extra?.let { key -> NativeObjectEditor(key, draft[key], { extra = null }) { draft = changeNativeObjectField(draft, key, configurationMap(draft[key]), configurationMap(it)); extra = null } }
+    if (whenThinking) NativeCompatSheet(configurationMap(draft["whenThinking"]), api, { whenThinking = false }, { draft = changeNativeObjectField(draft, "whenThinking", configurationMap(draft["whenThinking"]), it); whenThinking = false }, conditional = true)
 }
 @Composable
 private fun NativeRemoteCompaction(initial: Map<String, Any?>, onDismiss: () -> Unit, onSave: (Map<String, Any?>) -> Unit) {

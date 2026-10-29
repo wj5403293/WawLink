@@ -71,6 +71,13 @@ internal fun providerListEntries(
     return entries
 }
 
+internal fun providerEnabledSettings(document: ConfigurationDocument, provider: String, enabled: Boolean): Map<String, Any?> {
+    val rules = (document.values["disabledProviders"] as? List<*>).orEmpty()
+    val updated = if (enabled) rules.filterNot { it == provider }
+        else if (provider in rules) rules else rules + provider
+    return mapOf("disabledProviders" to updated)
+}
+
 @Composable
 fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> Unit, onAdvanced: ((String) -> Unit)? = null, registerBack: ((() -> Boolean)?) -> Unit = {}) {
     val persisted by repository.providers.collectAsState()
@@ -155,8 +162,8 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
                                             Switch(item.enabled, { checked ->
                                                 if (managementRepository != null) scope.launch {
                                                     try {
-                                                        val disabled = configurationStrings(configurationValue(managementRepository.state.value.effectiveValues, "disabledProviders"))
-                                                        managementRepository.updateSettings(ConfigurationScope.GLOBAL, mapOf("disabledProviders" to if (checked) disabled - item.id else (disabled + item.id).distinct()))
+                                                        val document = managementRepository.readDocument("global")
+                                                        managementRepository.updateSettings(ConfigurationScope.GLOBAL, providerEnabledSettings(document, item.id, checked))
                                                     } catch (cancelled: CancellationException) { throw cancelled }
                                                     catch (failure: Exception) { notify(failure.message ?: "保存失败") }
                                                 } else current(item.id)?.let { update(it.copy(enabled = checked)) }

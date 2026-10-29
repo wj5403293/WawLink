@@ -106,14 +106,23 @@ internal class FeatureAndroidLuaBridge(
         return current.evaluate(source)
     }
 
-    override fun close() {
+    override fun close() = close(rendererGone = false)
+
+    fun close(rendererGone: Boolean) {
         if (!closed.compareAndSet(false, true)) return
         invalidate()
-        script?.remove(); script = null
-        if (listenerInstalled) WebViewCompat.removeWebMessageListener(webView, "__wawlinkNative")
-        worker.shutdownNow()
-        runtime.close()
-        main.removeCallbacksAndMessages(null)
+        try {
+            if (!rendererGone) {
+                script?.remove()
+                if (listenerInstalled) WebViewCompat.removeWebMessageListener(webView, "__wawlinkNative")
+            }
+        } finally {
+            script = null
+            listenerInstalled = false
+            worker.shutdownNow()
+            runtime.close()
+            main.removeCallbacksAndMessages(null)
+        }
     }
 }
 

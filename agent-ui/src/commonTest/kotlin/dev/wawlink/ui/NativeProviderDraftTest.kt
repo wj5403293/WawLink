@@ -67,4 +67,38 @@ class NativeProviderDraftTest {
         assertEquals(draft, changeModelThinkingField(draft, inherited, "mode", null))
         assertEquals(draft + ("thinking" to (inherited + ("supportsDisplay" to false))), changeModelThinkingField(draft, inherited, "supportsDisplay", false))
     }
+
+    @Test fun unchangedNativeObjectsDoNotMaterializeAbsentOrInheritedOverrides() {
+        val draft = mapOf<String, Any?>("name" to "keep")
+        assertEquals(draft, changeNativeObjectField(draft, "compat", emptyMap(), emptyMap()))
+        val inherited = mapOf<String, Any?>("supportsStore" to false, "future" to mapOf("unknown" to "keep"))
+        assertEquals(draft, changeNativeObjectField(draft, "compat", inherited, inherited))
+        val editedThenRestored = (inherited + ("supportsStore" to true)) + ("supportsStore" to false)
+        assertEquals(draft, changeNativeObjectField(draft, "compat", inherited, editedThenRestored))
+        val configured = draft + ("compat" to inherited)
+        assertEquals(configured, changeNativeObjectField(configured, "compat", inherited, inherited))
+    }
+
+    @Test fun nativeObjectEditsAndClearsPreserveUnrelatedAndUnknownFields() {
+        val initial = mapOf<String, Any?>("enabled" to true, "future" to mapOf("unknown" to "keep"))
+        val draft = mapOf<String, Any?>("remoteCompaction" to initial, "name" to "keep", "futureRoot" to listOf(1L, false))
+        val changed = initial + ("enabled" to false)
+        assertEquals(draft + ("remoteCompaction" to changed), changeNativeObjectField(draft, "remoteCompaction", initial, changed))
+        assertEquals(draft - "remoteCompaction", changeNativeObjectField(draft, "remoteCompaction", initial, emptyMap()))
+        val withoutOverride = draft - "remoteCompaction"
+        assertEquals(withoutOverride + ("remoteCompaction" to changed), changeNativeObjectField(withoutOverride, "remoteCompaction", initial, changed))
+        assertEquals(withoutOverride, changeNativeObjectField(withoutOverride, "remoteCompaction", initial, emptyMap()))
+    }
+
+    @Test fun conditionalCompatNoOpDoesNotMakeItsParentDirtyAndRealEditKeepsUnknownRules() {
+        val compat = mapOf<String, Any?>("supportsStore" to false, "future" to listOf("keep"))
+        val untouched = changeNativeObjectField(compat, "whenThinking", emptyMap(), emptyMap())
+        val model = mapOf<String, Any?>("name" to "keep")
+        assertEquals(model, changeNativeObjectField(model, "compat", compat, untouched))
+        val conditional = mapOf<String, Any?>("supportsStore" to true, "futureConditional" to 7L)
+        val changed = changeNativeObjectField(compat, "whenThinking", emptyMap(), conditional)
+        assertEquals(compat + ("whenThinking" to conditional), changed)
+        assertEquals(model + ("compat" to changed), changeNativeObjectField(model, "compat", compat, changed))
+        assertEquals(compat, changeNativeObjectField(changed, "whenThinking", conditional, emptyMap()))
+    }
 }

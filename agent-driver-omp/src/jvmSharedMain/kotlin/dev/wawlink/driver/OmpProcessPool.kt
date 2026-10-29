@@ -730,16 +730,17 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         override fun stopExecution() {
-            stopGeneration.incrementAndGet()
+            val barrier = CompletableDeferred<Unit>()
+            stopping = barrier
+            val starting = activeAttempt?.nativeReady == false
+            if (starting) beginIntentionalStop() else stopGeneration.incrementAndGet()
             synchronized(presentationLock) {
                 outgoingPrompts.values.removeAll { it.preview && !it.queued }
                 presentState()
             }
-            val barrier = CompletableDeferred<Unit>()
-            stopping = barrier
             sessionScope.launch {
                 try {
-                    if (process != null) command("abort_and_restore_queue", timeoutMs = 20_000)
+                    if (process != null && !starting) command("abort_and_restore_queue", timeoutMs = 20_000)
                     val withdrawn = state.value.queuedPrompts.toList()
                     park()
                     for (queued in withdrawn) local(buildJsonObject {

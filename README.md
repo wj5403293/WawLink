@@ -716,3 +716,14 @@ Android Debug APK 构建及 v2 签名校验通过，默认产物 `app-android/bu
 RPC 烟测复用安装自检的临时无认证、loopback 模型元数据，仅操作原生协议与进程，不发送用户消息或执行真实模型验收，也未复制开发机认证。未使用 Android 模拟器或进行 Android 真机界面验收；客体与协调层结果不替代手机复测。临时烟测程序与隔离客体已清理。
 
 默认 APK `app-android/build/outputs/apk/debug/app-android-debug.apk` 构建及 v2 签名校验通过，65,053,733 bytes，SHA-256：`b32379fc17d4bbc0ae212275e280e2f4b99206dd81fcd330ec538699a25e4406`。更新 APK 即可保留现有容器和会话，无需重新导入 Rootfs。
+
+### 四项交互与稳定性定向修复（2026-10-29）
+
+- 模型服务列表仍固定全局作用域，开关从 `readDocument("global")` 的原始完整 `disabledProviders` 规则增删指定服务裸字符串，保留对象型路径规则与无关项，不再将合并后的有效配置写回全局。
+- 协议兼容项、远程压缩及其嵌套对象未实质修改时保持原草稿，直接点“完成”不新增空对象或物化继承值；真实修改保留未知字段，清空移除对应覆盖。
+- Android 卡片和完整功能页共用的 WebView 处理 `onRenderProcessGone`，撤销本实例调试注册/请求及 Lua 桥任务，脱离并幂等销毁旧视图；停止旧视图更新，显示错误并在重新进入时恢复，不自动循环重建。
+- 启动期停止复用主动中断路径，异常完成 `ready` 等待并跳过未就绪进程的 abort RPC；停止屏障先于唤醒建立，保留队列与后续交互，已就绪进程仍沿用原生 abort 路径。
+
+13 项配置回归及 8 项会话启动/停止回归通过（含新增 2 项，无失败或跳过）。隔离 YAML 烟测确认路径规则与无关设置保留、项目文件字节不变、无修改子表单不产生覆盖。真实主机管道子进程不发送 `ready` 时，实际会话控制器停止到进程退出及后续模型选择可响应耗时 5 ms，排队输入保留；此烟测不是 OMP 原生启动或模型推理验收。实际 Android 编译字节码的 WebView holder 回收烟测覆盖失效标记、调试/桥关闭、脱离/销毁幂等及死 renderer 路径不调用活视图方法；Android 框架与桥/调试协作者使用 JVM 替身，不代表设备 WebView 或 LuaJ 端到端验收。
+
+Debug APK 构建和 v2 签名校验通过，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`，56,876,405 bytes，SHA-256：`399f3cf49559a5a8c26fbeb1d0cedda090cca3d904c24f4861690bdb7e47ec17`。未启动模拟器或 Desktop 界面，未执行真实模型；渲染进程退出与恢复仍需 Android 真机验证。本轮不修改 Cookie 端口隔离、文件清理拉起、IPC 遗留文件、加载期并发编辑或其他审查边界。

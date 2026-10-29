@@ -225,6 +225,54 @@ class OmpPromptDeliveryTest {
         }
     }
 
+    @Test fun stopBeforeGreetingReleasesStartupAndPreservesQueuedInput() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            val starting = RpcTransport(ready = false)
+            gate.complete(starting)
+            controller.sendPrompt("等待原生 ready")
+            withTimeout(5_000) { starting.outputOpened.await() }
+            controller.enqueuePrompt("停止后保留的追加")
+            val queued = controller.state.value.queuedPrompts.single()
+
+            controller.stopExecution()
+            awaitState { it.status == SessionStatus.STOPPED }
+            controller.selectModel("manual", "after-stop-before-ready")
+            val stopped = awaitState { it.modelId == "after-stop-before-ready" }
+
+            assertFalse(starting.isAlive)
+            assertEquals(listOf(queued), stopped.queuedPrompts)
+            assertTrue(stopped.feed.filterIsInstance<UserMessageItem>().isEmpty())
+            assertNull(stopped.error)
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
+    @Test fun stopAfterGreetingPreservesAcceptedHistoryAndAllowsFurtherInteraction() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            gate.complete(transport)
+            controller.sendPrompt("已经接收的消息")
+            val request = transport.request()
+            transport.acceptUser(request)
+            transport.respond(request)
+            awaitState { it.feed.filterIsInstance<UserMessageItem>().any { user -> user.accepted } }
+
+            controller.stopExecution()
+            awaitState { it.status == SessionStatus.STOPPED }
+            controller.selectModel("manual", "after-ready-stop")
+            val stopped = awaitState { it.modelId == "after-ready-stop" }
+
+            assertFalse(transport.isAlive)
+            assertEquals(listOf("已经接收的消息"), stopped.feed.filterIsInstance<UserMessageItem>().map { it.text })
+            assertTrue(stopped.feed.filterIsInstance<UserMessageItem>().single().accepted)
+            assertNull(stopped.error)
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
     @Test fun automaticModeAnswersNativePermissionPromptsButNotRealQuestions() = runBlocking {
         fixture {
             gate.complete(transport)
@@ -883,6 +931,7 @@ class OmpPromptDeliveryTest {
         private val requests = Channel<JsonObject>(Channel.UNLIMITED)
         private val uiResponses = Channel<JsonObject>(Channel.UNLIMITED)
         private val managementRequests = Channel<JsonObject>(Channel.UNLIMITED)
+        val outputOpened = CompletableDeferred<Unit>()
         private var running = false
         @Volatile var failWrites = false
         private val stdin = object : OutputStream() {
@@ -958,7 +1007,7 @@ class OmpPromptDeliveryTest {
             emit("""{"type":"session_settled"}""")
         }
         override fun getOutputStream(): OutputStream = stdin
-        override fun getInputStream(): InputStream = stdout
+        override fun getInputStream(): InputStream = stdout.also { outputOpened.complete(Unit) }
         override fun getErrorStream(): InputStream = stderr
         override fun waitFor(): Int { exited.await(); return 0 }
         override fun waitFor(timeout: Long, unit: TimeUnit): Boolean = exited.await(timeout, unit)

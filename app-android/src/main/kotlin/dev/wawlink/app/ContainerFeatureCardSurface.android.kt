@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.ViewGroup
 import android.webkit.*
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -56,13 +57,19 @@ internal fun AndroidFeatureSurface(
         AndroidFeatureWeb(web, bridge, debug)
     }
     DisposableEffect(holder, debugContext) {
-        val registration = debugContext?.let { binding ->
+        val registration = debugContext?.takeUnless { holder.released }?.let { binding ->
             binding.debugger.register(binding.target, dev.wawlink.runtime.FeatureDebugPage { operation, expression ->
                 val argument = if (operation == "reload" && html != null) binding.debugger.readCardHtml(binding.target) else expression
                 holder.debug.request(operation, argument)
             })
         }
-        onDispose { registration?.close() }
+        holder.debugRegistration = registration
+        onDispose {
+            if (holder.debugRegistration === registration) {
+                holder.debugRegistration = null
+                registration?.close()
+            }
+        }
     }
     DisposableEffect(holder) {
         val web = holder.view
@@ -90,10 +97,17 @@ internal fun AndroidFeatureSurface(
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
             webViewClient = object : WebViewClient() {
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    if (!holder.released) {
+                        try { holder.release(rendererGone = true) }
+                        finally { report("页面渲染进程已退出，请离开后重新打开") }
+                    }
+                    return true
+                }
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                    !request.isForMainFrame || !allowed(request.url.toString()) || html != null
+                    holder.released || !request.isForMainFrame || !allowed(request.url.toString()) || html != null
                 @Deprecated("Legacy WebView navigation")
-                override fun shouldOverrideUrlLoading(view: WebView, value: String): Boolean = !allowed(value) || html != null
+                override fun shouldOverrideUrlLoading(view: WebView, value: String): Boolean = holder.released || !allowed(value) || html != null
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                     val value = request.url.toString()
                     if (request.isForMainFrame) {
@@ -102,30 +116,38 @@ internal fun AndroidFeatureSurface(
                     return WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
                 }
                 override fun onPageStarted(view: WebView, value: String, favicon: Bitmap?) {
+                    if (holder.released) return
                     holder.debug.navigating()
                     holder.bridge.invalidate()
                     if (!allowed(value)) { view.stopLoading(); report("已阻止离开当前功能来源的导航") }
                 }
                 override fun onPageFinished(view: WebView, value: String) {
+                    if (holder.released) return
                     if (allowed(value)) view.evaluateJavascript(
                         (currentData?.let { featureCardUpdateScript(currentCss, it) } ?: containerFeatureThemeScript(currentCss)) + ";" + featureReadyScript(), null,
                     )
                 }
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                    if (holder.released) return
                     holder.debug.recordError("页面加载失败：${error.description}")
                     if (request.isForMainFrame) report("页面加载失败：${error.description}")
                 }
                 override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                    if (holder.released) return
                     holder.debug.recordError("页面 HTTP ${response.statusCode}：${request.url.scheme}://${request.url.host}${request.url.path}")
                     if (request.isForMainFrame) report("本地页面返回 HTTP ${response.statusCode}")
                 }
                 override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
-                    holder.debug.recordError("页面 TLS 验证失败：${error.primaryError}")
-                    handler.cancel(); report("页面 TLS 验证失败：${error.primaryError}")
+                    handler.cancel()
+                    if (!holder.released) {
+                        holder.debug.recordError("页面 TLS 验证失败：${error.primaryError}")
+                        report("页面 TLS 验证失败：${error.primaryError}")
+                    }
                 }
             }
             webChromeClient = object : WebChromeClient() {
                 override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                    if (holder.released) return false
                     if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR || message.messageLevel() == ConsoleMessage.MessageLevel.WARNING) {
                         holder.debug.recordError("${message.messageLevel()}：${message.message()}")
                     }
@@ -148,18 +170,37 @@ internal fun AndroidFeatureSurface(
             if (html == null) web.loadUrl(url)
             else web.loadDataWithBaseURL(url, featureCardDocument(html, css, data ?: "{}", requireNotNull(font), ""), "text/html", "utf-8", null)
         } else report("当前 Android System WebView 不支持安全的原生桥，请更新系统 WebView。")
-        onDispose {
-            holder.debug.close()
-            holder.bridge.close()
-            web.stopLoading(); web.webChromeClient = null; web.webViewClient = WebViewClient()
-            web.removeAllViews(); web.destroy()
-        }
+        onDispose { holder.release() }
     }
-    AndroidView(factory = { holder.view }, modifier = modifier, update = { web ->
-        if (holder.installed) web.evaluateJavascript(data?.let { featureCardUpdateScript(css, it) } ?: containerFeatureThemeScript(css), null)
+    if (holder.released) Box(modifier)
+    else AndroidView(factory = { holder.view }, modifier = modifier, update = { web ->
+        if (!holder.released && holder.installed) web.evaluateJavascript(data?.let { featureCardUpdateScript(css, it) } ?: containerFeatureThemeScript(css), null)
     })
 }
 
 private class AndroidFeatureWeb(val view: WebView, val bridge: FeatureAndroidLuaBridge, val debug: AndroidFeatureDebugPage) {
     var installed = false
+    var released by mutableStateOf(false)
+        private set
+    var debugRegistration: AutoCloseable? = null
+
+    fun release(rendererGone: Boolean = false) {
+        if (released) return
+        released = true
+        installed = false
+        try {
+            debug.close()
+            debugRegistration?.close()
+            debugRegistration = null
+            bridge.close(rendererGone)
+            // A dead renderer must only be detached and destroyed, not queried or reconfigured.
+            if (!rendererGone) {
+                view.stopLoading(); view.webChromeClient = null; view.webViewClient = WebViewClient()
+                view.removeAllViews()
+            }
+        } finally {
+            try { (view.parent as? ViewGroup)?.removeView(view) }
+            finally { view.destroy() }
+        }
+    }
 }
