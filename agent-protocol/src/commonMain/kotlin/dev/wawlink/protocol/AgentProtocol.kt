@@ -8,6 +8,8 @@ interface AgentSessionController {
     val state: StateFlow<ChatSessionUiState>
     /** Starts a turn when idle; steers the current execution when running. */
     fun sendPrompt(text: String, attachments: List<AttachmentFile> = emptyList())
+    /** Dismisses the current error without changing execution state; durable errors must stay dismissed on replay. */
+    fun dismissError() {}
     fun stopExecution()
     /** Queues a follow-up behind the current execution, including its attachments. */
     fun enqueuePrompt(text: String, attachments: List<AttachmentFile> = emptyList())

@@ -401,6 +401,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         @Volatile private var parkRequested = false
         @Volatile private var hasStartedRpc = false
         private var previewError: String? = null
+        private var dismissedPreviewHash: String? = null
+        private var dismissedRunError: String? = null
         private var startedResolvConf: String? = null
         @Volatile private var backendSettled = true
         @Volatile private var stopping: CompletableDeferred<Unit>? = null
@@ -527,6 +529,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                         reducer.previewModel(provider, model, if (hasThinkingPreference) null else role.thinking)
                         reducer.update { it.copy(error = if (it.error == previewError) null else it.error) }
                         previewError = null
+                        if (dismissedPreviewHash != null) recordLocal(buildJsonObject { put("action", "preview_recovered") })
                     } else if (reducer.state.modelLoading) reducer.update { it.copy(modelLoading = false) }
                     publishState()
                 }
@@ -536,11 +539,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     mutate { it.copy(modelLoading = false) }
                     return
                 }
-                mutate {
-                    val show = !hasModelPreference && !hasStartedRpc && !it.isRunning && sessionFile == null && process == null
+                stateMutex.withLock {
+                    val show = !hasModelPreference && !hasStartedRpc && !reducer.state.isRunning && sessionFile == null && process == null
                     val message = failure.message ?: "无法读取默认模型"
-                    if (show) previewError = message
-                    it.copy(modelLoading = false, error = if (show) message else it.error)
+                    val suppressed = show && dismissedPreviewHash?.let { it == safeId(message) } == true
+                    if (show && !suppressed && dismissedPreviewHash != null) recordLocal(buildJsonObject { put("action", "preview_recovered") })
+                    if (show) previewError = message.takeUnless { suppressed }
+                    reducer.update { it.copy(modelLoading = false, error = if (show && !suppressed) message else it.error) }
+                    publishState()
                 }
             }
         }
@@ -571,6 +577,20 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         override fun sendPrompt(text: String, attachments: List<AttachmentFile>) = admitPrompt(text, attachments, PromptQueue.STEERING)
+
+        override fun dismissError() {
+            val displayedError = state.value.error ?: return
+            sessionScope.launch {
+                stateMutex.withLock {
+                    if (reducer.state.error != displayedError) return@withLock
+                    val previewHash = previewError?.takeIf { it == displayedError }?.let(::safeId)
+                    recordLocal(buildJsonObject {
+                        put("action", "clear_error")
+                        previewHash?.let { put("previewHash", it) }
+                    })
+                }
+            }
+        }
 
         override fun enqueuePrompt(text: String, attachments: List<AttachmentFile>) = admitPrompt(text, attachments, PromptQueue.FOLLOW_UP)
 
@@ -1355,7 +1375,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 // Command metadata is process-local; it must not replay stale plugins after restart.
                 val recorded = if (type != "available_commands_update" && !(type == "response" &&
                     (frame.string("id").startsWith("hb-") || frame.string("command") == "get_available_commands"))) appendJournal(frame) else frame
-                reducer.reduce(recorded)
+                reduceNative(recorded)
                 val automatic = type == "extension_ui_request" && reducer.state.autoApprove && isApprovalRequest(frame)
                 if (!automatic) publishState()
                 automatic
@@ -1543,8 +1563,22 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
         }
 
+        private fun reduceNative(frame: JsonObject) {
+            val type = frame.string("type")
+            if (type == "agent_start") dismissedRunError = null
+            reducer.reduce(frame)
+            // A run's terminal frames can repeat the error already dismissed mid-run.
+            val repeatsRunError = type == "agent_end" || type == "session_settled" ||
+                (type == "prompt_result" && frame["agentInvoked"]?.jsonPrimitive?.booleanOrNull != false)
+            if (repeatsRunError && dismissedRunError != null && reducer.state.error == dismissedRunError) {
+                reducer.update { it.copy(error = null) }
+            } else if (reducer.state.error != null) dismissedRunError = null
+        }
+
         private fun applyLocal(frame: JsonObject) {
-            when (frame.string("action")) {
+            val action = frame.string("action")
+            if (action == "error" || action == "operation_error" || action == "prompt_failed") dismissedRunError = null
+            when (action) {
                 "raw_input" -> reducer.rememberUserText(frame.string("promptId"), frame.string("text"))
                 "native_branch" -> reducer.restoreNativeBranch((frame["entries"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }, frame["leafId"]?.jsonPrimitive?.contentOrNull)
                 "user" -> {
@@ -1593,6 +1627,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 "error" -> reducer.update { it.copy(status = SessionStatus.ERROR, error = frame.string("message"), actionText = "执行失败",
                     feed = stopFeed(it.feed, frame["_wawlinkAtMillis"]?.jsonPrimitive?.longOrNull ?: System.currentTimeMillis(), NodeStatus.ERROR)) }
                 "operation_error" -> reducer.update { it.copy(error = frame.string("message")) }
+                "clear_error" -> {
+                    dismissedRunError = reducer.state.error.takeUnless { it == previewError }
+                    dismissedPreviewHash = frame["previewHash"]?.jsonPrimitive?.contentOrNull
+                    previewError = null
+                    reducer.update { it.copy(error = null) }
+                }
+                "preview_recovered" -> dismissedPreviewHash = null
                 "elapsed" -> reducer.update { it.copy(elapsedSec = frame["seconds"]!!.jsonPrimitive.int) }
                 "approval" -> reducer.update { current ->
                     val feed = mapFeed(current.feed) { node -> if (node is ApprovalCardItem && node.id == frame.string("nodeId")) node.copy(resolution = ApprovalDecision.valueOf(frame.string("decision"))) else node }
@@ -1651,7 +1692,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                                         }) }
                                     }
                                 } else applyLocal(frame)
-                            } else reducer.reduce(frame)
+                            } else reduceNative(frame)
                         } catch (failure: Exception) {
                             // An interrupted final append must not erase the readable transcript prefix.
                             reducer.update { it.copy(error = "历史记录部分损坏：${failure.message}", status = SessionStatus.ERROR) }

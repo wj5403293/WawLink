@@ -107,6 +107,141 @@ class OmpPromptDeliveryTest {
         }
     }
 
+    @Test fun dismissedPreviewFailureStaysDismissedWhenTheSameFailureIsReloaded() = runBlocking {
+        fixture(withManagement = true) {
+            val failure = "UNAVAILABLE: Invalid native model provider configuration"
+            managementTransport.respondManagement(managementCatalogue(), error = failure)
+            val failed = awaitState { !it.modelLoading && it.error != null }
+            controller.dismissError()
+            val dismissed = awaitState { it.error == null && !it.modelLoading }
+            assertEquals(failed.copy(error = null), dismissed)
+
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val replacement = replacementManagement()
+            val restored = pool.session("session", "fixture", "/workspace")
+            replacement.respondManagement(replacement.managementRequest("init"), JsonPrimitive(true))
+            replacement.respondManagement(replacement.managementRequest("snapshot"), JsonObject(emptyMap()))
+            replacement.respondManagement(replacement.managementRequest("modelsSnapshot"), error = failure)
+            val replayed = withTimeout(5_000) { restored.state.first { !it.modelLoading } }
+            assertNull(replayed.error)
+            assertEquals(SessionStatus.IDLE, replayed.status)
+
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val changed = replacementManagement()
+            val next = pool.session("session", "fixture", "/workspace")
+            changed.respondManagement(changed.managementRequest("init"), JsonPrimitive(true))
+            changed.respondManagement(changed.managementRequest("snapshot"), JsonObject(emptyMap()))
+            changed.respondManagement(changed.managementRequest("modelsSnapshot"), error = "另一个模型读取故障")
+            val newFailure = withTimeout(5_000) { next.state.first { !it.modelLoading } }
+            assertEquals("另一个模型读取故障", newFailure.error)
+
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val recurring = replacementManagement()
+            val last = pool.session("session", "fixture", "/workspace")
+            recurring.respondManagement(recurring.managementRequest("init"), JsonPrimitive(true))
+            recurring.respondManagement(recurring.managementRequest("snapshot"), JsonObject(emptyMap()))
+            recurring.respondManagement(recurring.managementRequest("modelsSnapshot"), error = failure)
+            val laterFailure = withTimeout(5_000) { last.state.first { !it.modelLoading } }
+            assertEquals(failed.error, laterFailure.error)
+        }
+    }
+
+    @Test fun recoveredPreviewCanReportTheSameFailureAgainAfterRestart() = runBlocking {
+        fixture(withManagement = true) {
+            val failure = "UNAVAILABLE: Invalid native model provider configuration"
+            managementTransport.respondManagement(managementCatalogue(), error = failure)
+            val initial = awaitState { !it.modelLoading && it.error != null }
+            controller.dismissError()
+            awaitState { !it.modelLoading && it.error == null }
+
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val recovered = replacementManagement()
+            val restored = pool.session("session", "fixture", "/workspace")
+            recovered.respondManagement(recovered.managementRequest("init"), JsonPrimitive(true))
+            recovered.respondManagement(recovered.managementRequest("snapshot"), JsonObject(emptyMap()))
+            recovered.respondManagement(recovered.managementRequest("modelsSnapshot"), nativeDefault)
+            withTimeout(5_000) { restored.state.first { !it.modelLoading && it.modelId == "resolved" } }
+
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val recurring = replacementManagement()
+            val last = pool.session("session", "fixture", "/workspace")
+            recurring.respondManagement(recurring.managementRequest("init"), JsonPrimitive(true))
+            recurring.respondManagement(recurring.managementRequest("snapshot"), JsonObject(emptyMap()))
+            recurring.respondManagement(recurring.managementRequest("modelsSnapshot"), error = failure)
+            val laterFailure = withTimeout(5_000) { last.state.first { !it.modelLoading } }
+            assertEquals(initial.error, laterFailure.error)
+        }
+    }
+
+    @Test fun dismissedRunErrorStaysHiddenWhenTheRunFinishesAndTheJournalReplays() = runBlocking {
+        fixture {
+            controller.selectModel("manual", "picked")
+            awaitState { it.modelId == "picked" && !it.modelLoading }
+            gate.complete(transport)
+            controller.sendPrompt("已接收的消息")
+            val request = transport.request()
+            transport.acceptUser(request)
+            transport.respond(request)
+            awaitState { it.isRunning && it.feed.filterIsInstance<UserMessageItem>().singleOrNull()?.accepted == true }
+            transport.emit("""{"type":"message_end","messageId":"answer","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"模型服务不可用"}}""")
+            val failed = awaitState { it.isRunning && it.error == "模型服务不可用" }
+            controller.dismissError()
+            val dismissed = awaitState { it.isRunning && it.error == null }
+            assertEquals(failed.copy(error = null), dismissed)
+
+            transport.finish(request, failed = true)
+            transport.emit("""{"type":"notice","level":"info","message":"事件已处理"}""")
+            val finished = awaitState { it.actionText == "事件已处理" }
+            assertEquals(SessionStatus.ERROR, finished.status)
+            assertNull(finished.error)
+            assertEquals(failed.feed, finished.feed)
+
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val restored = pool.session("session", "fixture", "/workspace")
+            val replayed = withTimeout(5_000) { restored.state.first { it.status == SessionStatus.ERROR && !it.modelLoading } }
+            assertNull(replayed.error)
+            assertEquals(failed.feed, replayed.feed)
+
+            val replacement = replacementChat()
+            restored.sendPrompt("下一轮")
+            val next = replacement.request()
+            replacement.acceptUser(next)
+            replacement.respond(next)
+            replacement.emit("""{"type":"message_end","messageId":"next-answer","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"模型服务不可用"}}""")
+            val newFailure = withTimeout(5_000) { restored.state.first { it.error == "模型服务不可用" } }
+            assertTrue(newFailure.isRunning)
+        }
+    }
+
+    @Test fun dismissalPreservesLocalFailureHistoryAndDoesNotHideANewFailure() = runBlocking {
+        fixture {
+            controller.selectModel("manual", "picked")
+            awaitState { it.modelId == "picked" && !it.modelLoading }
+            val missing = AttachmentFile("missing", "缺失文件.txt", File(data, "missing").absolutePath)
+            controller.sendPrompt("附件消息", listOf(missing))
+            val failed = awaitState { it.error?.contains("缺失文件.txt") == true }
+            controller.dismissError()
+            val dismissed = awaitState { it.error == null && it.status == SessionStatus.ERROR }
+            assertEquals(failed.copy(error = null), dismissed)
+
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val restored = pool.session("session", "fixture", "/workspace")
+            val replayed = withTimeout(5_000) { restored.state.first { it.status == SessionStatus.ERROR && !it.modelLoading } }
+            assertNull(replayed.error)
+            assertEquals(failed.feed, replayed.feed)
+            restored.sendPrompt("再次发送", listOf(missing))
+            val newFailure = withTimeout(5_000) { restored.state.first { it.error?.contains("缺失文件.txt") == true } }
+            assertEquals(SessionStatus.ERROR, newFailure.status)
+        }
+    }
+
     @Test fun firstMessageIsVisibleBeforeStartupAndKeepsItsIdentityAfterAcceptance() = runBlocking {
         fixture {
             controller.sendPrompt("立即显示")

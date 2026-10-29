@@ -54,6 +54,7 @@ fun AgentChatScreen(
     onOpenFork: (String) -> Unit,
     navigation: AgentChatNavigation,
     appearance: AgentAppearance = AgentAppearance(),
+    onRequestOmpRepair: (() -> Unit)? = null,
 ) {
     val inheritedColors = if (LocalAgentThemeProvided.current && LocalAgentAppearance.current == appearance) LocalAgentColors.current else null
     AgentTheme(appearance, colors = inheritedColors) {
@@ -297,13 +298,6 @@ fun AgentChatScreen(
                                     }
                                 }
                             }
-                            if (state.error != null) item(key = "session-error") {
-                                Surface(color = c.errorContainer, shape = RoundedCornerShape(20.dp), modifier = Modifier.padding(horizontal = 16.dp)) {
-                                    Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        Symbol("error", tint = c.error); SelectionContainer { Text(state.error.orEmpty(), color = c.onSurface) }
-                                    }
-                                }
-                            }
                         }
                         // Geometry invalidates this small overlay, never the whole chat/composer scope.
                         FeedPins(globalPinState, parentPinState, contentPinState, state.isRunning,
@@ -320,8 +314,17 @@ fun AgentChatScreen(
                             enter = fadeIn(tween(300, easing = EmphDecelEasing)) + scaleIn(agentSpring()), exit = fadeOut(tween(150, easing = EmphAccelEasing))) {
                             FilledTonalIconButton({ followTail = true }) { Symbol("arrow_downward", contentDescription = "回到最新消息") }
                         }
-                        ComposerArea(controller, state, providers, modelRepository, onOpenProviderSettings, onPickFiles, onPickContainerFiles, { followTail = true },
-                            Modifier.align(Alignment.BottomCenter).onSizeChanged { size -> composerHeight = with(density) { size.height.toDp() } }, draft = draft)
+                        var lastError by remember(state.id) { mutableStateOf(state.error) }
+                        LaunchedEffect(state.error) { state.error?.let { lastError = it } }
+                        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { size -> composerHeight = with(density) { size.height.toDp() } }) {
+                            AnimatedVisibility(state.error != null,
+                                enter = expandVertically(tween(320, easing = EmphDecelEasing)) + fadeIn(tween(220)),
+                                exit = shrinkVertically(tween(240, easing = EmphAccelEasing)) + fadeOut(tween(150))) {
+                                ChatErrorBanner(state.error ?: lastError.orEmpty(), state.modelId, controller::dismissError,
+                                    onOpenProviderSettings, onOpenAgentSettings, onRequestOmpRepair)
+                            }
+                            ComposerArea(controller, state, providers, modelRepository, onOpenProviderSettings, onPickFiles, onPickContainerFiles, { followTail = true }, draft = draft)
+                        }
                     }
                 }
             }
@@ -342,6 +345,87 @@ fun AgentChatScreen(
                 onRestorePrompt = { prompt, replace -> draft.restore(prompt, replace) }, hasDraft = draft.hasContent,
                 onFork = onFork, onOpenFork = { id -> historyOpen = false; onOpenFork(id) },
                 focusChatItemId = historyFocus, copyFocusedMessage = historyCopy)
+        }
+    }
+}
+
+internal enum class ChatErrorAction(val icon: String, val title: String) {
+    OPEN_OMP_REPAIR("build", "修复 OMP"),
+    OPEN_PROVIDER_SETTINGS("deployed_code", "配置模型服务"),
+    OPEN_AGENT_SETTINGS("smart_toy", "Agent 设置"),
+    DISMISS("close", "关闭报错"),
+}
+
+/** Explicit diagnoses precede the missing-model fallback when several problems overlap. */
+internal fun diagnoseChatError(error: String, modelId: String): List<ChatErrorAction> =
+    chatErrorCandidates(error, modelId).take(2)
+
+private val chatErrorStatusCode = Regex("(?<![0-9])(?:401|403|404|429)(?![0-9])")
+
+private fun chatErrorCandidates(error: String, modelId: String): List<ChatErrorAction> {
+    val text = error.lowercase()
+    val ompFailure = listOf("omp 缺失", "安装损坏", "omp 输出流已关闭", "omp 通信响应损坏",
+        "omp 进程未启动", "omp 进程异常", "omp 通信失效", "cannot find module").any(text::contains) ||
+        ("enoent" in text && "omp" in text)
+    val sessionFailure = listOf("会话管理", "历史树", "agent hub", "session management").any(text::contains)
+    val defaultRole = "默认模型" in text || ("default" in text && listOf("model", "role", "模型", "角色").any(text::contains))
+    val modelFailure = defaultRole || listOf("缺少服务标识", "缺少模型标识", "没有可用模型", "模型不可用", "未配置模型",
+        "模型未配置", "no available model", "model not found", "model unavailable", "model is unavailable", "api key",
+        "apikey", "api_key", "unauthorized", "authentication", "凭证", "认证", "配额", "余额", "rate limit",
+        "model_not_found", "未找到模型", "模型服务").any(text::contains) || chatErrorStatusCode.containsMatchIn(text)
+    return buildList {
+        if (ompFailure) add(ChatErrorAction.OPEN_OMP_REPAIR)
+        if (sessionFailure) add(ChatErrorAction.DISMISS)
+        if (modelFailure || modelId.isBlank()) {
+            add(ChatErrorAction.OPEN_PROVIDER_SETTINGS)
+            if (defaultRole || modelId.isBlank()) add(ChatErrorAction.OPEN_AGENT_SETTINGS)
+        }
+    }
+}
+
+internal fun visibleChatErrorActions(error: String, modelId: String, canRepairOmp: Boolean): List<ChatErrorAction> =
+    chatErrorCandidates(error, modelId).filter {
+        // The always-visible close icon already performs DISMISS.
+        it != ChatErrorAction.DISMISS && (it != ChatErrorAction.OPEN_OMP_REPAIR || canRepairOmp)
+    }.take(2)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ChatErrorBanner(errorText: String, modelId: String, onDismiss: () -> Unit,
+    onOpenProviderSettings: () -> Unit, onOpenAgentSettings: () -> Unit, onRequestOmpRepair: (() -> Unit)?) {
+    val c = LocalAgentColors.current
+    val actions = remember(errorText, modelId, onRequestOmpRepair != null) {
+        visibleChatErrorActions(errorText, modelId, onRequestOmpRepair != null)
+    }
+    Surface(color = c.errorContainer, contentColor = c.material.onErrorContainer,
+        shape = RoundedCornerShape(22.dp), tonalElevation = 2.dp, shadowElevation = 2.dp,
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp).fillMaxWidth()) {
+        Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)) {
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Symbol("error", modifier = Modifier.padding(top = 12.dp), tint = c.error, size = 22.dp)
+                SelectionContainer(Modifier.weight(1f).padding(top = 12.dp, bottom = 8.dp)) {
+                    Text(errorText, color = c.material.onErrorContainer, fontSize = 15.sp, lineHeight = 21.sp,
+                        maxLines = 5, overflow = TextOverflow.Ellipsis)
+                }
+                AgentIconButton("close", "关闭报错", onDismiss)
+            }
+            if (actions.isNotEmpty()) FlowRow(Modifier.fillMaxWidth().padding(start = 32.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                actions.forEach { action ->
+                    FilledTonalButton(onClick = {
+                        when (action) {
+                            ChatErrorAction.OPEN_OMP_REPAIR -> onRequestOmpRepair?.invoke()
+                            ChatErrorAction.OPEN_PROVIDER_SETTINGS -> onOpenProviderSettings()
+                            ChatErrorAction.OPEN_AGENT_SETTINGS -> onOpenAgentSettings()
+                            ChatErrorAction.DISMISS -> onDismiss()
+                        }
+                    }, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                        Symbol(action.icon, size = 18.dp)
+                        Spacer(Modifier.width(6.dp))
+                        Text(action.title, maxLines = 1)
+                    }
+                }
+            }
         }
     }
 }
