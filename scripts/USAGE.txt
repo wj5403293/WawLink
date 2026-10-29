@@ -105,6 +105,8 @@ pinned certificate, APK signatures and alignment before replacing outputs.
 Direct Gradle assembleRelease also produces an unsigned, non-installable APK.
 
 .github/workflows/android-release.yml runs only on vMAJOR.MINOR.PATCH tag pushes.
+Both Android setup steps install platform-tools explicitly rather than the removed
+legacy tools package; the required platform, build tools and NDK remain pinned.
 Separate build/sign/publish runners isolate the release Environment's
 WSDX233_KEYSTORE_BASE64 and WSDX233_KEY_PASSWORD secrets from Gradle and the
 publishing token. The release Environment allows only v* tags. Only explicit
