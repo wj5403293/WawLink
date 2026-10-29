@@ -5,7 +5,7 @@ plugins {
     id("org.jetbrains.compose")
 }
 
-val appVersion = providers.gradleProperty("wawlink.version").orElse("1.0.0").get()
+val appVersion = providers.gradleProperty("wawlink.version").orElse("0.1.1").get()
 require(Regex("(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})").matches(appVersion)) {
     "wawlink.version must be MAJOR.MINOR.PATCH (minor and patch: 0..999, no leading zeroes)"
 }
