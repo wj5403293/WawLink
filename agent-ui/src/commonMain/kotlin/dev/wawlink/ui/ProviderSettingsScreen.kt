@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -20,6 +21,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -93,6 +100,7 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var search by rememberSaveable { mutableStateOf("") }
     val navigationState = rememberSaveableStateHolder()
+    val detailBackHandlers = remember(repository) { mutableStateMapOf<String, () -> Boolean>() }
     // Optimistic drafts must not permanently mask changes made by the running agent or another editor.
     LaunchedEffect(persisted, queue.pending) {
         if (queue.pending == 0) {
@@ -108,7 +116,10 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
         }
     }
     fun update(provider: ProviderConfig) { drafts[provider.id] = provider; persist(provider.id) }
-    fun back() { queue.afterSaved { if (selectedId != null) selectedId = null else onBack() } }
+    fun back() {
+        if (selectedId?.let { detailBackHandlers[it]?.invoke() } == true) return
+        queue.afterSaved { if (selectedId != null) selectedId = null else onBack() }
+    }
     val latestBack by rememberUpdatedState(::back)
     val currentRegistration by rememberUpdatedState(registerBack)
     DisposableEffect(repository) { currentRegistration { latestBack(); true }; onDispose { currentRegistration(null) } }
@@ -187,7 +198,10 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
                         removed[provider.id] = true
                         persist(provider.id)
                         queue.afterSaved { selectedId = null; notify("已删除服务") }
-                    }, { queue.failures.keys.toList().forEach(::persist) }, repository, notify, onAdvanced?.let { open -> { queue.afterSaved { open(provider.id) } } })
+                    }, { queue.failures.keys.toList().forEach(::persist) }, repository, notify, onAdvanced?.let { open -> { queue.afterSaved { open(provider.id) } } }, { handler ->
+                        if (handler == null) detailBackHandlers.remove(provider.id)
+                        else detailBackHandlers[provider.id] = handler
+                    })
                 }
                 }
             }
@@ -198,6 +212,7 @@ fun ProviderSettingsScreen(repository: ProviderConfigRepository, onBack: () -> U
 
 
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ProviderDetailScreen(
     provider: ProviderConfig,
@@ -209,6 +224,7 @@ private fun ProviderDetailScreen(
     repository: ProviderConfigRepository,
     notify: (String) -> Unit,
     onAdvanced: (() -> Unit)?,
+    registerBack: ((() -> Boolean)?) -> Unit,
 ) {
     val colors = LocalAgentColors.current
     val synchronizationError by repository.error.collectAsState()
@@ -221,8 +237,35 @@ private fun ProviderDetailScreen(
     var modelSheet by remember(provider.id) { mutableStateOf(false) }
     var editModel by remember(provider.id) { mutableStateOf<ModelConfig?>(null) }
     var confirmDelete by remember(provider.id) { mutableStateOf(false) }
+    var selectionMode by remember(provider.id) { mutableStateOf(false) }
+    var selectedModelIds by remember(provider.id) { mutableStateOf(emptySet<String>()) }
+    var confirmDeleteModels by remember(provider.id) { mutableStateOf(false) }
+    var fetchedModels by remember(provider.id) { mutableStateOf<List<ModelConfig>?>(null) }
     val latest by rememberUpdatedState(provider)
     LaunchedEffect(provider.apiType, provider.baseUrl, provider.apiKey) { testResult = null }
+    val modelIds = remember(provider.models) { provider.models.mapTo(mutableSetOf()) { it.id } }
+    LaunchedEffect(modelIds) {
+        selectedModelIds = selectedModelIds.intersect(modelIds)
+        if (modelIds.isEmpty()) {
+            selectionMode = false
+            confirmDeleteModels = false
+        }
+    }
+    val latestDetailBack by rememberUpdatedState<() -> Boolean>({
+        when {
+            fetchedModels != null -> { fetchedModels = null; true }
+            confirmDeleteModels -> { confirmDeleteModels = false; true }
+            confirmDelete -> { confirmDelete = false; true }
+            modelSheet -> { modelSheet = false; true }
+            selectionMode -> { selectionMode = false; selectedModelIds = emptySet(); true }
+            else -> false
+        }
+    })
+    val currentDetailRegistration by rememberUpdatedState(registerBack)
+    DisposableEffect(provider.id) {
+        currentDetailRegistration { latestDetailBack() }
+        onDispose { currentDetailRegistration(null) }
+    }
     Column(Modifier.fillMaxSize()) {
         AgentTopBar(provider.name.ifBlank { "未命名" }, onBack) {
             if (onAdvanced != null) AgentIconButton("tune", "原生协议与完整模型配置", onAdvanced)
@@ -286,10 +329,18 @@ private fun ProviderDetailScreen(
                 Text(testResult.orEmpty(), Modifier.padding(8.dp), color = if (testFailed) colors.error else colors.tertiary, fontSize = 15.sp)
             }
             Row(Modifier.fillMaxWidth().padding(start = 4.dp, top = 28.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("模型", fontSize = 18.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.width(10.dp))
-                Surface(shape = CircleShape, color = colors.surfaceContainerHigh) { Text("${provider.models.size}", Modifier.padding(horizontal = 8.dp, vertical = 3.dp), fontSize = 15.sp) }
+                Text(if (selectionMode) "已选 ${selectedModelIds.size} 项" else "模型", fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                if (!selectionMode) {
+                    Spacer(Modifier.width(10.dp))
+                    Surface(shape = CircleShape, color = colors.surfaceContainerHigh) { Text("${provider.models.size}", Modifier.padding(horizontal = 8.dp, vertical = 3.dp), fontSize = 15.sp) }
+                }
                 Spacer(Modifier.weight(1f))
+                if (selectionMode) ProviderModelSelectionActions(
+                    selectedCount = selectedModelIds.size,
+                    onSelectAll = { selectedModelIds = toggleProviderModelSelection(selectedModelIds, modelIds) },
+                    onDelete = { confirmDeleteModels = true },
+                    onExit = { selectionMode = false; selectedModelIds = emptySet() },
+                ) else {
                 if (syncing) Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
                 else TextButton(onClick = {
                     syncing = true
@@ -297,16 +348,10 @@ private fun ProviderDetailScreen(
                     scope.launch {
                         try {
                             repository.fetchRemoteModels(snapshot).fold({ models ->
-                                if (snapshot.apiType != latest.apiType || snapshot.baseUrl != latest.baseUrl || snapshot.apiKey != latest.apiKey) notify("配置已变更，请重新同步")
+                                if (snapshot.apiType != latest.apiType || snapshot.nativeApi != latest.nativeApi || snapshot.baseUrl != latest.baseUrl || snapshot.apiKey != latest.apiKey) notify("配置已变更，请重新同步")
                                 else {
-                                    var added = 0
-                                    modifyLatest { current ->
-                                        val known = current.models.map { it.id }.toSet()
-                                        val new = models.filter { it.id.isNotBlank() && it.id !in known }.distinctBy { it.id }
-                                        added = new.size
-                                        current.copy(models = current.models + new)
-                                    }
-                                    notify(if (added > 0) "获取到 $added 个新模型" else "没有新模型")
+                                    val new = newProviderModels(models, latest.models.mapTo(mutableSetOf()) { it.id })
+                                    if (new.isEmpty()) notify("没有新模型") else fetchedModels = new
                                 }
                             }, { error -> notify("获取模型失败：${error.message ?: "未知错误"}") })
                         } catch (cancelled: CancellationException) { throw cancelled }
@@ -315,10 +360,38 @@ private fun ProviderDetailScreen(
                     }
                 }) { Symbol("sync", size = 20.dp); Spacer(Modifier.width(6.dp)); Text("获取模型") }
                 AgentIconButton("add", "添加模型", { editModel = null; modelSheet = true })
+                }
             }
             LazyColumn(Modifier.fillMaxWidth().heightIn(min = 72.dp, max = 480.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 itemsIndexed(provider.models, key = { _, model -> model.id }) { index, model ->
-                    Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).background(colors.surfaceContainerLow, segmentedSettingsShape(index, provider.models.size)).clickable { editModel = model; modelSheet = true }.padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    val isSelected = model.id in selectedModelIds
+                    val background by animateColorAsState(
+                        if (selectionMode && isSelected) colors.secondaryContainer else colors.surfaceContainerLow,
+                        tween(350, easing = EmphEasing),
+                    )
+                    Row(Modifier.fillMaxWidth().heightIn(min = 72.dp)
+                        .background(background, segmentedSettingsShape(index, provider.models.size))
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = if (model.name.isBlank() || model.name == model.id) model.id else "${model.name}，${model.id}"
+                            if (selectionMode) {
+                                selected = isSelected
+                                role = Role.Checkbox
+                                stateDescription = if (isSelected) "已选择" else "未选择"
+                            }
+                        }
+                        .combinedClickable(
+                            onClickLabel = if (selectionMode) "切换选择" else "编辑模型",
+                            onLongClickLabel = "选择模型",
+                            onLongClick = { selectionMode = true; selectedModelIds = selectedModelIds + model.id },
+                            onClick = {
+                                if (selectionMode) selectedModelIds = toggleProviderModelSelection(selectedModelIds, setOf(model.id))
+                                else { editModel = model; modelSheet = true }
+                            },
+                        )
+                        .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
                         ModelIcon(model.id, model.name)
                         Column(Modifier.weight(1f)) {
                             Text(model.name.ifBlank { model.id }, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -331,12 +404,39 @@ private fun ProviderDetailScreen(
                                 Text(if (customThinking) model.thinkingBudget?.toString() ?: model.reasoningEffort.orEmpty() else model.thinkingLevel.label, fontSize = 16.sp, maxLines = 1, modifier = Modifier.widthIn(max = 96.dp), overflow = TextOverflow.Ellipsis, color = if (model.thinkingLevel == ThinkingLevel.NONE && !customThinking) colors.onSurfaceVariant else colors.primary)
                             }
                         }
-                        Symbol("chevron_right", tint = colors.onSurfaceVariant)
+                        Symbol(if (selectionMode) { if (isSelected) "check_box" else "check_box_outline_blank" } else "chevron_right", tint = if (selectionMode && isSelected) colors.primary else colors.onSurfaceVariant)
                     }
                 }
                 if (provider.models.isEmpty()) item { SettingsEmpty("还没有模型，读取目录或手工添加", "playlist_add") }
             }
         }
+    }
+    if (confirmDeleteModels) AlertDialog(
+        onDismissRequest = { confirmDeleteModels = false },
+        title = { Text("删除选中的模型？") },
+        text = { Text("将删除选中的 ${selectedModelIds.size} 个模型配置。此操作无法撤销。") },
+        confirmButton = {
+            TextButton(enabled = selectedModelIds.isNotEmpty(), onClick = {
+                val ids = selectedModelIds.toSet()
+                confirmDeleteModels = false
+                modifyLatest { current -> current.copy(models = current.models.filterNot { it.id in ids }) }
+                selectedModelIds = emptySet()
+                selectionMode = false
+            }) { Text("删除", color = colors.error) }
+        },
+        dismissButton = { TextButton({ confirmDeleteModels = false }) { Text("取消") } },
+    )
+    fetchedModels?.let { models ->
+        FetchedProviderModelsSheet(models, onDismiss = { fetchedModels = null }, onAdd = { selectedIds ->
+            var added = 0
+            modifyLatest { current ->
+                val new = newProviderModels(models, current.models.mapTo(mutableSetOf()) { it.id }, selectedIds)
+                added = new.size
+                current.copy(models = current.models + new)
+            }
+            fetchedModels = null
+            notify("已添加 $added 个模型")
+        })
     }
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("删除服务？") }, text = { Text("将删除「${provider.name.ifBlank { "未命名" }}」及其模型配置。此操作无法撤销。") }, confirmButton = { TextButton({ confirmDelete = false; onDelete() }) { Text("删除", color = colors.error) } }, dismissButton = { TextButton({ confirmDelete = false }) { Text("取消") } })
     if (modelSheet) ModelConfigSheet(provider.apiType, editModel, provider.models.map { it.id }.toSet(), repository, { modelSheet = false }, { model ->

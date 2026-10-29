@@ -43,6 +43,7 @@
 - 模型服务开关只增删目标作用域原始完整 `disabledProviders` 规则中的指定服务裸字符串，保留路径限定对象与无关项；不得把 `effectiveValues` 写回全局，当前模型服务列表仍固定全局作用域。
 - Agent 启停、模型允许/停用规则及故障转移链只以目标作用域的原始配置层为写回基底，不能整表复制有效值。未覆盖时仍可展示继承值，未修改直接完成不物化继承规则；清除此层覆盖恢复继承。
 - Provider 配置每次打开从顶部展示；模型服务搜索框与首个列表项保留 16 dp 间距。模型获取按钮显示蓝色“获取模型”并执行实际获取，不用静态目录刷新冒充。删除“读取当前配置档的……”等无实际意义说明及图标；保留必要错误、空态与风险确认。保存失败展示可定位且已脱敏的实际原因，保留全部草稿供修复和重试。
+- 两处模型服务详情的模型列表支持长按多选、全选/取消全选、确认后批量移除与返回优先退出多选；原生页仅自定义模型及已有覆盖可选，纯内置目录模型不可勾选或删除，移除仍由底部保存草稿，独立详情确认后一次入队保存。获取到的新模型先进入默认全选的搜索多选 sheet，按名称或 ID 搜索，全选仅切换当前可见项并保留隐藏项选择；确认时按最新已有 ID 再去重，仅添加所选，取消不改配置。
 - 模型选项使用默认值时，在同一行及菜单的“使用默认值”后以灰字显示原生实际默认值；默认值只展示、不写入覆盖。依赖接口或会话而无确定值时明确显示未指定或跟随会话，不猜测。重复选择未设置的默认项不生成空对象；思考控制方式恢复默认时移除整段可选 `thinking`，放弃修改恢复全部字段并清除本次保存错误。
 - 协议兼容项、远程压缩及其嵌套对象仅在实质修改时写入；打开后直接点“完成”不得物化继承值或新增空对象，真实修改保留未知字段，清空移除对应覆盖。
 - 模型选择列表及服务筛选仅展示 OMP 原生判定可用的模型，不把缺少认证或已停用的模型作为可选项，也不提供关闭可用性过滤的开关。管理目录仍可查看和配置不可用模型，已有绑定及高级选择器不因候选隐藏而被删除或改写。
@@ -111,8 +112,9 @@
   - 同目录的 `CodeLanguage.kt`、`HighlightedCode.kt`、`CodeDetailScreen.kt` 提供语言识别、后台高亮与全屏入口，以及默认开启的自动换行和三点菜单开关；`src/androidMain/kotlin/dev/wawlink/ui/OfflineTextMate.android.kt` 串行复用明/暗两套行内语法注册表，原生 Sora 编辑器仍独立持有分析器；`CodeDetailScreen.android.kt` 接入只读 Sora，`src/desktopMain/kotlin/dev/wawlink/ui/HighlightedCode.desktop.kt` 与 `CodeDetailScreen.desktop.kt` 接入 RSyntaxTextArea，全屏查看器沿用桌面混合画布以保证菜单位于原生编辑器上方。
   - `src/commonMain/composeResources/files/code/` 保存精确版本来源与许可，`textmate/` 保存语法依赖、主题、索引与哈希；`CodeLanguageTest.kt` 覆盖语言别名、路径选择器和未知语言，`src/androidUnitTest/kotlin/dev/wawlink/ui/OfflineTextMateTokenizerTest.kt` 与 `src/desktopTest/kotlin/dev/wawlink/ui/NativeCodeHighlightTest.kt` 覆盖真实词法器的嵌入语言、多行及颜色边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/AgentManagementScreen.kt` 为新 Agent 设置入口，`ManagementComponents.kt` 提供原型一致的页面、作用域、候选模型链与配置编辑控件；`ManagementAgentsScreen.kt`、`ManagementAdvisorsScreen.kt` 管理定义、运行覆盖及顾问，`ManagementRolesScreen.kt`、`ManagementPoliciesScreen.kt`、`ManagementRuntimeScreen.kt` 分别管理角色、模型策略与原生运行设置，`ManagementNativeProviderScreen.kt` 编辑完整原生服务及模型覆盖。
+  - 同目录的 `ProviderModelSelection.kt` 共用获取结果搜索多选 sheet、模型选择操作栏，以及保留未知字段的批量草稿移除、精确 ID 去重与可见项选择纯函数；`ManagementComponents.kt` 的 `ManagementRow` 提供可选长按、选择状态及完整无障碍标签，`ProviderSettingsScreen.kt` 保留独立详情的立即入队保存与按页返回拦截。
   - 同目录的 `EditableCodeScreen.kt` 提供带保存与舍弃确认的全屏可编辑原文入口；`src/androidMain/kotlin/dev/wawlink/ui/EditableCodeScreen.android.kt` 接入可编辑 Sora 与既有离线 TextMate，`src/desktopMain/kotlin/dev/wawlink/ui/EditableCodeScreen.desktop.kt` 接入可编辑 RSyntaxTextArea。
-  - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除、无效输入和模型子表单状态保存，以及思考默认值的无操作、整段清除、继承与未知字段保留；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
+  - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除、无效输入和模型子表单状态保存，以及思考默认值的无操作、整段清除、继承与未知字段保留，并覆盖自定义/覆盖混合批量移除、空集合清理、获取结果去重与确认时重检、搜索及可见项全选边界；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - 同目录的 `OmpEventReducer.kt` 在归并器内部按稳定 ID 定位当前节点，只复制变更节点的祖先兄弟列表，外部整体替换自动失效索引；重复终态与工具输出的冗余渲染被消除。完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考/模型正文归属。`OmpProcessPool.kt` 的事件日志逐条写入并关闭缓冲 UTF-8 writer，不额外构造整条换行字符串及其 UTF-8 字节数组。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。

@@ -1,6 +1,7 @@
 package dev.wawlink.ui
 
 import androidx.compose.runtime.saveable.SaverScope
+import dev.wawlink.protocol.ModelConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -100,5 +101,71 @@ class NativeProviderDraftTest {
         assertEquals(compat + ("whenThinking" to conditional), changed)
         assertEquals(model + ("compat" to changed), changeNativeObjectField(model, "compat", compat, changed))
         assertEquals(compat, changeNativeObjectField(changed, "whenThinking", conditional, emptyMap()))
+    }
+
+    @Test fun batchRemovalClearsCustomAndOverrideWithTheSameIdAndPreservesUnselectedFields() {
+        val keptModel = mapOf("id" to "keep", "future" to mapOf("enabled" to true))
+        val keptOverride = mapOf("maxTokens" to 8192L, "future" to listOf("keep"))
+        val draft = mapOf<String, Any?>(
+            "api" to "openai-responses",
+            "headers" to mapOf("x-project" to "keep"),
+            "futureRoot" to listOf(1L, false),
+            "models" to listOf(mapOf("id" to "custom"), mapOf("id" to "overlap"), keptModel),
+            "modelOverrides" to mapOf("catalog" to mapOf("name" to "目录覆盖"), "overlap" to mapOf("reasoning" to false), "keep" to keptOverride),
+        )
+        val result = removeProviderModels(draft, setOf("custom", "catalog", "overlap", "pure-catalog"))
+        assertEquals(draft + mapOf("models" to listOf(keptModel), "modelOverrides" to mapOf("keep" to keptOverride)), result)
+        assertEquals(listOf("custom", "overlap", "keep"), (draft["models"] as List<*>).map { (it as Map<*, *>)["id"] })
+    }
+
+    @Test fun removingTheLastConfiguredModelsRemovesOnlyTheirEmptyCollections() {
+        val other = mapOf<String, Any?>("name" to "服务", "apiKey" to "unchanged", "headers" to emptyMap<String, String>())
+        val draft = other + mapOf("models" to listOf(mapOf("id" to "custom")), "modelOverrides" to mapOf("catalog" to mapOf("maxTokens" to 4096L)))
+        assertEquals(other, removeProviderModels(draft, setOf("custom", "catalog")))
+        assertEquals(other + ("modelOverrides" to draft["modelOverrides"]), removeProviderModels(draft, setOf("custom")))
+        assertEquals(other + ("models" to draft["models"]), removeProviderModels(draft, setOf("catalog")))
+    }
+
+    @Test fun anEmptyOrStaleSelectionDoesNotMaterializeOrClearUnrelatedConfiguration() {
+        val absent = mapOf<String, Any?>("name" to "继承目录")
+        val empty = absent + mapOf("models" to emptyList<Any?>(), "modelOverrides" to emptyMap<String, Any?>())
+        val configured = absent + ("models" to listOf(mapOf("id" to "keep", "future" to true)))
+        for (draft in listOf(absent, empty, configured)) {
+            assertEquals(draft, removeProviderModels(draft, emptySet()))
+            assertEquals(draft, removeProviderModels(draft, setOf("deleted-elsewhere")))
+        }
+    }
+
+    @Test fun fetchedModelsExcludeKnownAndBlankIdsAndKeepTheFirstExactIdWithoutLosingMetadata() {
+        val first = ModelConfig("new", "新模型", contextWindow = 123456, maxTokens = 7890, reasoning = false)
+        val distinctCase = ModelConfig("NEW", "区分大小写")
+        val fetched = listOf(ModelConfig("existing"), ModelConfig(""), ModelConfig(" \t"), first, first.copy(name = "重复项", contextWindow = 1), distinctCase)
+        assertEquals(listOf(first, distinctCase), newProviderModels(fetched, setOf("existing")))
+    }
+
+    @Test fun confirmingFetchedSelectionRechecksLatestKnownIdsAndDoesNotAddUnselectedModels() {
+        val fetched = listOf(ModelConfig("a"), ModelConfig("b"), ModelConfig("c", "保留元数据", maxTokens = 321))
+        assertEquals(listOf(fetched[2]), newProviderModels(fetched, setOf("a"), setOf("a", "c", "missing")))
+        assertEquals(emptyList(), newProviderModels(fetched, emptySet(), emptySet()))
+        assertEquals(emptyList(), newProviderModels(fetched, setOf("a", "b", "c"), setOf("a", "c")))
+    }
+
+    @Test fun selectAllTogglesOnlyVisibleModelsAndKeepsHiddenSelections() {
+        val hidden = setOf("hidden")
+        val visible = setOf("first", "second")
+        assertEquals(hidden + visible, toggleProviderModelSelection(hidden + "first", visible))
+        assertEquals(hidden, toggleProviderModelSelection(hidden + visible, visible))
+        assertEquals(hidden, toggleProviderModelSelection(hidden, emptySet()))
+        assertEquals(visible, toggleProviderModelSelection(emptySet(), visible))
+    }
+
+    @Test fun fetchedSearchMatchesBothNameAndIdWithoutChangingTheFullSelection() {
+        val models = listOf(ModelConfig("vendor/model-a", "旗舰"), ModelConfig("vendor/model-b", "Fast Preview"), ModelConfig("other", "轻量"))
+        assertEquals(listOf(models[0], models[1]), filterProviderModels(models, " VENDOR/ "))
+        assertEquals(listOf(models[1]), filterProviderModels(models, "preview"))
+        assertEquals(models, filterProviderModels(models, " \t"))
+        assertEquals(emptyList(), filterProviderModels(models, "no-match"))
+        val all = models.map { it.id }.toSet()
+        assertEquals(setOf("vendor/model-a", "other"), toggleProviderModelSelection(all, filterProviderModels(models, "preview").map { it.id }.toSet()))
     }
 }

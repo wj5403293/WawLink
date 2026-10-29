@@ -92,6 +92,10 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
     var confirmTest by remember { mutableStateOf<ManagedModel?>(null) }
     var testResult by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var modelSelectionMode by remember(providerId) { mutableStateOf(false) }
+    var selectedModelIds by remember(providerId) { mutableStateOf(emptySet<String>()) }
+    var pendingModelDeletion by remember(providerId) { mutableStateOf<Set<String>?>(null) }
+    var fetchedModels by remember(providerId) { mutableStateOf<List<ModelConfig>?>(null) }
     var readAttempt by remember { mutableIntStateOf(0) }
     LaunchedEffect(repository, providerId, readAttempt) {
         actions.launch {
@@ -110,6 +114,13 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
         val next = changeNativeObjectField(draft, key, configurationMap(draft[key]), value)
         if (next != draft) change(key, next[key])
     }
+    fun removeModels(selectedIds: Set<String>) {
+        val previous = draft
+        val next = removeProviderModels(previous, selectedIds)
+        for (key in listOf("models", "modelOverrides")) {
+            if (previous[key] != next[key] || previous.containsKey(key) != next.containsKey(key)) change(key, next[key])
+        }
+    }
     fun leave() {
         if (providerId.isEmpty() && !dirty) {
             id = ""
@@ -123,6 +134,9 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
     fun back(): Boolean {
         if (sourceEditing) { modelBack?.invoke(); return true }
         if (model != null) { modelBack?.invoke(); return true }
+        if (fetchedModels != null) { fetchedModels = null; return true }
+        if (pendingModelDeletion != null) { pendingModelDeletion = null; return true }
+        if (modelSelectionMode) { modelSelectionMode = false; selectedModelIds = emptySet(); return true }
         if (dirty) discard = true else leave()
         return true
     }
@@ -151,6 +165,13 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
     val descriptor = state.providers.firstOrNull { it.id == id }
     val nativeModel = state.models.firstOrNull { it.provider == id }
     val builtin = descriptor?.builtin == true
+    val catalog = state.models.filter { it.provider == id }
+    val modelIds = (customModels.mapNotNull { it["id"] as? String } + catalog.map { it.id } + overrides.keys).distinct()
+    val selectableModelIds = (customModels.mapNotNull { it["id"] as? String } + overrides.keys).toSet()
+    LaunchedEffect(selectableModelIds) {
+        selectedModelIds = selectedModelIds.intersect(selectableModelIds)
+        if (selectableModelIds.isEmpty()) modelSelectionMode = false
+    }
     if (sourceEditing) {
         document?.let { source -> ManagementConfigurationDocumentScreen(repository, source, { sourceEditing = false; actions.launch { val next = repository.readDocument("models"); document = next; if (!dirty) draft = configurationMap(configurationMap(next.values["providers"])[originalId]) } }, { handler -> modelBack = handler }) }
         return
@@ -164,7 +185,10 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
             model = null
             formStates.removeState(modelRoute)
         }, onDelete = {
-            if (edit.override) change("modelOverrides", overrides - edit.id) else change("models", customModels.filterNot { it["id"] == edit.id })
+            edit.id?.let { modelId ->
+                val key = if (edit.override) "modelOverrides" else "models"
+                change(key, removeProviderModels(draft, setOf(modelId))[key])
+            }
             model = null
             formStates.removeState(modelRoute)
         }, registerBack = { modelBack = it }, existingIds = customModels.mapNotNull { it["id"] as? String }.toSet())
@@ -235,20 +259,9 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
                                 headers = configurationMap(snapshot["headers"]).mapValues { it.value.toString() })
                             val fetched = requireNotNull(providerRepository).fetchRemoteModels(request).getOrThrow()
                             check(draft == snapshot && id == snapshotId) { "配置已变更，请重新获取模型" }
-                            val known = customModels.mapNotNull { it["id"] as? String }.toSet()
-                            val added = fetched.filter { it.id.isNotBlank() && it.id !in known }.distinctBy { it.id }.map { fetchedModel ->
-                                buildMap<String, Any?> {
-                                    put("id", fetchedModel.id)
-                                    put("name", fetchedModel.name)
-                                    put("contextWindow", fetchedModel.contextWindow)
-                                    put("maxTokens", fetchedModel.maxTokens)
-                                    put("input", fetchedModel.input)
-                                    fetchedModel.reasoning?.let { put("reasoning", it) }
-                                    fetchedModel.cost?.let { cost -> put("cost", mapOf("input" to cost.input, "output" to cost.output, "cacheRead" to cost.cacheRead, "cacheWrite" to cost.cacheWrite)) }
-                                }
-                            }
-                            if (added.isNotEmpty()) change("models", customModels + added)
-                            testResult = if (added.isEmpty()) "没有新模型" else "获取到 ${added.size} 个新模型"
+                            val known = (draft["models"] as? List<*>)?.mapNotNull { configurationMap(it)["id"] as? String }.orEmpty().toSet()
+                            val available = newProviderModels(fetched, known)
+                            if (available.isEmpty()) testResult = "没有新模型" else fetchedModels = available
                         }
                     } else {
                         val fetch = { actions.launch("已获取模型") { repository.fetchProviderModels(id) } }
@@ -259,18 +272,42 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
             }
             testResult?.let { ManagementBanner(it, "network_check") }
         }
-        ManagementGroup("模型", action = { TextButton({ model = NativeModelEdit(null, emptyMap(), false) }, enabled = document != null) { Symbol("add", size = 20.dp); Text("手工添加") } }) {
-            val catalog = state.models.filter { it.provider == id }
-            val names = (customModels.mapNotNull { it["id"] as? String } + catalog.map { it.id } + overrides.keys).distinct()
-            LazyColumn(Modifier.fillMaxWidth().heightIn(min = 72.dp, max = 480.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                itemsIndexed(names, key = { _, modelId -> modelId }) { index, modelId ->
-                    val custom = customModels.firstOrNull { it["id"] == modelId }
-                    val known = catalog.firstOrNull { it.id == modelId }
-                    ManagementRow(known?.name ?: custom?.get("name") as? String ?: modelId, if (custom != null) "自定义模型" else if (modelId in overrides) "内置目录，有覆盖" else "内置目录", "", { model = NativeModelEdit(modelId, custom ?: configurationMap(overrides[modelId]), custom == null) }, index, names.size,
-                        lead = { ModelIcon(modelId, known?.name ?: modelId, Modifier.size(44.dp)) }, enabled = document != null)
+        ManagementGroup(if (modelSelectionMode) "已选 ${selectedModelIds.size} 项" else "模型", action = {
+            if (modelSelectionMode) {
+                ProviderModelSelectionActions(selectedModelIds.size,
+                    onSelectAll = { selectedModelIds = toggleProviderModelSelection(selectedModelIds, selectableModelIds) },
+                    onDelete = { pendingModelDeletion = selectedModelIds.toSet() },
+                    onExit = { modelSelectionMode = false; selectedModelIds = emptySet() },
+                    enabled = document != null)
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (selectableModelIds.isNotEmpty()) AgentIconButton("checklist", "多选模型", { modelSelectionMode = true }, enabled = document != null)
+                    TextButton({ model = NativeModelEdit(null, emptyMap(), false) }, enabled = document != null) { Symbol("add", size = 20.dp); Text("手工添加") }
                 }
             }
-            if (names.isEmpty()) SettingsEmpty("还没有模型", "playlist_add")
+        }) {
+            LazyColumn(Modifier.fillMaxWidth().heightIn(min = 72.dp, max = 480.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                itemsIndexed(modelIds, key = { _, modelId -> modelId }) { index, modelId ->
+                    val custom = customModels.firstOrNull { it["id"] == modelId }
+                    val known = catalog.firstOrNull { it.id == modelId }
+                    val selectable = custom != null || modelId in overrides
+                    val modelName = known?.name ?: custom?.get("name") as? String ?: modelId
+                    val modelSource = if (custom != null) "自定义模型" else if (modelId in overrides) "内置目录，有覆盖" else "内置目录"
+                    ManagementRow(modelName, modelSource, "", {
+                        if (modelSelectionMode) {
+                            if (selectable) selectedModelIds = toggleProviderModelSelection(selectedModelIds, setOf(modelId))
+                        } else model = NativeModelEdit(modelId, custom ?: configurationMap(overrides[modelId]), custom == null)
+                    }, index, modelIds.size,
+                        lead = { ModelIcon(modelId, known?.name ?: modelId, Modifier.size(44.dp)) },
+                        trailing = if (modelSelectionMode) ({ if (selectable) Symbol(if (modelId in selectedModelIds) "check_box" else "check_box_outline_blank") }) else null,
+                        enabled = document != null && (!modelSelectionMode || selectable),
+                        onLongClick = if (selectable) ({ modelSelectionMode = true; selectedModelIds = selectedModelIds + modelId }) else null,
+                        onLongClickLabel = if (selectable) "选择模型" else null,
+                        selected = if (modelSelectionMode && selectable) modelId in selectedModelIds else null,
+                        contentDescription = if (modelName == modelId) "$modelId，$modelSource" else "$modelName，$modelId，$modelSource")
+                }
+            }
+            if (modelIds.isEmpty()) SettingsEmpty("还没有模型", "playlist_add")
         }
         ManagementGroup("协议与传输") {
             ManagementRow("协议兼容项", "消息角色、工具调用、推理格式与流式用量", "swap_calls", { compatibility = true }, 0, 2)
@@ -288,6 +325,27 @@ internal fun ManagementNativeProviderScreen(repository: AgentManagementRepositor
     }
     }
     ManagementAuthenticationChallenge(repository, state)
+    pendingModelDeletion?.let { selectedIds ->
+        AlertDialog(onDismissRequest = { pendingModelDeletion = null },
+            title = { Text("删除 ${selectedIds.size} 个模型配置") },
+            text = { Text("将删除所选自定义模型及模型覆盖配置，内置目录保留。") },
+            confirmButton = { TextButton({
+                removeModels(selectedIds)
+                selectedModelIds = selectedModelIds - selectedIds
+                pendingModelDeletion = null
+            }, enabled = document != null) { Text("删除", color = LocalAgentColors.current.error) } },
+            dismissButton = { TextButton({ pendingModelDeletion = null }) { Text("取消") } })
+    }
+    fetchedModels?.let { available ->
+        FetchedProviderModelsSheet(available, onDismiss = { fetchedModels = null }, onAdd = { selectedIds ->
+            val currentModels = (draft["models"] as? List<*>)?.map(::configurationMap).orEmpty()
+            val known = currentModels.mapNotNull { it["id"] as? String }.toSet()
+            val added = newProviderModels(available, known, selectedIds).map(::fetchedModelFields)
+            if (added.isNotEmpty()) change("models", currentModels + added)
+            testResult = "已添加 ${added.size} 个模型"
+            fetchedModels = null
+        })
+    }
     if (clearAuthentication) AlertDialog(onDismissRequest = { clearAuthentication = false }, icon = { Symbol("key_off", tint = LocalAgentColors.current.error) }, title = { Text("清除认证记录") }, text = { Text("只删除 $id 的凭据，服务配置和模型保留。") }, confirmButton = { TextButton({ actions.launch("已清除认证记录") { state.accounts.filter { it.provider == id }.forEach { repository.logout(id, it.id) }; clearAuthentication = false } }) { Text("清除", color = LocalAgentColors.current.error) } }, dismissButton = { TextButton({ clearAuthentication = false }) { Text("取消") } })
     if (discard) AlertDialog(onDismissRequest = { discard = false }, title = { Text("有未保存的修改") }, text = { Text("离开后未保存的修改会丢失。") }, confirmButton = { TextButton({ save { discard = false; leave() } }, enabled = document != null && !actions.busy) { Text("保存") } }, dismissButton = { Row { TextButton({ discard = false; dirty = false; editedFields = emptyList(); draft = configurationMap(configurationMap(document?.values?.get("providers"))[originalId]); id = originalId; leave() }) { Text("放弃修改") }; TextButton({ discard = false }) { Text("继续编辑") } } })
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("清除服务配置") }, text = { Text("删除用户配置，内置目录、认证记录和角色绑定不删除。引用自定义模型的角色可能失去候选。") }, confirmButton = { TextButton({ val source = document ?: return@TextButton; actions.launch("已清除服务配置") { repository.saveDocumentValues(source, source.values + ("providers" to (configurationMap(source.values["providers"]) - originalId))); dirty = false; leave() } }) { Text("清除", color = LocalAgentColors.current.error) } }, dismissButton = { TextButton({ confirmDelete = false }) { Text("取消") } })

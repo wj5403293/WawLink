@@ -31,6 +31,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
@@ -158,13 +163,22 @@ internal fun ManagementGroup(title: String, action: (@Composable () -> Unit)? = 
     }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp), content = content)
 }
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun ManagementRow(title: String, subtitle: String = "", icon: String = "tune", onClick: (() -> Unit)? = null, index: Int = 0, count: Int = 1, lead: (@Composable () -> Unit)? = null, trailing: (@Composable () -> Unit)? = null, enabled: Boolean = true, error: Boolean = false, detail: String = "", titleSuffix: String? = null) {
+internal fun ManagementRow(title: String, subtitle: String = "", icon: String = "tune", onClick: (() -> Unit)? = null, index: Int = 0, count: Int = 1, lead: (@Composable () -> Unit)? = null, trailing: (@Composable () -> Unit)? = null, enabled: Boolean = true, error: Boolean = false, detail: String = "", titleSuffix: String? = null, onLongClick: (() -> Unit)? = null, onLongClickLabel: String? = null, selected: Boolean? = null, contentDescription: String? = null) {
     val c = LocalAgentColors.current
     val shape = RoundedCornerShape(topStart = if (index == 0) 24.dp else 6.dp, topEnd = if (index == 0) 24.dp else 6.dp,
         bottomStart = if (index == count - 1) 24.dp else 6.dp, bottomEnd = if (index == count - 1) 24.dp else 6.dp)
-    Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).clip(shape).background(c.surfaceContainerLow)
-        .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
+    val background by animateColorAsState(if (selected == true) c.secondaryContainer else c.surfaceContainerLow, tween(250, easing = EmphEasing))
+    Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).clip(shape).background(background)
+        .semantics(mergeDescendants = true) {
+            if (contentDescription != null) this.contentDescription = contentDescription
+            if (selected != null) { this.selected = selected; stateDescription = if (selected) "已选择" else "未选择" }
+        }
+        .then(if (onClick != null || onLongClick != null) Modifier.combinedClickable(enabled = enabled,
+            role = if (selected != null) Role.Checkbox else Role.Button,
+            onClickLabel = selected?.let { if (it) "取消选择" else "选择" }, onClick = { onClick?.invoke() },
+            onLongClick = onLongClick, onLongClickLabel = onLongClickLabel) else Modifier)
         .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         if (lead != null) lead() else if (icon.isNotEmpty()) Box(Modifier.size(44.dp).background(if (error) c.errorContainer else c.primaryContainer, CircleShape), contentAlignment = Alignment.Center) { Symbol(icon, tint = if (error) c.error else c.onPrimaryContainer) }
         Column(Modifier.weight(1f)) {
