@@ -469,11 +469,17 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
 
     override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
         val generation = containers.value.firstOrNull { it.config.id == id }?.stopGeneration
+        val operation = currentCoroutineContext()[ContainerFileOperation]?.takeIf { it.containerId == id }
         return withContext(Dispatchers.IO) {
             mutex.withLock {
                 currentCoroutineContext().ensureActive()
                 if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动")
-                ensureOpen(); startLocked(id); idleJobs.remove(id)?.cancel()
+                if (operation != null && !operation.isCurrent(this@LocalContainerRuntime)) throw CancellationException("容器已停止或重新启动")
+                ensureOpen()
+                if (operation?.runGeneration == null) startLocked(id)
+                else if (keepers[id]?.let { !it.stopping && it.process.isAlive } != true) throw CancellationException("容器已停止")
+                if (operation != null) operation.runGeneration = runGenerations[id]
+                idleJobs.remove(id)?.cancel()
                 launchLocked(config(id), arguments, cwd, environment, false, false).process
             }
         }
@@ -481,10 +487,12 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
 
     override suspend fun openRunningProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
         val generation = containers.value.firstOrNull { it.config.id == id }?.stopGeneration
+        val operation = currentCoroutineContext()[ContainerFileOperation]?.takeIf { it.containerId == id }
         return withContext(Dispatchers.IO) {
             mutex.withLock {
                 currentCoroutineContext().ensureActive()
                 if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动")
+                if (operation != null && !operation.isCurrent(this@LocalContainerRuntime)) throw CancellationException("容器已停止或重新启动")
                 ensureOpen()
                 check(keepers[id]?.let { !it.stopping && it.process.isAlive } == true) { "容器已停止" }
                 idleJobs.remove(id)?.cancel()

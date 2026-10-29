@@ -6,6 +6,8 @@ import java.nio.charset.CharacterCodingException
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermission
 import kotlin.test.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 
 /** Guest-command contract fixture. The configured rootfs is deliberately never opened. */
@@ -14,15 +16,28 @@ class ContainerFileTextTest {
         val root = Files.createTempDirectory("wawlink-text-").toFile()
         var mountInfo: File? = null
         var processCount = 0
+        val containers = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("text-guest", "fixture", "/must-not-be-read"), running = true, runGeneration = 1)))
+        var afterProcess: (() -> Unit)? = null
         val runtime = Proxy.newProxyInstance(ContainerRuntime::class.java.classLoader, arrayOf(ContainerRuntime::class.java)) { _, method, arguments ->
-            check(method.name == "openProcess") { "Unexpected runtime API: ${method.name}" }
+            if (method.name == "getContainers") return@newProxyInstance containers
+            check(method.name == "openProcess" || method.name == "openRunningProcess") { "Unexpected runtime API: ${method.name}" }
             check(arguments[0] == "text-guest")
             check(arguments[2] == "/")
             processCount++
             @Suppress("UNCHECKED_CAST")
             val command = arguments[1] as List<String>
             val actual = mountInfo?.let { table -> command.dropLast(1) + command.last().replace("/proc/self/mountinfo", table.path) } ?: command
-            ProcessBuilder(actual).directory(root).start()
+            val child = ProcessBuilder(actual).directory(root).start()
+            val finished = afterProcess ?: return@newProxyInstance child
+            afterProcess = null
+            object : Process() {
+                override fun getInputStream() = child.inputStream
+                override fun getOutputStream() = child.outputStream
+                override fun getErrorStream() = child.errorStream
+                override fun waitFor() = child.waitFor().also { finished() }
+                override fun exitValue() = child.exitValue()
+                override fun destroy() = child.destroy()
+            }
         } as ContainerRuntime
         val service = ContainerFileService(runtime, ContainerConfig("text-guest", "fixture", "/must-not-be-read",
             mounts = listOf(ContainerMount("/host", File(root, "mount").path))))
@@ -123,6 +138,46 @@ class ContainerFileTextTest {
             assertFailsWith<IllegalStateException> { fixture.service.writeText(file.path, "draft", "keep") }
             assertEquals("keep", file.readText())
             fixture.noStagingFiles()
+        }
+    }
+
+    @Test fun stoppingAfterTextCommitSkipsCleanupWithoutReopeningTheContainer() = runBlocking {
+        Fixture().use { fixture ->
+            val file = fixture.file("saved.txt", "before")
+            fixture.afterProcess = {
+                fixture.containers.value = fixture.containers.value.map { it.copy(running = false, stopGeneration = it.stopGeneration + 1) }
+            }
+            fixture.service.writeText(file.path, "saved", "before")
+            assertEquals("saved", file.readText())
+            assertEquals(1, fixture.processCount)
+            assertFalse(fixture.containers.value.single().running)
+        }
+    }
+
+    @Test fun restartedInstanceCannotCommitOrCleanAnOlderImport() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.afterProcess = {
+                fixture.containers.value = fixture.containers.value.map { it.copy(runGeneration = it.runGeneration + 1, stopGeneration = it.stopGeneration + 1) }
+            }
+            assertFailsWith<CancellationException> { fixture.service.importFile(fixture.root.path, "imported", "payload".byteInputStream()) }
+            assertFalse(File(fixture.root, "imported").exists())
+            assertEquals(1, fixture.processCount)
+            assertEquals("payload", fixture.root.listFiles()!!.single { it.name.startsWith(".wawlink-import-") }.readText())
+        }
+    }
+
+    @Test fun stoppedCleanupKeepsTheOriginalImportReadFailure() = runBlocking {
+        Fixture().use { fixture ->
+            val input = object : java.io.InputStream() {
+                override fun read(): Int {
+                    fixture.containers.value = fixture.containers.value.map { it.copy(running = false, stopGeneration = it.stopGeneration + 1) }
+                    throw java.io.IOException("source interrupted")
+                }
+            }
+            val failure = assertFailsWith<java.io.IOException> { fixture.service.importFile(fixture.root.path, "failed", input) }
+            assertEquals("source interrupted", failure.message)
+            assertEquals(1, fixture.processCount)
+            assertFalse(File(fixture.root, "failed").exists())
         }
     }
 }

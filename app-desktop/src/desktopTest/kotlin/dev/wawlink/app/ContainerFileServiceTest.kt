@@ -11,14 +11,17 @@ import java.nio.file.Files
 import java.util.zip.ZipInputStream
 import kotlin.test.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /** Shell-backed contract fixture; never opens the configured rootfs path. Not a container/engine test. */
 class ContainerFileServiceTest {
     private class Fixture : AutoCloseable {
         val root = Files.createTempDirectory("wawlink-files-").toFile()
         var mountInfo: File? = null
+        val containers = MutableStateFlow(listOf(dev.wawlink.runtime.ContainerInfo(ContainerConfig("guest-id", "fixture", "/must-not-be-read"), running = true, runGeneration = 1)))
         val runtime = Proxy.newProxyInstance(ContainerRuntime::class.java.classLoader, arrayOf(ContainerRuntime::class.java)) { _, method, arguments ->
-            check(method.name == "openProcess") { "Unexpected runtime API: ${method.name}" }
+            if (method.name == "getContainers") return@newProxyInstance containers
+            check(method.name == "openProcess" || method.name == "openRunningProcess") { "Unexpected runtime API: ${method.name}" }
             check(arguments[0] == "guest-id")
             check(arguments[2] == "/")
             @Suppress("UNCHECKED_CAST")

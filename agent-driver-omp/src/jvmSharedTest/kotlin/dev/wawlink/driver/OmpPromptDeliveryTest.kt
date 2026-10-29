@@ -23,6 +23,41 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class OmpPromptDeliveryTest {
+    @Test
+    fun explorerRejectsMissingAndCrossInstanceReceipts() = runBlocking {
+        fixture {
+            gate.complete(transport)
+            controller.sendPrompt("启动会话")
+            transport.request()
+            val explorer = pool.explorer("session")
+            for (responseInstance in listOf(null, "previous-process", chatManagementInstance)) {
+                val result = async { runCatching { explorer.cancelNavigation() } }
+                val requestFile = withTimeout(5_000) {
+                    var file: File? = null
+                    while (file == null) {
+                        file = directory.walkTopDown().firstOrNull { it.isFile && it.name.startsWith("request-") && it.extension == "json" }
+                        if (file == null) delay(10)
+                    }
+                    requireNotNull(file)
+                }
+                val request = Json.parseToJsonElement(requestFile.readText()).jsonObject
+                assertEquals("explorer_cancel_navigation", request.string("op"))
+                assertTrue(chatManagementInstance.isNotBlank())
+                assertEquals(chatManagementInstance, request.string("instance"))
+                val responseFile = File(requestFile.parentFile, "response-${request.string("id")}.json")
+                val temporary = File(requestFile.parentFile, "${responseFile.name}.tmp")
+                temporary.writeText(buildJsonObject {
+                    put("success", true)
+                    responseInstance?.let { put("instance", it) }
+                }.toString())
+                assertTrue(temporary.renameTo(responseFile))
+                val response = withTimeout(5_000) { result.await() }
+                if (responseInstance == chatManagementInstance) assertTrue(response.isSuccess)
+                else assertContains(response.exceptionOrNull()?.message.orEmpty(), "实例不匹配")
+            }
+        }
+    }
+
     @Test fun nativeDefaultModelIsVisibleBeforeTheFirstPrompt() = runBlocking {
         fixture(withManagement = true) {
             val catalogue = managementCatalogue()
@@ -833,6 +868,7 @@ class OmpPromptDeliveryTest {
         val inspectionStarts = AtomicInteger()
         @Volatile var skillInstallGate: CompletableDeferred<Process>? = null
         val skillInstallStarted = CompletableDeferred<Unit>()
+        @Volatile var chatManagementInstance = ""
         private val containerState = MutableStateFlow<List<ContainerInfo>>(emptyList())
         private val chatStarts = AtomicInteger()
         private val managementStarts = AtomicInteger()
@@ -870,6 +906,7 @@ class OmpPromptDeliveryTest {
                     check(withManagement) { "未配置默认模型" }
                     return if (managementStarts.getAndIncrement() == 0) managementTransport else managementReplacements.receive()
                 }
+                chatManagementInstance = environment.getValue("WAWLINK_MANAGEMENT_INSTANCE")
                 opened.complete(Unit)
                 return if (chatStarts.getAndIncrement() == 0) gate.await() else chatReplacements.receive()
             }

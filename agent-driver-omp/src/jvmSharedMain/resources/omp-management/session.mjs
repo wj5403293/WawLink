@@ -13,7 +13,7 @@ export default function managementSessionExtension(pi) {
   const explorer = createSessionExplorer(pi, () => context);
   async function respond(request, response) {
     const destination = join(directory, `response-${request.id}.json`);
-    await writeFile(destination + '.tmp', JSON.stringify(response), { mode: 0o600 });
+    await writeFile(destination + '.tmp', JSON.stringify({ ...response, instance }), { mode: 0o600 });
     await rename(destination + '.tmp', destination);
   }
   async function channelState(ready, error) {
@@ -29,6 +29,7 @@ export default function managementSessionExtension(pi) {
       let request;
       try { request = JSON.parse(await readFile(file, 'utf8')); } catch { continue; }
       await unlink(file);
+      if (request?.instance !== instance) continue;
       // Navigation/Ask/model admission may wait. Their cancellation and replies
       // must overtake that wait instead of deadlocking behind the drain queue.
       // Explorer reads do not reload credentials or alter explicit account pins.

@@ -6,6 +6,19 @@ import java.nio.charset.CodingErrorAction
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.*
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+
+/** Keeps one write bound to its first process admission, including non-cancellable cleanup. */
+internal class ContainerFileOperation(val containerId: String, val stopGeneration: Long, var runGeneration: Long?) :
+    AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<ContainerFileOperation>
+
+    fun isCurrent(runtime: ContainerRuntime): Boolean = runtime.containers.value.any {
+        it.config.id == containerId && it.stopGeneration == stopGeneration &&
+            (runGeneration == null || it.running && it.runGeneration == runGeneration)
+    }
+}
 
 data class ContainerFile(val name: String, val kind: String, val size: Long, val modified: Long, val mode: String, val owner: String, val group: String, val readable: Boolean) {
     val directory get() = kind == "directory"
@@ -96,8 +109,18 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
         require(hostBindings.none { value.startsWith("$it/") }) { "不能删除宿主挂载内的文件或目录：$value" }
     }
 
+    private fun operation(): ContainerFileOperation {
+        val container = runtime.containers.value.firstOrNull { it.config.id == config.id }
+            ?: throw CancellationException("容器已移除")
+        return ContainerFileOperation(config.id, container.stopGeneration, container.runGeneration.takeIf { container.running })
+    }
+
     private suspend fun <T> process(script: String, input: (suspend (OutputStream) -> Unit)? = null, read: (InputStream) -> T): T = withContext(Dispatchers.IO) {
-        val process = runtime.openProcess(config.id, listOf("/bin/sh", "-c", guards + "\n" + script), "/")
+        val operation = currentCoroutineContext()[ContainerFileOperation]
+        if (operation != null && !operation.isCurrent(runtime)) throw CancellationException("容器已停止或重新启动")
+        val arguments = listOf("/bin/sh", "-c", guards + "\n" + script)
+        val process = if (operation?.runGeneration != null) runtime.openRunningProcess(config.id, arguments, "/")
+            else runtime.openProcess(config.id, arguments, "/")
         try {
             coroutineScope {
                 val cancellation = launch(start = CoroutineStart.UNDISPATCHED) {
@@ -127,6 +150,12 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
         } finally { process.destroy(); process.inputStream.close(); process.errorStream.close(); process.outputStream.close() }
     }
     private suspend fun command(script: String) = process(script) { it.copyTo(DiscardOutput) }
+
+    private suspend fun cleanup(operation: ContainerFileOperation, directory: String, temporary: String) = withContext(NonCancellable) {
+        if (operation.runGeneration != null && operation.isCurrent(runtime)) try {
+            command("checked_dir ${quote(directory)}; if [ -f ${quote(temporary)} ] && [ ! -L ${quote(temporary)} ]; then rm -- ${quote(temporary)}; fi")
+        } catch (failure: Exception) { if (operation.isCurrent(runtime)) throw failure }
+    }
 
     private fun field(input: InputStream, delimiter: Int): String? {
         val bytes = java.io.ByteArrayOutputStream()
@@ -260,13 +289,14 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
     suspend fun importFile(directory: String, name: String, input: InputStream) {
         val target = child(guardPath(directory), name); mutablePath(target)
         val temporary = child(directory, ".wawlink-import-${java.util.UUID.randomUUID()}.part")
-        try {
-            process("checked_dir ${quote(directory)}; absent ${quote(target)}; (set -C; cat > ${quote(temporary)})",
-                { output -> runInterruptible { input.copyTo(output, 32768) } }) { it.copyTo(DiscardOutput) }
-            // Commit only after the host stream completed successfully. mv -n refuses replacement.
-            command("checked ${quote(temporary)}; absent ${quote(target)}; mv -n -- ${quote(temporary)} ${quote(target)}; [ ! -e ${quote(temporary)} ] || fail '导入目标已存在，未覆盖'")
-        } finally {
-            withContext(NonCancellable) { command("checked_dir ${quote(directory)}; if [ -f ${quote(temporary)} ] && [ ! -L ${quote(temporary)} ]; then rm -- ${quote(temporary)}; fi") }
+        val operation = operation()
+        withContext(operation) {
+            try {
+                process("checked_dir ${quote(directory)}; absent ${quote(target)}; (set -C; cat > ${quote(temporary)})",
+                    { output -> runInterruptible { input.copyTo(output, 32768) } }) { it.copyTo(DiscardOutput) }
+                // Commit only after the host stream completed successfully. mv -n refuses replacement.
+                command("checked ${quote(temporary)}; absent ${quote(target)}; mv -n -- ${quote(temporary)} ${quote(target)}; [ ! -e ${quote(temporary)} ] || fail '导入目标已存在，未覆盖'")
+            } finally { cleanup(operation, directory, temporary) }
         }
     }
     suspend fun exportFile(source: String, output: OutputStream) {
@@ -315,12 +345,11 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
             checked ${quote(source)}; checked_dir ${quote(directory)}
             mv -fT -- ${quote(temporary)} ${quote(source)}
         """.trimIndent()
-        try {
-            process(script, { output -> runInterruptible { output.write(bytes) } }) { it.copyTo(DiscardOutput) }
-        } finally {
-            withContext(NonCancellable) {
-                command("checked_dir ${quote(directory)}; if [ -f ${quote(temporary)} ] && [ ! -L ${quote(temporary)} ]; then rm -- ${quote(temporary)}; fi")
-            }
+        val operation = operation()
+        withContext(operation) {
+            try {
+                process(script, { output -> runInterruptible { output.write(bytes) } }) { it.copyTo(DiscardOutput) }
+            } finally { cleanup(operation, directory, temporary) }
         }
     }
     suspend fun exportZip(entries: List<String>, output: OutputStream) = withContext(Dispatchers.IO) {

@@ -997,9 +997,11 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val requestFile = File(directory, "request-$requestId.json")
             val responseFile = File(directory, "response-$requestId.json")
             try {
-                atomicWrite(requestFile, buildJsonObject { put("id", requestId); put("op", op); provider?.let { put("provider", it) }; put("accountId", accountId?.let(::JsonPrimitive) ?: JsonNull) }.toString())
+                atomicWrite(requestFile, buildJsonObject { put("id", requestId); put("instance", attempt.managementInstance); put("op", op); provider?.let { put("provider", it) }; put("accountId", accountId?.let(::JsonPrimitive) ?: JsonNull) }.toString())
                 awaitManagementResponse(attempt, directory, responseFile, 15_000)
                 val response = DriverJson.parseToJsonElement(responseFile.readText()).jsonObject
+                if (activeAttempt !== attempt || interrupted(attempt)) throw OmpProcessStoppedException()
+                check(response.string("instance") == attempt.managementInstance) { "OMP 会话管理响应实例不匹配" }
                 check(response["success"]?.jsonPrimitive?.booleanOrNull == true) { "Session is busy or account capability is unavailable" }
                 response
             } finally { requestFile.delete(); responseFile.delete() }
@@ -1031,11 +1033,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 atomicWrite(requestFile, buildJsonObject {
                     parameters.forEach { (key, value) -> put(key, value) }
                     put("id", requestId); put("op", op)
+                    put("instance", attempt.managementInstance)
                     put("sessionId", (explorer.history.value.sessionId.takeIf { it.isNotBlank() }
                         ?: explorer.hub.value.mainSessionId.takeIf { it.isNotBlank() })?.let(::JsonPrimitive) ?: JsonNull)
                 }.toString())
                 awaitManagementResponse(attempt, directory, responseFile, if (op == "explorer_navigate") 600_000 else 180_000)
                 val response = DriverJson.parseToJsonElement(responseFile.readText()).jsonObject
+                if (activeAttempt !== attempt || interrupted(attempt)) throw OmpProcessStoppedException()
+                check(response.string("instance") == attempt.managementInstance) { "OMP 会话管理响应实例不匹配" }
                 check(response["success"]?.jsonPrimitive?.booleanOrNull == true) { response.string("error", "原生会话操作失败") }
                 return response
             } finally { requestFile.delete(); responseFile.delete() }
