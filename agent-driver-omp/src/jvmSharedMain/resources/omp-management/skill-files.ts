@@ -94,9 +94,9 @@ export async function skillSafeFile(root: string, relative: string) {
   return { file, stat };
 }
 export async function skillWritable(ctx: SkillContext, dir: string) {
-  const roots = [path.join(ctx.agentDir, "skills"), ...(ctx.cwd ? [ctx.cwd] : [])];
+  const root = ctx.cwd ?? path.join(ctx.agentDir, "skills");
   const canonical = await fs.realpath(dir);
-  if (!roots.some(r => skillInside(r, dir)) || !roots.some(r => skillInside(r, canonical))) throw Error("该来源只读；请复制到当前范围的独立技能目录");
+  if (!skillInside(root, dir) || !skillInside(root, canonical)) throw Error("该来源只读；请复制到当前范围的独立技能目录");
   if ((await fs.lstat(dir)).isSymbolicLink()) throw Error("不能修改链接目录");
 }
 export function skillName(name: unknown): string {

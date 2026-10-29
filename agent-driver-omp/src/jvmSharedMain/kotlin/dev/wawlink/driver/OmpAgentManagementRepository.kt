@@ -23,6 +23,7 @@ internal class OmpAgentManagementRepository(
     private val runtime: ContainerRuntime,
     private val context: AgentConfigurationContext,
     private val directory: () -> File,
+    private val guestDirectory: () -> String,
     private val resolveGuest: (String, Boolean) -> File,
     parentScope: CoroutineScope,
     private val changed: suspend (ConfigurationScope, Set<String>) -> Unit,
@@ -120,16 +121,18 @@ internal class OmpAgentManagementRepository(
         }
         val generation = parkGeneration.get()
         val root = directory()
+        val guestRoot = guestDirectory().trimEnd('/')
         val destination = File(root, "wawlink/management")
         require(destination.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Management bridge path escapes container" }
         for (name in listOf("bootstrap.mjs", "main.mjs", "agents.ts", "auth-models.ts", "diagnostics.mjs", "plugins.ts", "plugin-native.mjs", "plugin-worker.ts", "skills.ts", "skill-files.ts", "skill-registry.ts", "clawhub.ts", "clawhub-http.ts", "clawhub-source.ts")) {
             val source = requireNotNull(javaClass.getResourceAsStream("/omp-management/$name")) { "Missing bundled native management bridge" }.bufferedReader().use { it.readText() }
             val file = File(destination, name)
+            require(file.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Management bridge path escapes container" }
             if (!file.exists() || file.readText() != source) repoAtomicWrite(file, source)
         }
         if (runtime.wasInterrupted(context.containerId, stopGeneration) || generation != parkGeneration.get()) throw OmpProcessStoppedException()
         val child = try {
-            runtime.openProcess(context.containerId, listOf("/usr/local/bin/bun", "/root/.omp/agent/wawlink/management/bootstrap.mjs"), context.projectPath ?: "/", mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1"))
+            runtime.openProcess(context.containerId, listOf("/usr/local/bin/bun", "$guestRoot/wawlink/management/bootstrap.mjs"), context.projectPath ?: "/", mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1"))
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             if (runtime.wasInterrupted(context.containerId, stopGeneration) || generation != parkGeneration.get()) throw OmpProcessStoppedException()
@@ -208,7 +211,7 @@ internal class OmpAgentManagementRepository(
             }
         }
         try {
-            requestStarted("init", mapOf("workspace" to context.projectPath, "sessionId" to context.sessionId), stopGeneration = stopGeneration)
+            requestStarted("init", mapOf("workspace" to context.projectPath, "sessionId" to context.sessionId, "agentDir" to guestRoot), stopGeneration = stopGeneration)
         } catch (failure: Exception) {
             stopOwned(owner)
             throw failure
@@ -322,16 +325,17 @@ internal class OmpAgentManagementRepository(
 
     private fun writable(guest: String): File {
         require(guest.startsWith('/') && guest.split('/').none { it == ".." }) { "Invalid configuration path" }
-        val global = "/root/.omp/agent/"
+        val global = guestDirectory().trimEnd('/') + "/"
         val project = context.projectPath?.trimEnd('/')?.plus("/")
         require(guest.startsWith(global) || (project != null && guest.startsWith(project))) { "Definition is outside the selected configuration scope" }
-        val file = resolveGuest(guest, true)
+        // Global configuration is rootfs-owned, even when a host mount shadows its guest path.
         val root = if (guest.startsWith(global)) directory() else resolveGuest(requireNotNull(context.projectPath), true)
+        val file = if (guest.startsWith(global)) File(root, guest.removePrefix(global)) else resolveGuest(guest, true)
         require(file.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Configuration symlink escapes scope" }
         return file
     }
     private fun config(scope: ConfigurationScope): File = if (scope == ConfigurationScope.GLOBAL) {
-        File(directory(), "config.yml").let { yml -> writable("/root/.omp/agent/" + if (yml.exists() || !File(directory(), "config.yaml").exists()) "config.yml" else "config.yaml") }
+        File(directory(), "config.yml").let { yml -> writable(guestDirectory().trimEnd('/') + "/" + if (yml.exists() || !File(directory(), "config.yaml").exists()) "config.yml" else "config.yaml") }
     } else writable(requireNotNull(context.projectPath) { "No project selected" }.trimEnd('/') + "/.omp/config.yml")
     private fun version(file: File): String {
         if (!file.exists()) return ""
@@ -371,7 +375,7 @@ internal class OmpAgentManagementRepository(
     private suspend fun prepareNativeConfiguration(file: File, id: String, stopGeneration: Long) {
         if (!file.exists()) return
         val content = file.readText()
-        val guest = if (id == "project") context.projectPath?.trimEnd('/') + "/.omp/config.yml" else "/root/.omp/agent/${file.name}"
+        val guest = if (id == "project") context.projectPath?.trimEnd('/') + "/.omp/config.yml" else "${guestDirectory().trimEnd('/')}/${file.name}"
         val normalized = OmpYaml.parse(content, guest).render()
         if (normalized == content) return
         // Legacy pretty-flow is legal to SnakeYAML but not to Bun. Validate the

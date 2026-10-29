@@ -40,9 +40,14 @@ export async function nativeError(error,ctx) {
  return safeReason(safeError(error),{secret:values});
 }
 function displaySchema(schema) {
- return Object.fromEntries(Object.entries(object(schema)).map(([key,value])=>{const field=object(value);return [key,{...field,description:safe(field.description),secret:field.secret===true,...(Object.hasOwn(field,"default")?{default:field.secret?"••••••••":safe(field.default,key)}:{})}];}));
+ return Object.fromEntries(Object.entries(object(schema)).map(([key,value])=>{const field=object(value);return [key,{...safe(field),description:safe(field.description),secret:field.secret===true,...(Object.hasOwn(field,"default")?{default:field.secret?"••••••••":safe(field.default,key)}:{})}];}));
 }
-function displayManifest(manifest) {const data=object(manifest);return {...safe(data),settings:displaySchema(data.settings)};}
+function displayManifest(manifest) {const data=object(manifest);return {...safe(data),...(Object.hasOwn(data,"settings")?{settings:displaySchema(data.settings)}:{})};}
+function displayPackageManifest(pkg) {
+ const data=safe(pkg);
+ for(const key of ["omp","pi"])if(pkg[key]&&typeof pkg[key]==="object"&&!Array.isArray(pkg[key]))data[key]=displayManifest(pkg[key]);
+ return data;
+}
 async function json(file,fallback={}) {
   try {const value=JSON.parse(await fs.readFile(file,"utf8"));if(!value||typeof value!=="object"||Array.isArray(value))throw Error("Expected JSON object");return value;}
   catch(error){if(error.code==="ENOENT")return fallback;throw Error(`Cannot read plugin JSON file ${file}: invalid JSON or unavailable file`);}
@@ -99,7 +104,7 @@ async function detail(args,ctx) {
  const defaults=Object.fromEntries(Object.entries(schema).filter(([,s])=>Object.hasOwn(s,"default")).map(([k,s])=>[k,s.default]));
  const effective={...defaults,...user,...project};
  const redactLayer=(layer)=>Object.fromEntries(Object.entries(layer).map(([k,v])=>[k,!Object.hasOwn(schema,k)?"[未声明值已隐藏]":schema[k]?.secret?"••••••••":safe(v,k)]));
- return {...item,settings:{schema:displaySchema(schema),defaults:redactLayer(defaults),user:redactLayer(user),project:redactLayer(project),effective:redactLayer(effective),unknown:Object.keys({...user,...project}).filter(k=>!Object.hasOwn(schema,k))},rawManifest:safe(pkg),standardManifest:safe(await json(path.join(item.path,"plugin.json"))),compatibleManifest:safe(await json(path.join(item.path,".claude-plugin/plugin.json"))),overridePath:p.overrides};
+ return {...item,settings:{schema:displaySchema(schema),defaults:redactLayer(defaults),user:redactLayer(user),project:redactLayer(project),effective:redactLayer(effective),unknown:Object.keys({...user,...project}).filter(k=>!Object.hasOwn(schema,k))},rawManifest:displayPackageManifest(pkg),standardManifest:displayManifest(await json(path.join(item.path,"plugin.json"))),compatibleManifest:displayManifest(await json(path.join(item.path,".claude-plugin/plugin.json"))),overridePath:p.overrides};
 }
 async function projectEdit(ctx,change) {if(!ctx.cwd)throw Error("A project workspace is required");const file=getProjectPluginOverridesPath(ctx.cwd),version=await ctx.version(file),data=await json(file);change(data);await ctx.atomicWrite(file,JSON.stringify(data,null,2)+"\n",version);}
 async function runtimeEdit(file,change) {await fs.mkdir(path.dirname(file),{recursive:true});await withFileLock(await fs.realpath(file).catch(()=>file),async()=>{const data=await json(file,{plugins:{},settings:{}});change(data);await writePluginRuntimeConfig(file,data);});}

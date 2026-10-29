@@ -60,10 +60,12 @@ fun ManagementPoliciesScreen(
         ?: (if (scope == ConfigurationScope.PROJECT) configurationValue(state.globalValues, id) else null)
         ?: configurationValue(state.defaultValues, id) ?: registry.firstOrNull { it.id == id }?.defaultValue
         else configurationValue(state.effectiveValues, id) ?: registry.firstOrNull { it.id == id }?.value
-    fun rawList(id: String): List<Any?> = ((if (pending.containsKey(id)) value(id) else configurationValue(layer, id) ?: configurationValue(state.effectiveValues, id)) as? List<*>)?.toList().orEmpty()
+    fun rawValue(id: String): Any? = if (pending.containsKey(id)) pending[id] else configurationValue(layer, id)
+    fun rawList(id: String): List<Any?> = (rawValue(id) as? List<*>).orEmpty()
+    fun displayList(id: String): List<Any?> = ((rawValue(id) ?: value(id)) as? List<*>).orEmpty()
     fun chains(): Map<String, Any?> = configurationMap(value("retry.fallbackChains"))
     fun putChain(key: String, candidates: List<String>?) {
-        val updated = chains().toMutableMap()
+        val updated = configurationMap(rawValue("retry.fallbackChains")).toMutableMap()
         if (candidates == null) updated.remove(key) else updated[key] = candidates
         pending["retry.fallbackChains"] = updated
     }
@@ -109,7 +111,7 @@ fun ManagementPoliciesScreen(
             if (section != "presets") ManagementScopeChip(scope, { requested ->
                 if (pending.isEmpty()) onScopeChange(requested) else { nextScope = requested; discard = true }
             }, hasProject, globalOnly = section == "fallback")
-            if (chainKey != null) AgentIconButton("delete", "删除规则", { deleteChain = true })
+            if (chainKey != null) AgentIconButton("delete", "删除规则", { deleteChain = true }, enabled = canEdit && configurationMap(rawValue("retry.fallbackChains")).containsKey(chainKey))
         }, fab = when {
             section == "presets" && presetName == null -> ({ ManagementFab("保存当前组合", "bookmark_add", { savePreset = true }) })
             section == "fallback" && chainKey == null && value("retry.modelFallback") == true -> ({ Box {
@@ -153,7 +155,8 @@ fun ManagementPoliciesScreen(
                 }
                 "allow" -> {
                     listOf("enabledModels" to "允许的模型", "enabledProviders" to "启用的服务", "disabledProviders" to "停用的服务").forEach { (id, label) ->
-                        val rules = rawList(id)
+                        val rules = displayList(id)
+                        val inherited = rawValue(id) == null
                         ManagementGroup(label, action = { TextButton(enabled = canEdit, onClick = { ruleSetting = id; ruleIndex = -1 }) { Text("添加规则") } }) {
                             if (rules.isEmpty()) ManagementHint(if (id == "disabledProviders") "没有额外停用的服务" else "列表为空，不额外限制", "all_inclusive")
                             rules.forEachIndexed { index, rule ->
@@ -161,7 +164,7 @@ fun ManagementPoliciesScreen(
                                 val subtitle = if (rule is String) "所有路径" else "路径：${configurationDisplay(map["path"] ?: map["paths"] ?: map["pathPrefix"] ?: map["pathPrefixes"])}"
                                 val text = if (rule is String) rule else configurationDisplay(map["values"] ?: map["items"] ?: map[if (id == "enabledModels") "models" else "providers"])
                                 ManagementRow(text, subtitle, "filter_alt", onClick = { ruleSetting = id; ruleIndex = index }, index = index, count = rules.size, enabled = canEdit,
-                                    trailing = { AgentIconButton("remove_circle", "移除规则", { if (canEdit) pending[id] = rules.toMutableList().apply { removeAt(index) } }) })
+                                    trailing = { AgentIconButton("remove_circle", "移除规则", { pending[id] = rawList(id).toMutableList().apply { removeAt(index) } }, enabled = canEdit && !inherited) })
                             }
                             if (configurationValue(layer, id) != null || pending.containsKey(id)) TextButton(enabled = canEdit, onClick = { pending[id] = null }) { Text("清除此层覆盖，恢复继承") }
                         }
@@ -249,9 +252,11 @@ fun ManagementPoliciesScreen(
     }
     ruleSetting?.let { id ->
         val rules = rawList(id)
-        ManagementAllowRuleEditor(id, rules.getOrNull(ruleIndex), state, onDismiss = { ruleSetting = null }, onSave = { replacement ->
+        val original = displayList(id).getOrNull(ruleIndex)
+        val ownRuleIndex = if (rawValue(id) == null) -1 else ruleIndex
+        ManagementAllowRuleEditor(id, original, state, onDismiss = { ruleSetting = null }, onSave = { replacement ->
             pending[id] = rules.toMutableList().apply {
-                if (ruleIndex in indices) { removeAt(ruleIndex); addAll(ruleIndex, replacement) } else addAll(replacement)
+                if (ownRuleIndex in indices) { removeAt(ownRuleIndex); addAll(ownRuleIndex, replacement) } else addAll(replacement)
             }
             ruleSetting = null
         })
@@ -324,11 +329,14 @@ internal fun ManagementOrderedValues(values: List<String>, labels: Map<String, S
 
 @Composable
 private fun ManagementAllowRuleEditor(id: String, original: Any?, state: AgentManagementState, onDismiss: () -> Unit, onSave: (List<Any>) -> Unit) {
-    val map = configurationMap(original)
+    val map = remember(original) { configurationMap(original) }
     fun entries(value: Any?) = configurationStrings(value)
-    var scoped by remember { mutableStateOf(original is Map<*, *>) }
-    var paths by remember { mutableStateOf(listOf("path", "paths", "pathPrefix", "pathPrefixes").flatMap { entries(map[it]) }) }
-    var values by remember { mutableStateOf(if (original is String) listOf(original) else listOf("values", "items", if (id == "enabledModels") "models" else "providers").flatMap { entries(map[it]) }) }
+    val originalScoped = original is Map<*, *>
+    val originalPaths = remember(original) { listOf("path", "paths", "pathPrefix", "pathPrefixes").flatMap { entries(map[it]) } }
+    val originalValues = remember(id, original) { if (original is String) listOf(original) else listOf("values", "items", if (id == "enabledModels") "models" else "providers").flatMap { entries(map[it]) } }
+    var scoped by remember(id, original) { mutableStateOf(originalScoped) }
+    var paths by remember(id, original) { mutableStateOf(originalPaths) }
+    var values by remember(id, original) { mutableStateOf(originalValues) }
     var newPath by remember { mutableStateOf("") }
     var newValue by remember { mutableStateOf("") }
     var picker by remember { mutableStateOf(false) }
@@ -354,11 +362,12 @@ private fun ManagementAllowRuleEditor(id: String, original: Any?, state: AgentMa
             }
         }
         Button(enabled = (values.isNotEmpty() || newValue.isNotBlank()) && (!scoped || paths.isNotEmpty()), onClick = {
-        if (newValue.isNotBlank()) values = values + newValue.trim()
-        if (!scoped) onSave(values)
+        val nextValues = if (newValue.isNotBlank()) values + newValue.trim() else values
+        if (original != null && scoped == originalScoped && paths == originalPaths && nextValues == originalValues) onDismiss()
+        else if (!scoped) onSave(nextValues)
         else onSave(listOf(map.toMutableMap().apply {
             listOf("path", "paths", "pathPrefix", "pathPrefixes", "values", "items", "models", "providers").forEach(::remove)
-            this["paths"] = paths; this["values"] = values
+            this["paths"] = paths; this["values"] = nextValues
         }))
         }, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) { Text("完成") }
     }

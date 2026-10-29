@@ -63,13 +63,15 @@ private val providerApis = mapOf(
 private val thinkingEfforts = listOf("minimal", "low", "medium", "high", "xhigh", "max")
 
 /** Only container-rootfs configuration is accepted; never resolve the host's ~/.omp. */
-private fun agentDirectory(directory: () -> File): File {
-    val dir = directory().absoluteFile.normalize()
-    require(dir.name == "agent" && dir.parentFile?.name == ".omp" && dir.parentFile?.parentFile?.name == "root") {
-        "OMP configuration directory must be container rootfs/root/.omp/agent"
+internal fun ompAgentDirectory(rootfs: File, directory: File): File {
+    val base = rootfs.absoluteFile.normalize()
+    val dir = directory.absoluteFile.normalize()
+    require(dir.name == "agent" && dir.parentFile?.name == ".omp") {
+        "OMP configuration directory must end with /.omp/agent"
     }
-    val rootfs = requireNotNull(dir.parentFile.parentFile.parentFile)
-    require(rootfs.canonicalFile.parentFile != null && dir.canonicalFile.toPath().startsWith(rootfs.canonicalFile.toPath())) {
+    val canonicalRoot = base.canonicalFile
+    require(canonicalRoot.parentFile != null && dir.toPath().startsWith(base.toPath()) &&
+        dir.canonicalFile.toPath().startsWith(canonicalRoot.toPath())) {
         "OMP configuration directory escapes its container rootfs"
     }
     return dir
@@ -131,8 +133,8 @@ private fun repoAtomicWriteBatch(documents: Map<File, String>) {
 }
 
 /** Re-emit legacy pretty-flow documents before Bun reads them; credentials and YAML nodes stay intact. */
-internal suspend fun prepareOmpConfiguration(directory: () -> File) = ompConfigMutex.withLock {
-    val dir = agentDirectory(directory)
+internal suspend fun prepareOmpConfiguration(rootfs: () -> File, directory: () -> File) = ompConfigMutex.withLock {
+    val dir = ompAgentDirectory(rootfs(), directory())
     for (file in listOf(modelsConfigFile(dir), mainConfigFile(dir))) normalizeOmpConfigurationFile(file)
 }
 
@@ -268,6 +270,7 @@ private fun Map<String, Any?>.cost(): ModelCost? = this["cost"]?.asStringMap()?.
 
 /** 18.12.6 stores OAuth in its own SQLite store. We never rewrite auth.json or auth database rows. */
 internal class OmpProviderRepository(
+    private val rootfs: () -> File,
     private val directory: () -> File,
     scope: CoroutineScope,
     private val catalog: KnownModelCatalog = KnownModelCatalog.shared,
@@ -296,7 +299,7 @@ internal class OmpProviderRepository(
     }
 
     private fun refresh(): Boolean {
-        val dir = agentDirectory(directory)
+        val dir = ompAgentDirectory(rootfs(), directory())
         val modelsFile = modelsConfigFile(dir)
         val config = mainConfigFile(dir)
         val namesFile = configFile(dir, "wawlink-provider-ui.json")
@@ -365,7 +368,7 @@ internal class OmpProviderRepository(
             }
         }
         ompConfigMutex.withLock {
-            val dir = agentDirectory(directory)
+            val dir = ompAgentDirectory(rootfs(), directory())
             val file = modelsConfigFile(dir)
             val yaml = OmpYaml(file) // Reload immediately before editing; never save an old StateFlow snapshot.
             if (yaml.node("providers") == null) yaml.set(listOf("providers"), emptyMap<String, Any>())
@@ -453,7 +456,7 @@ internal class OmpProviderRepository(
 
     override suspend fun deleteProvider(providerId: String) = withContext(Dispatchers.IO) {
         ompConfigMutex.withLock {
-            val dir = agentDirectory(directory)
+            val dir = ompAgentDirectory(rootfs(), directory())
             val file = modelsConfigFile(dir)
             val yaml = OmpYaml(file)
             (yaml.node("providers") as? MappingNode)?.let { yaml.set(it, providerId, null) }
@@ -592,6 +595,7 @@ internal class OmpProviderRepository(
 }
 
 internal class OmpSettingsRepository(
+    private val rootfs: () -> File,
     private val directory: () -> File,
     scope: CoroutineScope,
     private val onChanged: suspend (String?, Any?) -> Unit,
@@ -619,7 +623,7 @@ internal class OmpSettingsRepository(
     }
 
     private fun refresh(): List<Pair<String, Any?>> {
-        val dir = agentDirectory(directory)
+        val dir = ompAgentDirectory(rootfs(), directory())
         val file = mainConfigFile(dir)
         val next = file.path to file.takeIf { it.exists() }?.readText()
         if (generation == next) return emptyList()
@@ -654,7 +658,7 @@ internal class OmpSettingsRepository(
     }
     private suspend fun editSettings(ids: List<String>, edit: (OmpYaml) -> Unit) = withContext(Dispatchers.IO) {
         val effective = ompConfigMutex.withLock {
-            val file = mainConfigFile(agentDirectory(directory))
+            val file = mainConfigFile(ompAgentDirectory(rootfs(), directory()))
             val yaml = OmpYaml(file)
             edit(yaml)
             yaml.write(file)

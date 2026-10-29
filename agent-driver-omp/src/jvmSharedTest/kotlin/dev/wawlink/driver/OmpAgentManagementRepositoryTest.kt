@@ -419,18 +419,64 @@ class OmpAgentManagementRepositoryTest {
         }
     }
 
-    private suspend fun fixture(block: suspend Fixture.() -> Unit) {
-        val fixture = Fixture()
+    @Test fun managementLaunchAndLegacyDiagnosticsUseEffectiveHomeWithoutWorkspaceMapping() = runBlocking {
+        for (home in listOf("/root", "/home/operator", "/srv/team/operator/custom-home")) {
+            val original = "# retained legacy\nfuture: {items: [\n  '001', 'true'\n]\n  , keep: yes}\n"
+            fixture(home, initialConfig = original) {
+                val config = file("config.yml")
+                val transport = connect()
+                assertEquals(listOf("/usr/local/bin/bun", "$guestAgentDir/wawlink/management/bootstrap.mjs"), launches.single())
+                assertTrue(file("wawlink/management/main.mjs").isFile)
+                val validation = transport.request("validateDocument")
+                assertEquals("global", validation["args"]!!.jsonObject["id"]!!.jsonPrimitive.content)
+                assertEquals("$guestAgentDir/config.yml", validation["args"]!!.jsonObject["path"]!!.jsonPrimitive.content)
+                transport.respond(validation, error = "UNAVAILABLE: $guestAgentDir/config.yml: future: rejected by native parser")
+                val failed = awaitState { !it.loading && !it.modelsLoading && it.error != null }
+                assertTrue(failed.error!!.contains("$guestAgentDir/config.yml"))
+                assertEquals(original, config.readText())
+                transport.assertNoRequest()
+                assertTrue(uncaught.isEmpty(), uncaught.toString())
+            }
+        }
+    }
+
+    @Test fun managementGlobalDocumentRejectsSymlinkEscapeWithoutUsingWorkspaceMounts() = runBlocking {
+        fixture("/srv/custom-home") {
+            val transport = connect()
+            val snapshot = Json.parseToJsonElement(configuration.toString().replace("/root/.omp/agent", guestAgentDir))
+            transport.respond(transport.request("snapshot"), snapshot)
+            transport.respond(transport.request("modelsSnapshot"), catalogueResult)
+            awaitState { !it.modelsLoading }
+            val global = file("config.yml").apply { writeText("temperature: 0.3\n") }
+            assertEquals("temperature: 0.3\n", repository.readDocument("global").content)
+            val outside = file("../../other-config.yml").canonicalFile.apply { writeText("temperature: 0.8\n") }
+            assertTrue(global.delete())
+            Files.createSymbolicLink(global.toPath(), outside.toPath())
+            assertFailsWith<IllegalArgumentException> { repository.readDocument("global") }
+            assertEquals("temperature: 0.8\n", outside.readText())
+            transport.assertNoRequest()
+        }
+    }
+
+    private suspend fun fixture(home: String = "/root", initialConfig: String? = null, block: suspend Fixture.() -> Unit) {
+        val fixture = Fixture(home, initialConfig)
         try { fixture.block() } finally { fixture.close() }
     }
 
-    private class Fixture : AutoCloseable {
+    private class Fixture(home: String, initialConfig: String?) : AutoCloseable {
         private val directory = Files.createTempDirectory("wawlink-management-").toFile()
+        private val rootfs = directory.resolve("rootfs").apply { mkdirs() }
+        val guestAgentDir = "${home.trimEnd('/')}/.omp/agent"
+        private val agentDirectory = rootfs.resolve(guestAgentDir.trimStart('/')).apply {
+            mkdirs()
+            initialConfig?.let { resolve("config.yml").writeText(it) }
+        }
+        val launches = CopyOnWriteArrayList<List<String>>()
         private val local = LocalContainerRuntime(RuntimePaths(directory.resolve("runtime")))
         private val processes = Channel<Transport>(Channel.UNLIMITED)
         private val transports = CopyOnWriteArrayList<Transport>()
         val opening = Channel<Unit>(Channel.UNLIMITED)
-        private val containerState = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("fixture", "验证", directory.path), running = true)))
+        private val containerState = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("fixture", "验证", rootfs.path), running = true)))
         val failureGenerations = CopyOnWriteArrayList<Long>()
         val uncaught = CopyOnWriteArrayList<Throwable>()
         val runtimeFailures = CopyOnWriteArrayList<String>()
@@ -438,14 +484,15 @@ class OmpAgentManagementRepositoryTest {
         private val runtime = object : ContainerRuntime by local {
             override val containers = containerState
             override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                launches += arguments
                 opening.send(Unit)
                 return processes.receive()
             }
         }
         val repository = OmpAgentManagementRepository(
             runtime, AgentConfigurationContext("fixture", "验证"),
-            { directory.resolve("agent").apply { mkdirs() } },
-            { guest, _ -> directory.resolve("agent").resolve(guest.removePrefix("/root/.omp/agent/")) },
+            { ompAgentDirectory(rootfs, agentDirectory) }, { guestAgentDir },
+            { _, _ -> error("Global configuration must not resolve workspace mounts") },
             owner, { _, _ -> }, { _, _ -> }, { emptyMap() }, {}, { generation, message -> failureGenerations += generation; runtimeFailures += message },
         )
         fun stopContainer() {
@@ -460,10 +507,13 @@ class OmpAgentManagementRepositoryTest {
         }
         suspend fun connect(): Transport {
             val transport = launchTransport()
-            transport.respond(transport.request("init"), JsonPrimitive(true))
+            val init = transport.request("init")
+            assertEquals(guestAgentDir, init["args"]!!.jsonObject["agentDir"]!!.jsonPrimitive.content)
+            assertEquals(JsonNull, init["args"]!!.jsonObject["workspace"])
+            transport.respond(init, JsonPrimitive(true))
             return transport
         }
-        fun file(name: String) = directory.resolve("agent").apply { mkdirs() }.resolve(name)
+        fun file(name: String) = agentDirectory.resolve(name)
         suspend fun awaitState(predicate: (dev.wawlink.protocol.AgentManagementState) -> Boolean) = withTimeout(5_000) { repository.state.first(predicate) }
         override fun close() {
             repository.close()

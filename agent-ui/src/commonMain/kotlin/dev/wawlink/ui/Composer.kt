@@ -145,7 +145,10 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     val selectedProvider = providers.firstOrNull { it.id == state.providerId }
     val selectedModel = selectedProvider?.models?.firstOrNull { it.id == state.modelId }
     val modelState by modelRepository.state.collectAsState()
-    val availableModels = remember(modelState.models) { modelState.models.filter { it.available && it.kind == "chat" }.groupBy { it.provider } }
+    val availableModels = remember(modelState.models, state.availableModels) {
+        (state.availableModels ?: modelState.models.filter { it.available && it.kind == "chat" }.map { SessionModel(it.provider, it.id, it.name) })
+            .groupBy { it.providerId }
+    }
     val selectedNativeModel = remember(modelState.models, state.providerId, state.modelId) { modelState.models.firstOrNull { it.provider == state.providerId && it.id == state.modelId } }
     var text by draft.textState
     val attachments = draft.attachments
@@ -352,10 +355,10 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                                 val provider = providers.firstOrNull { it.id == providerId }
                                 Text(provider?.name ?: modelState.providers.firstOrNull { it.id == providerId }?.name ?: providerId, Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant, fontWeight = FontWeight.Medium)
                                 models.forEach { model ->
-                                    PopupRow(model.name, "deployed_code", state.providerId == providerId && state.modelId == model.id,
-                                        customIcon = { ModelIcon(model.id, model.name, Modifier.size(32.dp)) }) {
-                                        controller.selectModel(providerId, model.id)
-                                        provider?.models?.firstOrNull { it.id == model.id }?.let { controller.selectThinkingLevel(it.thinkingLevel) }
+                                    PopupRow(model.name, "deployed_code", state.providerId == providerId && state.modelId == model.modelId,
+                                        customIcon = { ModelIcon(model.modelId, model.name, Modifier.size(32.dp)) }) {
+                                        controller.selectModel(providerId, model.modelId)
+                                        if (state.availableModels == null) provider?.models?.firstOrNull { it.id == model.modelId }?.let { controller.selectThinkingLevel(it.thinkingLevel) }
                                         menu = null
                                     }
                                 }
@@ -368,7 +371,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         ComposerButton("思考强度 ${state.thinkingLevel.label}", menu == "think", { menu = if (menu == "think") null else "think" }, lit = state.thinkingLevel != ThinkingLevel.NONE) { ThinkingBulb(state.thinkingLevel) }
                         ComposerMenu(menu == "think", { menu = null }) {
                             Text("思考强度", Modifier.padding(start = 14.dp, top = 10.dp, bottom = 6.dp), fontSize = 16.sp, color = c.onSurfaceVariant)
-                            val levels = if ((selectedNativeModel?.metadata?.get("reasoning") ?: selectedModel?.reasoning) == false) listOf(ThinkingLevel.NONE) else ThinkingLevel.entries
+                            val levels = state.availableThinkingLevels ?: if ((selectedNativeModel?.metadata?.get("reasoning") ?: selectedModel?.reasoning) == false) listOf(ThinkingLevel.NONE) else ThinkingLevel.entries
                             levels.forEach { level -> PopupRow(level.label, selected = state.thinkingLevel == level,
                                 customIcon = { ThinkingBulb(level) }) { controller.selectThinkingLevel(level); menu = null } }
                         }

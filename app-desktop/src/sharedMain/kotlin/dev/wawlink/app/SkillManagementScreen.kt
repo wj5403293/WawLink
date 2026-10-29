@@ -96,12 +96,21 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
                         when (page) {
                             "home" -> SkillHomePage(state, { paths = true })
                             "detail" -> SkillDetailPage(state, onPlugins, onAgentSettings, onUseSkill) { file ->
-                                state.request("resource", mapOf("id" to state.detail.skillText("id"), "file" to file)) { preview = it + ("name" to file); previewRaw = !file.endsWith(".md") }
+                                state.request("resource", mapOf("id" to state.detail.skillText("id"), "file" to file)) { preview = it + ("name" to file) + if (file == "SKILL.md") mapOf("body" to state.detail.skillText("body")) else emptyMap(); previewRaw = !file.endsWith(".md") }
                             }
                             "settings" -> SkillSettingsPage(state)
                             "market" -> SkillMarketPage(state)
                             "clawhubDetail" -> SkillClawHubDetailPage(state)
-                            "package" -> SkillPackagePage(state)
+                            "package" -> SkillPackagePage(state) { file ->
+                                val pack = state.packageData.skillObject("packument")
+                                val id = "@${pack.skillText("scope")}/${pack.skillText("name")}"
+                                val version = state.packageData.skillObject("version").skillText("version")
+                                state.request("packageFile", mapOf("id" to id, "version" to version, "path" to file), "正在读取技能包文件") {
+                                    if (state.page == "package" && state.packageData.skillObject("packument") == pack && state.packageData.skillObject("version").skillText("version") == version) {
+                                        preview = it + ("name" to file); previewRaw = !file.endsWith(".md", true)
+                                    }
+                                }
+                            }
                             "author" -> SkillAuthorPage(state)
                             "publish" -> SkillPublishPage(state)
                         }
@@ -131,7 +140,7 @@ internal fun SkillManagementScreen(repository: AgentResourceRepository, app: App
                     else -> {
                         SkillSegments(listOf("view" to "预览", "raw" to "原文"), if (previewRaw) "raw" else "view") { previewRaw = it == "raw" }
                         if (previewRaw) androidx.compose.foundation.text.selection.SelectionContainer { Text(resource.skillText("content"), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 15.sp) }
-                        else SkillContentPreview(if (resource.skillText("name") == "SKILL.md") state.detail.skillText("body") else resource.skillText("content"))
+                        else SkillContentPreview(resource.skillText("body", resource.skillText("content")))
                     }
                 }
             }

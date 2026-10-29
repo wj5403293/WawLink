@@ -483,6 +483,9 @@ export function createRuntimeExplorer(getMain, getContext) {
       providerId: session?.model?.provider ?? transcript?.entries.findLast(e => e.type === 'message' && e.message.role === 'assistant')?.message.provider ?? null,
       modelId: session?.model?.id ?? transcript?.entries.findLast(e => e.type === 'message' && e.message.role === 'assistant')?.message.model ?? null,
       thinking: session?.configuredThinkingLevel() ?? transcript?.entries.findLast(e => e.type === 'thinking_level_change')?.thinkingLevel ?? null,
+      availableModels: session && ref.kind !== 'advisor' && ref.status !== 'aborted'
+        ? session.getAvailableModels().map(model => ({ providerId: model.provider, modelId: model.id, name: model.name })) : [],
+      availableThinkingLevels: session && ref.kind !== 'advisor' && ref.status !== 'aborted' ? session.getAvailableEffortSelectors() : [],
       isRunning: session?.isStreaming === true,
       reset, ...(entries ? { entries, messageIds, leafId: session?.sessionManager.getLeafId() ?? transcript?.leafId ?? null } : {}),
       events, cursor: `${state.generation}:${baseline}`, requests: [...state.requests.values()], queue: session ? queueSnapshot(session) : [] };
@@ -576,25 +579,47 @@ export function createRuntimeExplorer(getMain, getContext) {
         if (!root.hub.cache.has(keyOf(root.mainId, ref))) root.hub.discovering = true;
       refresh(root);
       const agents = all.map(ref => rosterRow(ref, root));
-      const activityLimit = request.activityLimit === 2000 ? 2000 : 20;
-      const byId = new Map(agents.map(agent => [agent.id, agent]));
-      const rows = root.hub.activity.query({ agentIds: new Set(byId.keys()), limit: activityLimit }).map(row => ({
-        id: row.id, agentId: row.agentId, instanceKey: byId.get(row.agentId).instanceKey,
-        kind: row.status === 'error' ? 'error' : row.kind === 'tool' ? 'tool' : row.kind === 'message' ? 'communication' : row.kind,
-        text: [row.title, row.summary].filter(Boolean).join(' · '), timestamp: new Date(row.timestamp).toISOString(),
-        entryId: row.entryId ?? null, chatItemId: row.entryId ? `entry:${row.entryId}` : null }));
-      for (const ref of all) {
-        for (const entry of root.hub.cache.get(keyOf(root.mainId, ref))?.summary?.communications ?? []) {
-          rows.push({ id: `communication:${ref.id}:${entry.id}`, agentId: ref.id, instanceKey: keyOf(root.mainId, ref),
-            kind: 'communication', text: entry.text, timestamp: entry.timestamp,
-            entryId: entry.id, chatItemId: `entry:${entry.id}` });
+      const activityLimit = Number.isSafeInteger(request.activityLimit) && request.activityLimit > 0 ? request.activityLimit : 20;
+      const query = request.activityQuery ?? {};
+      const selected = agents.find(agent => agent.instanceKey === query.instanceKey);
+      const selectedIds = new Set(selected ? [selected.id] : []);
+      if (selected && query.includeDescendants) {
+        for (let size = -1; size !== selectedIds.size;) {
+          size = selectedIds.size;
+          for (const agent of agents) if (selectedIds.has(agent.parentId)) selectedIds.add(agent.id);
         }
       }
-      for (const ref of all) if (ref.lifecycle?.acceptedAt || ref.status === 'aborted' || ref.status === 'parked') rows.push({
-        id: `lifecycle:${keyOf(root.mainId, ref)}:${ref.status}:${ref.lastActivity}`, agentId: ref.id, instanceKey: keyOf(root.mainId, ref),
-        kind: 'lifecycle', text: ref.status, timestamp: new Date(ref.lastActivity).toISOString(), entryId: null });
+      const search = typeof query.search === 'string' ? query.search.trim().toLowerCase() : '';
+      const matches = row => (!query.instanceKey || selectedIds.has(row.agentId)) &&
+        (!query.kind || row.kind === query.kind) && (!search || `${row.agentId} ${row.text}`.toLowerCase().includes(search));
+      const rows = [];
+      const add = (ref, row) => {
+        const value = { ...row, id: `${keyOf(root.mainId, ref)}:${row.id}`, agentId: ref.id, instanceKey: keyOf(root.mainId, ref),
+          chatItemId: row.entryId ? `entry:${row.entryId}` : null };
+        if (matches(value)) rows.push(value);
+      };
+      for (const ref of all) {
+        if (query.instanceKey && !selectedIds.has(ref.id)) continue;
+        const cached = root.hub.cache.get(keyOf(root.mainId, ref));
+        // Read this instance's complete current native activity set. The native
+        // index owns its retention boundary; filter normalized kinds (including
+        // tool errors) before applying any response limit across instances.
+        if (ref.sessionFile && cached?.activityStamp != null) {
+          for (const row of root.hub.activity.recent(ref.id, Number.MAX_SAFE_INTEGER)) add(ref, {
+            id: row.id, kind: row.status === 'error' ? 'error' : row.kind === 'tool' ? 'tool' : row.kind === 'message' ? 'communication' : row.kind,
+            text: [row.title, row.summary].filter(Boolean).join(' · '), timestamp: new Date(row.timestamp).toISOString(), entryId: row.entryId ?? null });
+        }
+        const summary = cached?.summary;
+        for (const entry of summary?.communications ?? []) {
+          add(ref, { id: `communication:${entry.id}`, kind: 'communication', text: entry.text,
+            timestamp: entry.timestamp, entryId: entry.id });
+        }
+      }
+      for (const ref of all) if (ref.lifecycle?.acceptedAt || ref.status === 'aborted' || ref.status === 'parked') add(ref, {
+        id: `lifecycle:${ref.status}:${ref.lastActivity}`, kind: 'lifecycle', text: ref.status,
+        timestamp: new Date(ref.lastActivity).toISOString(), entryId: null });
       rows.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
-      return { mainSessionId: root.mainId, agents, activity: rows.slice(-activityLimit), activityLimit, connected: true,
+      return { mainSessionId: root.mainId, agents, activity: rows.slice(-activityLimit), activityLimit, activityHasMore: rows.length > activityLimit, connected: true,
         discovering: root.hub.discovering, discoveryError: root.hub.discoveryError };
     }
     if (request.op === 'explorer_agent_snapshot') return snapshot(request);

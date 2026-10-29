@@ -9,9 +9,9 @@
 - UI 文字使用中文；专有名词可以使用英文。相同内容不得同时用中文和英文重复装饰。
 - 文字只保留大号 UI 内容或标题；不添加小号卡片说明、装饰性文本或非必要装饰元素。
 - 不得擅自修改既有显示样式；主页、聊天与框架设置的视觉及非线性动画以 `ref-plan/ref-home.html`、`ref-plan/ref-coding-agent-ui.html`、`ref-plan/ref-agent-setting.html` 为准，新增 Agent 设置以 `ref-plan/agent-settings.html` 为准，功能遵循 `ref-plan/plan.md`。
-- 插件与技能管理分别严格遵循 `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 的布局、控件和非线性交互，不做视觉简化；原型紫色替换为当前主题色，演示数据、模拟加载与假重载不进入实现。
-- Session 历史树与运行时 Agent Hub 分别严格遵循 `ref-plan/session-history.html`、`ref-plan/agent-hub.html` 的布局、控件、状态与非线性交互，不做视觉简化；聊天 AppBar 设置按钮左侧保留历史树和 Hub 两个图标入口，配色使用当前应用主题，不引入演示数据。历史预览不改变续写位置，切换、回退、独立分支、标签与历史 Ask 使用原生身份；子代理正文、审批、提问、消息、模型和生命周期操作隔离到具体运行实例，不转发为主会话操作。
-- 历史树首屏仅传当前原生会话的完整轻量索引，不传全部正文、预览 Feed、原始记录或复制块；分页固定同一快照，刷新按版本增量更新，详情按会话、节点 ID 与版本按需读取。Hub 首屏独立读取注册表，不等待主会话历史或全部子会话正文，持久实例发现和活动摘要随后补齐；不以截断历史或删减原型交互换取加载速度。
+- 插件与技能管理分别严格遵循 `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 的布局、控件和非线性交互，不做视觉简化；原型紫色替换为当前主题色，演示数据、模拟加载与假重载不进入实现。插件详情的 package.json `omp/pi.settings`、标准清单及兼容清单均按 schema 脱敏，`secret:true` 的默认值不得明文展示。
+- Session 历史树与运行时 Agent Hub 分别严格遵循 `ref-plan/session-history.html`、`ref-plan/agent-hub.html` 的布局、控件、状态与非线性交互，不做视觉简化；聊天 AppBar 设置按钮左侧保留历史树和 Hub 两个图标入口，配色使用当前应用主题，不引入演示数据。历史预览不改变续写位置，切换、回退、独立分支、标签与历史 Ask 使用原生身份；子代理正文、审批、提问、消息、模型和生命周期操作隔离到具体运行实例，不转发为主会话操作。存活子代理的模型与思考候选来自该实例的原生能力，空候选不回退全局目录，已绑定值不因候选隐藏而改写。
+- 历史树首屏仅传当前原生会话的完整轻量索引，不传全部正文、预览 Feed、原始记录或复制块；分页固定同一快照，刷新按版本增量更新，详情按会话、节点 ID 与版本按需读取。Hub 首屏独立读取注册表，不等待主会话历史或全部子会话正文，持久实例发现和活动摘要随后补齐；活动按实例/子树、类别与文本筛选后再限额，不用全局最近窗口冒充目标范围无活动。不以截断历史或删减原型交互换取加载速度。
 - 技能市场默认浏览独立的 ClawHub 公开目录，保留官方 Skillshare 来源及包、账号和发布管理；官方空库不得伪装为全市场无技能。第三方内容固定发布者、技能和精确版本，安装完整资源并校验大小与哈希，不覆盖已有目录、不改写原始 frontmatter、不执行脚本，不将扫描 clean 或 OpenClaw 声明当作 OMP 兼容或安全保证。
 - 页面进入保留既有的右侧滑入与非线性曲线；返回时当前页向右滑出、上一级从左侧恢复，不能沿用进入方向。主页底栏固定按“会话、功能、容器”排列，功能位于中间、容器左边；按位置定向切换，向右侧页面切换时向左、向左侧页面切换时向右。
 - Android 聊天页状态栏与 AppBar 使用同一背景色并同步滚动变色动画；保留明暗主题的图标对比度和顶部安全区，不重复添加顶部留白。
@@ -22,11 +22,12 @@
 - 应用默认密度统一校准到原型，主页、聊天和所有设置页共用同一缩放，不在嵌套主题中重复缩放；应用设置提供持久化的“整体缩放”和恢复默认，保留系统字体缩放。当前基线以旧版 115% 为新版 100%；已有 115% 设置迁移为 100%，不得在升级或重启后重复放大。
 - Android 应用设置提供“屏幕常亮”开关，默认关闭并持久化；开启后整个应用在前台可见时保持亮屏，关闭或进入后台恢复系统熄屏策略，终端不再独立强制常亮。
 - 启动及容器列表更新只读取会话元数据，打开某个会话时才恢复其正文与控制器；主页继续观察已打开的会话，不批量恢复未打开的历史。
+- 容器运行时初始化不递归遍历 Rootfs 统计体积，先加载轻量配置、校验根目录并读取元数据，体积在后台计算并发布，可使用上次持久化值作初始缓存；迟到结果不得覆盖已删除或已变更的容器。克隆/导出的归档读写与体积遍历不持有全局锁，同容器启动、修改和删除与归档隔离，其他容器仍可操作；手动停止、关闭及取消后不得由收尾自动重新启动容器。
 - 未命名会话使用首条用户问题作为标题，过长时截断展示，不覆盖手动命名；主页会话列表长按进入多选。会话内右上角新建直接沿用当前容器与工作区，不弹配置表单且不预设名称。
 - 主页会话卡片展开与收起使用轻快的非线性动画，不叠加高度动画；展开后的分支按钮仅显示 Material Symbols 图标，保留中文无障碍说明和足够点击区域，减少操作栏换行与遮挡。
 - 全应用持久化单个当前容器；点击容器卡片选择，右侧开关独立启停，卡片不再放终端按钮。容器名称单行截断，选中卡片使用主题主色粗边框；新建会话直接使用当前选择容器且无预设名称，未发送消息的空会话离开后不进入持久化列表。
 - 容器标题、描述、独立分发版本号与图标保存在当前容器用户有效 HOME 的 `~/.wawlink/container.json`，不另存宿主持久副本，随 Rootfs 导出、导入与克隆保留；导入优先使用内置标题，克隆仅按明确输入更改标题。图标支持离线 Material Symbols 与系统选择的自定义图片，图片规范化为不超过 512×512 / 512 KiB 的 PNG 并内嵌同一 JSON。详情右上角删除按钮左侧放编辑按钮，打开当前主题 Material 3 bottom sheet；取消不落盘，失败保留草稿，外部修改拒绝静默覆盖。读取/保存信息不自动启动或重启容器，宿主挂载、链接和越界路径拒绝，旧容器缺少信息时保留原名称及发行版头像。
-- 底部“功能”页以双列卡片操作当前容器，内置终端、文件、用户规则、插件与技能。规则通过客体文件服务管理当前用户 `~/.omp/agent/rules/`，使用 Android Sora / Desktop 原生编辑器。功能入口的插件与技能为用户级；会话设置入口为当前工作区的项目级，不允许项目入口隐式修改用户级对象。
+- 底部“功能”页以双列卡片操作当前容器，内置终端、文件、用户规则、插件与技能。规则通过客体文件服务管理当前用户 `~/.omp/agent/rules/`，使用 Android Sora / Desktop 原生编辑器。功能入口的插件与技能为用户级；会话设置入口为当前工作区的项目级，不允许项目入口隐式修改用户级对象。项目技能仅允许当前工作区内目录可写，发布预检、发布和版本修改统一校验当前入口作用域，不接受任意目录。
 - 自定义功能从当前容器用户 `~/.wawlink/features/<id>/card.json` 发现，必填 `icon`、`title`、`description`；`lifecycle` 支持 `page`（默认）、`manual`、`container`。`container` 在每次真实容器运行代次自动扫描启动，初次接入已运行容器也启动，不等待进入功能页；离页/隐藏不停止，手动停止或失败不因刷新、切页或元数据更新重试，下次容器启动再尝试。扫描自身不执行功能脚本，`start.sh` 前台启动真实服务，可选 `stop.sh` 收尾；停止、删除容器、关闭应用及启动就绪期间取消都回收真实进程组，自动操作不能重开已停止容器。动态 `cardUrl` 支持自身服务绝对路径和显式端口的本地 loopback URL，保留基址、查询和片段，不向独立服务附带令牌，与显式 `card` 互斥。允许外部 HTTPS/WSS、API/CDN、常用框架及自由 HTML/CSS/JS，不强制自包含；保持默认 Material 3、中文、离线 Material Symbols 与非线性动画，卡片按用户设计配色。主文档与 Android 桥仍限定受信来源，关闭 file/content、子框架及 object；可信依赖具备页面桥能力，不宣传为不可信代码沙箱。
 - 容器内提供 `wawlink-feature` 轻量调试命令，复用已有 Bun，不安装 Chrome/Chromium、Playwright 或依赖 ADB；同时支持 `--surface card` 的外部 HTML 卡片和 `--surface page` 的完整功能页，按容器、功能 ID、页面种类及运行代次隔离。状态/布局、日志、Promise JavaScript、真实 PNG 截图与文档重载必须操作实际已挂载 WebView；未打开或不可见时明确说明，不另开离屏浏览器、自动启服或伪造验收。静态卡片重载读取客体最新 HTML，重载不冒充后端重启；调试通道仅随机 loopback、使用当前容器私有凭据，停止/重启/关闭时撤销，eval 保留页面真实可信 LuaJ 能力，不宣传为沙箱。内置 Skill 明确持续服务型卡片按需求显式选择 `container`，不擅自改变 `page` 默认语义。
 - 功能页按 `ref-plan/feature-cards.html` 的卡片、顶部编辑栏、调色及切换容器 bottom sheet 重构，保留既有抬起、跟手、边缘滚动与非线性换位，不照搬原型拖动。半宽原生卡片图标在标题上方，整行原生卡片图标与标题/状态并排；`cardSpan` 为 1（默认）或 2，原生和 HTML 均可占满两列，`cardHeight` 默认 172 dp。自定义卡片紧随内置卡片，不添加演示业务或模拟数据。
@@ -40,6 +41,7 @@
 - Agent 配置首屏不等待模型/认证 SDK；模型目录按有界分页传输，仅在编辑时读取完整模型字段。模型配置无效或原生进程退出时结束加载并保留可重试、可修复的界面，不抛到主线程导致闪退。
 - 内置 Provider 的启用状态、OAuth 和操作能力以当前 OMP 原生发现、认证及禁用状态为准，不默认全开，也不对自定义 Provider 显示不支持的 OAuth 或协议功能。内置 Provider 使用稳定颜色与名称首字标识；用户项在前，内置项置底并用分隔线分组，禁用项灰显且在各组内下沉。
 - 模型服务开关只增删目标作用域原始完整 `disabledProviders` 规则中的指定服务裸字符串，保留路径限定对象与无关项；不得把 `effectiveValues` 写回全局，当前模型服务列表仍固定全局作用域。
+- Agent 启停、模型允许/停用规则及故障转移链只以目标作用域的原始配置层为写回基底，不能整表复制有效值。未覆盖时仍可展示继承值，未修改直接完成不物化继承规则；清除此层覆盖恢复继承。
 - Provider 配置每次打开从顶部展示；模型服务搜索框与首个列表项保留 16 dp 间距。模型获取按钮显示蓝色“获取模型”并执行实际获取，不用静态目录刷新冒充。删除“读取当前配置档的……”等无实际意义说明及图标；保留必要错误、空态与风险确认。保存失败展示可定位且已脱敏的实际原因，保留全部草稿供修复和重试。
 - 模型选项使用默认值时，在同一行及菜单的“使用默认值”后以灰字显示原生实际默认值；默认值只展示、不写入覆盖。依赖接口或会话而无确定值时明确显示未指定或跟随会话，不猜测。重复选择未设置的默认项不生成空对象；思考控制方式恢复默认时移除整段可选 `thinking`，放弃修改恢复全部字段并清除本次保存错误。
 - 协议兼容项、远程压缩及其嵌套对象仅在实质修改时写入；打开后直接点“完成”不得物化继承值或新增空对象，真实修改保留未知字段，清空移除对应覆盖。
@@ -78,7 +80,7 @@
 - 聊天加号菜单保留项目文件并增加容器文件，支持跨目录选择普通文件；附件按来源区分主机与容器路径，不伪造工作区路径，不将容器文件复制到主机再发送。浏览器取消不清空草稿或已有附件；项目文件展开子目录后各行不得重叠。
 - 容器主机目录挂载保留手填 `/sdcard/...`，并提供系统目录选择；Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，启动不自动申请。只把可直接访问的本机目录解析为实际挂载路径，不把 SAF URI 或云盘伪装成路径，不复制目录内容；取消选择、拒绝授权及保存失败保留挂载草稿，不放宽 Android 私有目录及引擎只读能力的限制。
 - PRoot/Proroot 启动前按宿主补充 GID 为容器追加缺失的组名，不覆盖已有组记录，不隐藏 `groups` 错误；既有动态 DNS 修复继续适用，更新 APK 不要求重新导入 Rootfs。
-- Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。
+- Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。OMP 进程、会话、扩展与管理桥统一使用当前配置用户的有效 HOME（含配置的 HOME 覆盖），离线解析，不为查目录启动容器；宿主配置目录须限定在所属 Rootfs 内，不固定为 /root，也不接入宿主主目录或挂载目录。
 - Proroot 五库按作者同一固定来源整套校验并原样打包；启动显式指定当前 APK 配套的 runtime/linker，不混用旧组件。OMP/Bun 启动修复须验证真实原生模块与 RPC，不靠屏蔽错误、禁用原生模块或伪造成功输出，也不要求重建已有 Rootfs。
 - 在线镜像安装完成后检查容器内 OMP，缺失或损坏时弹出安装/修复确认；OMP 运行进程或原生管理桥故障也须提示。只有用户同意才打开独立真实 PTY 终端并自动执行随应用打包的安装脚本，取消不执行，重组不重复安装。保留已有配置、认证、工作区与会话，安装失败保留终端真实原因；不要求重导入 Rootfs，也不复制宿主认证。
 - 切换容器、启停/重启容器、离开终端或功能页造成的预期中断，不弹 OMP 安装/修复引导或会话、终端、卡片报错。停止前先撤销旧操作代次；延迟回执、退出检查与快速重启不能把旧故障带到新代次，后台诊断不得重新启动已停止容器。真实安装损坏、进程异常退出及服务失败仍保留提示，取消不得吞掉后续操作或丢失已接收消息。
@@ -114,7 +116,7 @@
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - 同目录的 `OmpEventReducer.kt` 在归并器内部按稳定 ID 定位当前节点，只复制变更节点的祖先兄弟列表，外部整体替换自动失效索引；重复终态与工具输出的冗余渲染被消除。完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考/模型正文归属。`OmpProcessPool.kt` 的事件日志逐条写入并关闭缓冲 UTF-8 writer，不额外构造整条换行字符串及其 UTF-8 字节数组。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
-  - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生轻量历史索引与独立运行实例接入 Kotlin 状态流，按会话、节点与版本缓存所选详情，保留完整快照分页与增量刷新。`omp-management/session.mjs` 以会话生命周期内的顺序定时扫描处理原子请求，不依赖 Proroot 未翻译的原始 inotify 路径；通道状态及每条请求/响应按原生进程实例隔离，业务分发前丢弃遗留请求，初始化/排空错误交给调用页，本地超时不冒充页面取消。它加载的 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs` 分别负责原生操作分发、完整树索引/按需详情及注册表首屏/异步持久发现/增量活动摘要；原生模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖完整匹配快照、过期详情拒绝、正文复制边界、Hub 与历史解耦、分支返回及稳定消息身份；`src/jvmSharedTest/resources/session.test.mjs` 执行生产轮询器，覆盖启动前后遗留请求零副作用及当前实例操作。
+  - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生轻量历史索引与独立运行实例接入 Kotlin 状态流，按会话、节点与版本缓存所选详情，保留完整快照分页与增量刷新；Hub 活动按范围、类别和文本筛选后限额，查询代次隔离迟到响应，子代理快照传递实例级模型与思考候选。`omp-management/session.mjs` 以会话生命周期内的顺序定时扫描处理原子请求，不依赖 Proroot 未翻译的原始 inotify 路径；通道状态及每条请求/响应按原生进程实例隔离，业务分发前丢弃遗留请求，初始化/排空错误交给调用页，本地超时不冒充页面取消。它加载的 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs` 分别负责原生操作分发、完整树索引/按需详情及注册表首屏/异步持久发现/增量活动摘要；原生模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖完整匹配快照、过期详情拒绝、正文复制边界、Hub 与历史解耦、查询响应代次、实例候选边界、分支返回及稳定消息身份；`src/jvmSharedTest/resources/session.test.mjs` 执行生产轮询器，覆盖启动前后遗留请求零副作用及当前实例操作。
   - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。
   - 同资源目录的 `clawhub.ts`、`clawhub-http.ts`、`clawhub-source.ts` 提供独立 ClawHub 公开目录、精确版本与完整资源校验、受限联网及作用域安装；`.wawlink-clawhub.json` 只记录安装来源，不认证后续本地编辑内容。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpInstallation.kt` 提供容器内安装自检与终端命令，`src/jvmSharedMain/resources/omp-install.sh` 固定 OMP/Bun 来源和完整依赖，分阶段校验真实原生模块与 RPC 后切换安装；缺少 CA 的 APT 基础镜像先通过保留签名校验的临时 HTTP 源安装证书，不修改原软件源或关闭 TLS 校验。`OmpProcessPool.kt` 聚合会话及管理进程故障并暂停/恢复修复关联进程，`src/jvmSharedTest/kotlin/dev/wawlink/driver/OmpInstallationTest.kt` 覆盖引擎故障与缺失安装的区分及自检协议边界。
@@ -124,8 +126,9 @@
   - 同目录的 `DistroSources.kt` 负责官方/国内 Rootfs 路由、完整性校验、同站 HTTPS 重定向及客体软件源与安装来源记录；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/DistroSourcesTest.kt` 覆盖快照选择、错误校验值、国内源不外逃与软件源边界。`RootfsArchives.kt` / `RootfsArchivesTest.kt` 同时保留 Linux systemd 文件名中的字面反斜杠及链接目标，不放宽目录穿越保护。
   - 同目录的 `RuntimeIdentity.kt` 负责 PRoot/Proroot 补充组名的边界检查与原子更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeIdentityTest.kt` 覆盖保留已有记录、幂等与链接越界；`ContainerFileService.kt` 通过客体进程提供文件枚举、流式导入导出、复制、重命名、删除及 UTF-8 文本原子保存，不访问宿主 Rootfs 路径；多进程写入通过协程上下文保留首次运行身份，`LocalContainerRuntime.kt` 在进程准入锁内复核，后续提交和清理不按需启动。
   - `src/androidUnitTest/kotlin/dev/wawlink/runtime/ContainerFileTextTest.kt` 覆盖文本保存的精确字节与权限、2 MiB 边界、外部修改冲突、链接及挂载根保护、暂存文件清理和停止/快速重启后的提交拒绝及原始错误保留；运行于 Android JVM，不冒充设备端编辑器或引擎验收。
-  - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID 与账户环境。
+  - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份，并通过 `containerHome(config)` 对驱动公开与启动器共用的离线有效 HOME 解析；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID、HOME 覆盖与无效账户/路径边界。
   - 同目录的 `ContainerMetadata.kt` 提供容器内四项分发信息、当前登录 HOME 的离线边界检查、SHA256 冲突检测与原子保存；`LocalContainerRuntime.kt` 在启动、注册、导入和配置变更时读取，信息错误独立于引擎错误，保存不改变运行代次。`src/jvmSharedTest/kotlin/dev/wawlink/runtime/ContainerMetadataTest.kt`、`ContainerMetadataActionTest.kt` 覆盖持久化、Rootfs 迁移、链接/挂载边界、外部修改与运行中动作不受改名影响。
+  - `LocalContainerRuntime.kt` 冷启动先发布持久化的体积缓存，再在后台 IO 离线统计，以请求和配置身份隔离删除、重注册及关闭后的迟到结果；克隆/导出通过单容器归档占用在全局锁外执行，准入拒绝同容器冲突操作，自动恢复校验原运行状态与停止代次，不恢复旧配置快照。`src/jvmSharedTest/kotlin/dev/wawlink/runtime/LocalContainerRuntimeTest.kt` 覆盖缓存首屏、异步尺寸竞态、跨容器并发、同容器准入、取消/关闭及克隆与导出失败清理。
   - 同目录的 `PtyTransport.kt` 及 `src/androidMain/kotlin/dev/wawlink/runtime/PtyTransport.android.kt`、`src/desktopMain/kotlin/dev/wawlink/runtime/PtyTransport.desktop.kt` 提供两端真实 PTY，`ContainerContract.kt` 定义原始字节读写、调整尺寸与会话回收契约。
   - 同目录的 `ContainerFeatures.kt` 扫描功能/卡片及动作声明，按 `ContainerContract.kt` 的运行代次与原子运行中进程接口自动启动及隔离回收；`ContainerFeatureRuntime.kt` 解析跨度、按钮和动态 URL，监管真实服务进程组、RSS、生命周期与停服卸载；`ContainerFeatureScriptActions.kt` 执行校验、去重及取消回收的容器脚本动作。`ContainerFeatureGateway.kt`、`ContainerFeatureHttpConnection.kt` 提供随机 loopback、令牌门控的 HTTP/WebSocket 网关与主题/图标注入；`ContainerFeatureSkill.kt` 保存明确创建请求才触发的原生/动态 HTML、LuaJ 契约。`src/jvmSharedTest/kotlin/dev/wawlink/runtime/ContainerFeatureRuntimeTest.kt` 覆盖运行代次、自动启动、取消回收、入场竞态与 URL/令牌边界。
   - `ContainerFeatureSkill.kt` 同时维护预置 Skill 的 SHA-256 安装记录、已发布无记录版本接管与中断可恢复的客体原子升级；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/ContainerFeatureSkillTest.kt` 通过真实 Shell/文件覆盖跨版本更新、幂等、用户修改保留、两侧中断恢复及符号链接/无效记录拒绝。

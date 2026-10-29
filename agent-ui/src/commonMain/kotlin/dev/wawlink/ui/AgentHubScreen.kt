@@ -83,7 +83,7 @@ fun AgentHubScreen(
     DisposableEffect(registerBack) { registerBack { currentBack() }; onDispose { registerBack(null) } }
     LaunchedEffect(explorer, main.id) {
         while (true) {
-            try { explorer.refreshHub(explorer.hub.value.activityLimit) }
+            try { explorer.refreshHub() }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { failure = error.message ?: "无法读取 Agent" }
             delay(2500)
@@ -103,11 +103,10 @@ fun AgentHubScreen(
                 }, modifier = Modifier.weight(1f)) { page ->
                     holder.SaveableStateProvider("${main.id}:$page") {
                         val displayed = hub.agents.firstOrNull { it.instanceKey == page }
-                        if (page.isEmpty()) HubOverview(hub, main.title, pending || !hub.connected, onBack, onMain,
-                            onRefresh = { perform { explorer.refreshHub(hub.activityLimit) } },
+                        if (page.isEmpty()) HubOverview(hub, explorer, main.title, pending || !hub.connected, onBack, onMain,
+                            onRefresh = { perform { explorer.refreshHub() } },
                             onOpen = ::open, onDefinition = onOpenDefinition,
-                            onControl = { a, op -> if (hub.connected) confirmation = a to op else failure = "运行时未连接，不能控制这个实例" },
-                            onLoadMore = { perform { explorer.refreshHub(2000) } })
+                            onControl = { a, op -> if (hub.connected) confirmation = a to op else failure = "运行时未连接，不能控制这个实例" })
                         else if (displayed != null) SubagentScreen(
                             displayed, hub, explorer, providers, modelRepository, pending,
                             onBack = { back() }, onMain = onMain, onOpen = ::open,
@@ -132,7 +131,7 @@ fun AgentHubScreen(
                         else Column(Modifier.fillMaxSize()) {
                             AgentTopBar("Agent", { back() })
                             HubEmpty("link_off", "当前实例不在这个主会话的运行记录中")
-                            TextButton({ perform { explorer.refreshHub(hub.activityLimit) } }) { Text("重新读取") }
+                            TextButton({ perform { explorer.refreshHub() } }) { Text("重新读取") }
                         }
                     }
                 }
@@ -140,7 +139,7 @@ fun AgentHubScreen(
                 if (error != null) Row(Modifier.fillMaxWidth().background(colors.errorContainer).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Symbol("error", tint = colors.error)
                     Text(error, Modifier.weight(1f).padding(horizontal = 10.dp), color = colors.error, fontSize = 16.sp)
-                    TextButton({ val action = retry; perform { if (action != null) action() else explorer.refreshHub(hub.activityLimit) } }, enabled = !pending) { Text("重试") }
+                    TextButton({ val action = retry; perform { if (action != null) action() else explorer.refreshHub() } }, enabled = !pending) { Text("重试") }
                     if (failure != null) AgentIconButton("close", "关闭错误", { failure = null })
                 }
             }
@@ -157,7 +156,7 @@ fun AgentHubScreen(
             RuntimeAgentOperation.REVIVE -> "重新启动这个子代理的会话，在原来的对话上继续。不是从头重跑任务，也不会再次合并产物。"
         }
         AlertDialog(onDismissRequest = { confirmation = null }, icon = { Symbol(if (operation == RuntimeAgentOperation.REVIVE) "restart_alt" else "cancel") }, title = { Text(title) }, text = { Text(text) },
-            confirmButton = { TextButton({ confirmation = null; perform { explorer.controlAgent(agent.instanceKey, operation); explorer.refreshHub(hub.activityLimit) } }, enabled = !pending) { Text(if (operation == RuntimeAgentOperation.REVIVE) "恢复" else if (operation == RuntimeAgentOperation.STOP) "停止" else "终止", color = if (operation == RuntimeAgentOperation.KILL) colors.error else colors.primary) } },
+            confirmButton = { TextButton({ confirmation = null; perform { explorer.controlAgent(agent.instanceKey, operation); explorer.refreshHub() } }, enabled = !pending) { Text(if (operation == RuntimeAgentOperation.REVIVE) "恢复" else if (operation == RuntimeAgentOperation.STOP) "停止" else "终止", color = if (operation == RuntimeAgentOperation.KILL) colors.error else colors.primary) } },
             dismissButton = { TextButton({ confirmation = null }) { Text("取消") } }, containerColor = colors.surface, shape = RoundedCornerShape(28.dp))
     }
     exportAgent?.let { agent -> AgentSheet("导出会话", { exportAgent = null }) {
@@ -168,9 +167,9 @@ fun AgentHubScreen(
 }
 
 @Composable
-private fun HubOverview(hub: AgentHubState, mainTitle: String, busy: Boolean, onBack: () -> Unit, onMain: () -> Unit,
+private fun HubOverview(hub: AgentHubState, explorer: SessionExplorer, mainTitle: String, busy: Boolean, onBack: () -> Unit, onMain: () -> Unit,
     onRefresh: () -> Unit, onOpen: (RuntimeAgent, String?) -> Unit, onDefinition: (String?) -> Unit,
-    onControl: (RuntimeAgent, RuntimeAgentOperation) -> Unit, onLoadMore: () -> Unit) {
+    onControl: (RuntimeAgent, RuntimeAgentOperation) -> Unit) {
     var tab by rememberSaveable { mutableStateOf("agents") }
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf("all") }
@@ -182,7 +181,7 @@ private fun HubOverview(hub: AgentHubState, mainTitle: String, busy: Boolean, on
             if (!hub.connected && !hub.loading) ManagementBanner("运行时未连接，已有记录仍可查看；控制操作不可用", "link_off", warning = true)
             ManagementRow("主会话", mainTitle, "home", onMain, trailing = { Symbol("arrow_forward") })
             Box(Modifier.padding(top = 14.dp, bottom = 8.dp)) { HubSegments(listOf("agents" to "Agent", "activity" to "活动"), tab) { tab = it } }
-            if (tab == "activity") HubActivity(hub, onOpen = onOpen, onLoadMore = onLoadMore, busy = busy)
+            if (tab == "activity") HubActivity(hub, explorer, onOpen = onOpen, busy = busy)
             else {
                 SettingsSearch(query, { query = it }, "搜索名称或编号", Modifier.padding(vertical = 8.dp))
                 val filters = listOf("all" to "全部", "running" to "运行中", "idle" to "空闲", "parked" to "已停放", "aborted" to "已终止", "advisor" to "顾问")
@@ -292,15 +291,24 @@ internal fun HubAgentMenu(agent: RuntimeAgent, busy: Boolean, onOpen: () -> Unit
 }
 
 @Composable
-internal fun HubActivity(hub: AgentHubState, root: RuntimeAgent? = null, onOpen: (RuntimeAgent, String?) -> Unit, onLoadMore: () -> Unit, busy: Boolean) {
+internal fun HubActivity(hub: AgentHubState, explorer: SessionExplorer, root: RuntimeAgent? = null, onOpen: (RuntimeAgent, String?) -> Unit, busy: Boolean) {
     var query by rememberSaveable { mutableStateOf("") }; var kind by rememberSaveable { mutableStateOf("all") }
     var selected by rememberSaveable { mutableStateOf(root?.instanceKey) }; var subtree by rememberSaveable { mutableStateOf(root != null) }
     var follow by rememberSaveable { mutableStateOf(true) }; var scopeMenu by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var failure by remember { mutableStateOf<String?>(null) }
+    val activityQuery = AgentActivityQuery(selected, subtree, AgentActivityKind.entries.firstOrNull { it.name == kind }, query)
+    val currentQuery by rememberUpdatedState(activityQuery)
+    LaunchedEffect(explorer, activityQuery) {
+        failure = null
+        try { explorer.refreshHub(20, activityQuery) }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { if (currentQuery == activityQuery) failure = error.message ?: "无法读取活动" }
+    }
     val list = rememberLazyListState()
     LaunchedEffect(list) { list.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) follow = false } }
     val scopedAgent = hub.agents.firstOrNull { it.instanceKey == selected }
-    val keys = scopedAgent?.let { if (subtree) hubSubtree(hub.agents, it.id).map { a -> a.instanceKey }.toSet() else setOf(it.instanceKey) }
-    val activities = hub.activity.asReversed().filter { (keys == null || it.instanceKey in keys) && (kind == "all" || it.kind.name == kind) && (query.isBlank() || it.text.contains(query, true) || it.agentId.contains(query, true)) }
+    val activities = if (hub.activityQuery == activityQuery) hub.activity.asReversed() else emptyList()
     LaunchedEffect(activities.firstOrNull()?.id, follow) { if (follow && activities.isNotEmpty()) list.animateScrollToItem(0) }
     SettingsSearch(query, { query = it }, "搜索活动", Modifier.padding(vertical = 8.dp))
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -309,7 +317,7 @@ internal fun HubActivity(hub: AgentHubState, root: RuntimeAgent? = null, onOpen:
     }
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box {
-            HubChip(scopedAgent?.let { "${it.name}，${it.id}" } ?: "全部 Agent", selected != null, "filter_list") { scopeMenu = true }
+            HubChip(scopedAgent?.let { "${it.name}，${it.id}" } ?: if (selected != null) "实例已不可用" else "全部 Agent", selected != null, "filter_list") { scopeMenu = true }
             ManagementMenu(scopeMenu, { scopeMenu = false }) {
                 ManagementMenuItem(text = { Text("全部 Agent") }, selected = selected == null, onClick = { selected = null; scopeMenu = false })
                 hub.agents.forEach { a -> ManagementMenuItem(text = { Text("${a.name}，${a.id}") }, selected = selected == a.instanceKey, onClick = { selected = a.instanceKey; scopeMenu = false }) }
@@ -318,6 +326,7 @@ internal fun HubActivity(hub: AgentHubState, root: RuntimeAgent? = null, onOpen:
         if (selected != null) HubChip("含下级", subtree) { subtree = !subtree }
         HubChip(if (follow) "跟随最新" else "已暂停跟随", follow, if (follow) "vertical_align_bottom" else "pause") { follow = !follow }
     }
+    failure?.let { message -> ManagementBanner(message, "error", error = true) }
     if (activities.isEmpty() && !hub.loading && !hub.discovering) HubEmpty("event_busy", "没有符合条件的活动")
     else if (activities.isEmpty()) Spacer(Modifier.height(24.dp))
     else LazyColumn(state = list, modifier = Modifier.fillMaxWidth().heightIn(max = 580.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -328,8 +337,18 @@ internal fun HubActivity(hub: AgentHubState, root: RuntimeAgent? = null, onOpen:
                 onClick = agent?.let { { onOpen(it, activity.chatItemId ?: activity.entryId) } }, index = index, count = activities.size, error = activity.kind == AgentActivityKind.ERROR)
         }
     }
-    if (hub.activityLimit < 2000) TextButton(onLoadMore, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Symbol("history"); Spacer(Modifier.width(8.dp)); Text(if (busy) "读取中" else "加载更早的活动") }
-    else HubTag("最近 ${hub.activityLimit} 条活动", "history")
+    if ((hub.activityHasMore && hub.activityQuery == activityQuery) || failure != null) TextButton({
+        scope.launch {
+            if (currentQuery != activityQuery) return@launch
+            try {
+                explorer.refreshHub(if (failure != null) hub.activityLimit else hub.activityLimit + 200, activityQuery)
+                if (currentQuery == activityQuery) failure = null
+            }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { if (currentQuery == activityQuery) failure = error.message ?: "读取失败" }
+        }
+    }, enabled = !busy && !hub.loading, modifier = Modifier.fillMaxWidth()) { Symbol("history"); Spacer(Modifier.width(8.dp)); Text(if (hub.loading) "读取中" else if (failure != null) "重试" else "加载更早的活动") }
+    else if (activities.isNotEmpty()) HubTag("${activities.size} 条匹配活动", "history")
 }
 
 @Composable

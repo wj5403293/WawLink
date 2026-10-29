@@ -71,13 +71,12 @@ internal fun SubagentScreen(
                 AgentIconButton("deployed_code", "临时模型和思考", { modelMenu = true })
                 ManagementMenu(modelMenu, { modelMenu = false }) {
                     ManagementMenuItem(text = { Text("只对这个子代理临时生效") }, enabled = false, onClick = {})
-                    val modelState by modelRepository.state.collectAsState()
-                    modelState.models.filter { it.available && it.kind == "chat" }.forEach { model ->
-                        ManagementMenuItem(text = { Text("${model.provider} / ${model.name}") }, selected = childState?.providerId == model.provider && childState?.modelId == model.id, enabled = !busy && activeController != null,
-                            leadingIcon = { ModelIcon(model.id, model.name) }, onClick = { modelMenu = false; activeController?.selectModel(model.provider, model.id) })
+                    childState?.availableModels.orEmpty().forEach { model ->
+                        ManagementMenuItem(text = { Text("${model.providerId} / ${model.name}") }, selected = childState?.providerId == model.providerId && childState?.modelId == model.modelId, enabled = !busy && activeController != null,
+                            leadingIcon = { ModelIcon(model.modelId, model.name) }, onClick = { modelMenu = false; activeController?.selectModel(model.providerId, model.modelId) })
                     }
                     HorizontalDivider()
-                    ThinkingLevel.entries.forEach { level -> ManagementMenuItem(text = { Text("思考 ${level.label}") }, selected = childState?.thinkingLevel == level,
+                    childState?.availableThinkingLevels.orEmpty().forEach { level -> ManagementMenuItem(text = { Text("思考 ${level.label}") }, selected = childState?.thinkingLevel == level,
                         leadingIcon = { ThinkingBulb(level) }, enabled = !busy && activeController != null, onClick = { modelMenu = false; activeController?.selectThinkingLevel(level) }) }
                 }
             }
@@ -119,9 +118,7 @@ internal fun SubagentScreen(
                     SubagentDetails(agent, hub, busy || !hub.connected, onOpen, onDefinition, onControl, onDispatch, onOpenFile)
                 }
                 "activity" -> Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-                    val scope = rememberCoroutineScope(); var activityError by remember { mutableStateOf<String?>(null) }; var reading by remember { mutableStateOf(false) }
-                    activityError?.let { ManagementBanner(it, "error", error = true) }
-                    HubActivity(hub, agent, onOpen, onLoadMore = { if (!reading) { reading = true; scope.launch { try { explorer.refreshHub(2000); activityError = null } catch (cancelled: CancellationException) { throw cancelled } catch (failure: Exception) { activityError = failure.message ?: "读取失败" } finally { reading = false } } } }, busy = busy || reading)
+                    HubActivity(hub, explorer, agent, onOpen, busy = busy)
                 }
                 "jobs" -> SubagentJobs(agent, hub, onOpenFile)
             }
@@ -159,10 +156,12 @@ private class FocusedComposerController(
     override fun respondApproval(nodeId: String, decision: ApprovalDecision) { if (canSend()) child.respondApproval(nodeId, decision) else onBlocked() }
     override fun toggleExecutionMode(autoApprove: Boolean) { onUnsupported("子代理不支持独立切换审批模式") }
     override fun selectModel(providerId: String, modelId: String) {
-        if (canSend() && canSetModel()) child.selectModel(providerId, modelId) else onUnsupported("这个子代理当前不能切换模型")
+        if (canSend() && canSetModel() && child.state.value.availableModels.orEmpty().any { it.providerId == providerId && it.modelId == modelId }) child.selectModel(providerId, modelId)
+        else onUnsupported("这个子代理当前不支持所选模型")
     }
     override fun selectThinkingLevel(level: ThinkingLevel) {
-        if (canSend() && canSetModel()) child.selectThinkingLevel(level) else onUnsupported("这个子代理当前不能切换思考档位")
+        if (canSend() && canSetModel() && level in child.state.value.availableThinkingLevels.orEmpty()) child.selectThinkingLevel(level)
+        else onUnsupported("这个子代理当前不支持所选思考档位")
     }
     override fun executeSlashCommand(command: String, args: String) {
         when (command.lowercase()) {

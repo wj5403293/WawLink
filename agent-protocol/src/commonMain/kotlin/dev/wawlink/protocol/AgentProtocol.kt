@@ -79,6 +79,8 @@ data class UsageInfo(
     val totalTokens: Long get() = inputTokens + outputTokens
     val contextFraction: Float get() = if (contextWindow > 0) (contextTokens.toFloat() / contextWindow).coerceIn(0f, 1f) else 0f
 }
+data class SessionModel(val providerId: String, val modelId: String, val name: String = modelId)
+
 data class ChatSessionUiState(
     val id: String,
     val title: String = "新会话",
@@ -91,6 +93,9 @@ data class ChatSessionUiState(
     val modelId: String = "",
     val modelLoading: Boolean = false,
     val thinkingLevel: ThinkingLevel = ThinkingLevel.MEDIUM,
+    /** Null means unrestricted (Main); empty means this instance offers no choices. */
+    val availableModels: List<SessionModel>? = null,
+    val availableThinkingLevels: List<ThinkingLevel>? = null,
     val autoApprove: Boolean = true,
     val elapsedSec: Int = 0,
     val actionText: String = "准备就绪",

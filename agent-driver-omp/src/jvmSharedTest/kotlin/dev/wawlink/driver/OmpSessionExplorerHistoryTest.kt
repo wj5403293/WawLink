@@ -138,6 +138,75 @@ class OmpSessionExplorerHistoryTest {
         } finally { owner.cancel() }
     }
 
+
+    @Test fun olderHubResponseCannotPublishOverNewerQuery() = runBlocking {
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val oldStarted = CompletableDeferred<Unit>()
+        val releaseOld = CompletableDeferred<Unit>()
+        val newStarted = CompletableDeferred<Unit>()
+        val releaseNew = CompletableDeferred<Unit>()
+        try {
+            val explorer = explorer(owner) { _, body ->
+                val search = body["activityQuery"]!!.jsonObject["search"]!!.jsonPrimitive.content
+                if (search == "old") { oldStarted.complete(Unit); releaseOld.await() }
+                else { newStarted.complete(Unit); releaseNew.await() }
+                buildJsonObject {
+                    put("mainSessionId", "native-main"); put("connected", true)
+                    put("activity", buildJsonArray { add(buildJsonObject {
+                        put("id", search); put("agentId", "child"); put("instanceKey", "child-instance"); put("kind", "tool"); put("text", search)
+                    }) })
+                }
+            }
+            val older = async(start = CoroutineStart.UNDISPATCHED) { explorer.refreshHub(20, AgentActivityQuery(search = "old")) }
+            withTimeout(5000) { oldStarted.await() }
+            val newer = async(start = CoroutineStart.UNDISPATCHED) { explorer.refreshHub(20, AgentActivityQuery(search = "new")) }
+            assertEquals("new", explorer.hub.value.activityQuery.search)
+            releaseOld.complete(Unit)
+            withTimeout(5000) { newStarted.await() }
+            assertTrue(explorer.hub.value.activity.isEmpty())
+            assertTrue(explorer.hub.value.loading)
+            releaseNew.complete(Unit)
+            older.await(); newer.await()
+            assertEquals(listOf("new"), explorer.hub.value.activity.map { it.id })
+        } finally { releaseOld.complete(Unit); releaseNew.complete(Unit); owner.cancel() }
+    }
+
+    @Test fun childCandidatesAreNativeAndNeverReplaceBoundModelOrFallBackToMain() = runBlocking {
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        var offerCandidates = true
+        try {
+            val explorer = explorer(owner) { op, _ ->
+                when (op) {
+                    "explorer_hub" -> buildJsonObject {
+                        put("mainSessionId", "native-main"); put("connected", true)
+                        put("agents", buildJsonArray { add(buildJsonObject {
+                            put("instanceKey", "child-instance"); put("id", "child"); put("name", "child"); put("lifecycle", "idle")
+                        }) })
+                    }
+                    "explorer_agent_snapshot" -> buildJsonObject {
+                        put("providerId", "bound-provider"); put("modelId", "bound-not-in-candidates"); put("thinking", "high"); put("cursor", "native:1")
+                        put("availableModels", buildJsonArray { if (offerCandidates) add(buildJsonObject {
+                            put("providerId", "supported-provider"); put("modelId", "supported-model"); put("name", "Supported model")
+                        }) })
+                        put("availableThinkingLevels", buildJsonArray { if (offerCandidates) { add("off"); add("high"); add("unknown-native-selector") } })
+                    }
+                    else -> error("Candidate loading must not mutate a child: $op")
+                }
+            }
+            explorer.refreshHub()
+            val child = explorer.openAgent("child-instance")
+            assertEquals(listOf(SessionModel("supported-provider", "supported-model", "Supported model")), child.state.value.availableModels)
+            assertEquals(listOf(ThinkingLevel.NONE, ThinkingLevel.HIGH), child.state.value.availableThinkingLevels)
+            assertEquals("bound-provider", child.state.value.providerId)
+            assertEquals("bound-not-in-candidates", child.state.value.modelId)
+            offerCandidates = false
+            explorer.openAgent("child-instance")
+            assertEquals(emptyList(), child.state.value.availableModels)
+            assertEquals(emptyList(), child.state.value.availableThinkingLevels)
+            assertEquals("bound-not-in-candidates", child.state.value.modelId)
+        } finally { owner.cancel() }
+    }
+
     private fun explorer(owner: CoroutineScope, request: suspend (String, JsonObject) -> JsonObject) =
         OmpSessionExplorer("app", "container", "/workspace", owner, request = request, synchronize = {},
             identities = { emptyMap() }, originalTexts = { emptyMap() }, messageForChatItem = { null },

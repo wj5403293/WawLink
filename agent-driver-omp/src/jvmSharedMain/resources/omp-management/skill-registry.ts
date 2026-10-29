@@ -1,8 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import type { AuthStorage } from "/opt/omp/src/session/auth-storage.ts";
 import type { SkillInstallHooks } from "/opt/omp/src/skillshare/installer.ts";
 import { nativeSkill, skillHash, skillRecord, skillScope, skillWritable, type SkillContext } from "./skill-files.ts";
+import { ManagementDiagnostic } from "./diagnostics.mjs";
 // Platform-specific native dependency exists only inside the installed container.
 const { STREAM_AUTH_PROVIDER } = await import("/opt/omp/node_modules/@oh-my-pi/pi-wire/src/index.ts");
 interface Login { controller: AbortController; status: string; url?: string; instructions?: string; prompt?: string; secret?: boolean; error?: string; answer?: (value: string) => void; }
@@ -90,7 +92,8 @@ export async function skillRegistryDispatch(op: string, args: Record<string, unk
     if (op === "preflight" || op === "publish" || op === "bumpVersion") {
       if (typeof args.path !== "string") throw Error("请选择容器内技能目录");
       const { packSkill, bumpVersion } = await nativeSkill("skillshare/pack"), dir = path.resolve(args.path);
-      if (op === "bumpVersion") { await skillWritable(ctx, dir); const result = await bumpVersion(dir, String(args.kind ?? "patch")); return { result, changed: true, scope: skillScope(ctx) }; }
+      await skillWritable(ctx, dir);
+      if (op === "bumpVersion") { const result = await bumpVersion(dir, String(args.kind ?? "patch")); return { result, changed: true, scope: skillScope(ctx) }; }
       const pack = await packSkill(dir);
       const report = { name: pack.name, version: pack.version, description: pack.description, files: pack.files, integrity: pack.integrity, packedSize: pack.tgz.length, unpackedSize: pack.files.reduce((n, f) => n + f.size, 0), hasScripts: pack.hasScripts, secrets: pack.secrets };
       if (op === "preflight") return { ...report, publishable: pack.secrets.length === 0 };
@@ -141,6 +144,53 @@ export async function skillRegistryDispatch(op: string, args: Record<string, unk
       const packument = await client.packument(spec.scope, spec.name), request = String(args.version ?? packument.distTags.latest ?? "");
       const resolved = installer.resolveSkillVersion(packument, request);
       return { packument, version: await client.version(spec.scope, spec.name, resolved.version), warnings: resolved.warnings, registryUrl };
+    }
+    if (op === "packageFile") {
+      const version = String(args.version ?? ""), file = String(args.path ?? "");
+      const { SEMVER_RE } = await nativeSkill("skillshare/pack");
+      if (spec.range || !SEMVER_RE.test(version)) throw new ManagementDiagnostic("请选择明确的技能包和精确版本");
+      if (!file || file.length > 255 || file.split("/").some(part => !part || part === "." || part === ".." || /[\\\u0000-\u001f\u007f]/.test(part))) {
+        throw new ManagementDiagnostic("技能包资源路径无效，请重新读取文件清单");
+      }
+      const info = await client.version(spec.scope, spec.name, version);
+      if (info.scope !== spec.scope || info.name !== spec.name || info.version !== version) throw new ManagementDiagnostic("技能包版本身份不匹配，请重新读取");
+      const matches = info.files.filter(entry => entry.path === file);
+      if (matches.length !== 1) throw new ManagementDiagnostic("技能包文件不在当前版本清单中，请重新读取");
+      const entry = matches[0], maximum = 512 * 1024;
+      if (!Number.isSafeInteger(entry.size) || entry.size < 0 || !/^[a-f0-9]{64}$/i.test(entry.sha256)) throw new ManagementDiagnostic("技能包文件清单无效，请重新读取");
+      if (entry.size > maximum) throw new ManagementDiagnostic("预览文件超过 512 KiB，无法在应用中预览");
+      // The wire module exists only in the guest; OMP 18.12.6 has this route but no client.file().
+      const { SKILLS_ROUTES } = await import("/opt/omp/node_modules/@oh-my-pi/pi-wire/src/skillshare.ts");
+      const route = SKILLS_ROUTES.file(spec.scope, spec.name, encodeURIComponent(version), file.split("/").map(encodeURIComponent).join("/"));
+      let response: Response;
+      try { response = await fetch(client.registryUrl + route, { redirect: "error", credentials: "omit", signal: AbortSignal.timeout(25000) }); }
+      catch { throw new ManagementDiagnostic("无法读取技能包文件，请检查市场地址和容器网络后重试"); }
+      if (!response.ok) { await response.body?.cancel(); throw new ManagementDiagnostic(`读取技能包文件失败：HTTP ${response.status}`); }
+      if (Number(response.headers.get("content-length")) > maximum) { await response.body?.cancel(); throw new ManagementDiagnostic("预览文件超过 512 KiB，无法在应用中预览"); }
+      const reader = response.body?.getReader();
+      if (!reader) throw new ManagementDiagnostic("技能包文件响应为空，请重试");
+      const chunks: Uint8Array[] = []; let size = 0;
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > maximum || size > entry.size) { await reader.cancel(); throw new ManagementDiagnostic("技能包文件大小与清单不符，已停止预览"); }
+          chunks.push(value);
+        }
+      } finally { reader.releaseLock(); }
+      const bytes = Buffer.concat(chunks, size);
+      if (size !== entry.size || createHash("sha256").update(bytes).digest("hex") !== entry.sha256.toLowerCase()) {
+        throw new ManagementDiagnostic("技能包文件大小或 SHA-256 与清单不符，已停止预览");
+      }
+      const image = /\.(png|jpg|jpeg|webp|gif)$/i.test(file);
+      let content: string | null = null, binary = false;
+      if (!image) {
+        try { content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); binary = bytes.includes(0); }
+        catch { binary = true; }
+        if (binary) content = null;
+      }
+      return { file, content, base64: image ? bytes.toString("base64") : null, binary, size };
     }
     if (op === "setTag") await client.setTag(spec.scope, spec.name, String(args.tag), String(args.version));
     else if (op === "removeTag") { if (args.tag === "latest") throw Error("latest 不能删除，只能修改指向"); await client.removeTag(spec.scope, spec.name, String(args.tag)); }

@@ -36,6 +36,29 @@ internal object HostCommands {
     }
 }
 
+private data class LoginIdentity(val uid: String, val gid: String, val name: String, val home: String)
+
+private fun loginIdentity(config: ContainerConfig): LoginIdentity {
+    if (config.user == "root" || config.user == "0") return LoginIdentity("0", "0", "root", "/root")
+    val root = File(config.rootfsPath).canonicalFile.toPath()
+    val passwd = File(config.rootfsPath, "etc/passwd")
+    require(passwd.canonicalFile.toPath().startsWith(root)) { "用户数据库路径越界" }
+    require(Files.isRegularFile(passwd.canonicalFile.toPath(), NOFOLLOW_LINKS)) { "用户数据库不是普通文件" }
+    val parts = passwd.useLines { lines -> lines.map { it.split(':') }.firstOrNull {
+        it.size >= 7 && (it[0] == config.user || it[2] == config.user)
+    } } ?: error("容器用户“${config.user}”不存在，请先在容器内创建该用户")
+    require(parts[2].matches(Regex("[0-9]+")) && parts[3].matches(Regex("[0-9]+"))) { "容器用户 UID/GID 无效" }
+    require(parts[5].startsWith('/')) { "容器用户主目录无效" }
+    return LoginIdentity(parts[2], parts[3], parts[0], parts[5])
+}
+
+private fun loginHome(config: ContainerConfig, user: LoginIdentity): String = (config.environment["HOME"] ?: user.home).also {
+    require(it.startsWith('/') && !it.startsWith("//") && '\u0000' !in it && it.split('/').none { part -> part == "." || part == ".." }) { "容器 HOME 必须是有效的绝对路径" }
+}
+
+/** Resolves the configured account and HOME override offline, exactly as the engine launcher does. */
+fun containerHome(config: ContainerConfig): String = loginHome(config, loginIdentity(config))
+
 internal class RuntimeEngines(private val paths: RuntimePaths) {
     private val ownedMounts = mutableMapOf<String, MutableList<File>>()
     private val prootCapabilities = mutableMapOf<String, String>()
@@ -66,27 +89,8 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         return canonical
     }
 
-    private data class Identity(val uid: String, val gid: String, val name: String, val home: String)
-    private fun identity(config: ContainerConfig): Identity {
-        if (config.user == "root" || config.user == "0") return Identity("0", "0", "root", "/root")
-        val root = File(config.rootfsPath).canonicalFile.toPath()
-        val passwd = File(config.rootfsPath, "etc/passwd")
-        require(passwd.canonicalFile.toPath().startsWith(root)) { "用户数据库路径越界" }
-        require(Files.isRegularFile(passwd.canonicalFile.toPath(), NOFOLLOW_LINKS)) { "用户数据库不是普通文件" }
-        val parts = passwd.readLines().map { it.split(':') }.firstOrNull {
-            it.size >= 7 && (it[0] == config.user || it[2] == config.user)
-        } ?: error("容器用户“${config.user}”不存在，请先在容器内创建该用户")
-        require(parts[2].matches(Regex("[0-9]+")) && parts[3].matches(Regex("[0-9]+"))) { "容器用户 UID/GID 无效" }
-        require(parts[5].startsWith('/')) { "容器用户主目录无效" }
-        return Identity(parts[2], parts[3], parts[0], parts[5])
-    }
-
     /** Same HOME as builder(), without probing engines or launching a guest process. */
-    fun home(config: ContainerConfig): String = home(config, identity(config))
-
-    private fun home(config: ContainerConfig, user: Identity): String = (config.environment["HOME"] ?: user.home).also {
-        require(it.startsWith('/') && !it.startsWith("//") && '\u0000' !in it && it.split('/').none { part -> part == "." || part == ".." }) { "容器 HOME 必须是有效的绝对路径" }
-    }
+    fun home(config: ContainerConfig): String = containerHome(config)
 
     fun validate(config: ContainerConfig) {
         val root = validateRoot(config)
@@ -114,7 +118,6 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
                 require(paths.isAndroid && hostArch() == "arm64") { "proroot 仅支持 Android arm64；本机请切换到 PRoot" }
                 require(guestArch(config.arch) == "arm64") { "proroot 仅能运行 arm64 rootfs，请切换到 PRoot + QEMU" }
                 require(config.distro != "alpine" && !File(root, "lib/ld-musl-aarch64.so.1").exists()) { "proroot 需要 glibc，不能运行 Alpine/musl；请切换到 PRoot" }
-                require(config.user == "root" || config.user == "0") { "当前 proroot 不支持切换普通用户；请切换到 PRoot/chroot" }
                 require(!config.sysvipc && !config.fakeKernel) { "当前 proroot 不支持 sysvipc/伪装内核开关，请关闭开关或切换引擎" }
                 listOf("libproroot.so", "libproroot-runtime.so", "libproroot-linker.so", "libproroot-bridge.so", "libproroot-stub-loader.so").forEach { nativeBinary(it) }
             }
@@ -228,8 +231,8 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         require(arguments.isNotEmpty() && arguments.none { '\u0000' in it }) { "容器启动参数无效" }
         require(cwd.startsWith('/') && '\u0000' !in cwd && !cwd.split('/').contains("..")) { "工作目录必须是容器内绝对路径" }
         val root = validateRoot(config)
-        val user = identity(config)
-        val env = linkedMapOf("HOME" to home(config, user), "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        val user = loginIdentity(config)
+        val env = linkedMapOf("HOME" to loginHome(config, user), "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         env.putAll(config.environment)
         environment.forEach { (key, value) -> require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && '\u0000' !in value) { "进程环境变量无效：$key" }; env[key] = value }
         env["PATH"] = env.getValue("HOME").trimEnd('/') + "/.wawlink/bin:" + env.getValue("PATH")

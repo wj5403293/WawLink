@@ -60,7 +60,7 @@ import dev.wawlink.ui.Symbol
     SkillRow(id, "${item.skillText("description")}\n${item.skillText("version")} · 每周 ${item.skillText("weeklyDownloads", "0")} 次下载${if (item["deprecated"] != null) " · 已弃用" else ""}", "package_2", onClick = { state.openPackage(id) })
 }
 
-@Composable internal fun SkillPackagePage(state: SkillUiState) {
+@Composable internal fun SkillPackagePage(state: SkillUiState, onPreview: (String) -> Unit) {
     val data = state.packageData; val pack = data.skillObject("packument"); val version = data.skillObject("version"); val id = "@${pack.skillText("scope")}/${pack.skillText("name")}"; val current = version.skillText("version")
     var install by remember { mutableStateOf(false) }; var method by remember { mutableStateOf("range") }; var spec by remember(current) { mutableStateOf("^$current") }; var manage by remember { mutableStateOf(false) }; var action by remember { mutableStateOf<String?>(null) }; var value by remember { mutableStateOf("") }; var target by remember(current) { mutableStateOf(current) }
     Text(pack.skillText("description"), Modifier.padding(vertical = 12.dp), fontSize = 17.sp)
@@ -75,7 +75,7 @@ import dev.wawlink.ui.Symbol
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { pack.skillObject("distTags").forEach { (tag, v) -> AssistChip({ state.request("package", mapOf("id" to id, "version" to v)) { state.packageData = it } }, { Text("$tag：$v") }, leadingIcon = { Symbol("sell", size = 18.dp) }) } }
     pack.skillObject("versions").forEach { (v, raw) -> val item = (raw as? Map<*, *>)?.entries?.associate { it.key.toString() to it.value } ?: emptyMap(); SkillRow(v, listOfNotNull(if (item.skillBool("yanked")) "已撤回：范围安装跳过，精确版本仍可安装" else null, item["deprecated"]?.let { "已弃用：$it" }).joinToString("\n"), "deployed_code", onClick = { state.request("package", mapOf("id" to id, "version" to v)) { state.packageData = it } }, trailing = if (v == current) ({ Symbol("check", tint = MaterialTheme.colorScheme.primary) }) else null) }
     SkillHeading("文件", "folder_open")
-    version.skillObjects("files").forEachIndexed { i, file -> SkillRow(file.skillText("path"), "${file.skillText("size")} 字节${if (file.skillBool("executable")) " · 可执行" else ""}\n${file.skillText("sha256", file.skillText("hash"))}", if (file.skillBool("executable") || file.skillText("path").startsWith("scripts/")) "terminal" else "draft", first = i == 0, last = i == version.skillObjects("files").lastIndex) }
+    version.skillObjects("files").forEachIndexed { i, file -> SkillRow(file.skillText("path"), "${file.skillText("size")} 字节${if (file.skillBool("executable")) " · 可执行" else ""}\n${file.skillText("sha256", file.skillText("hash"))}", if (file.skillBool("executable") || file.skillText("path").startsWith("scripts/")) "terminal" else "draft", first = i == 0, last = i == version.skillObjects("files").lastIndex, onClick = if (state.busy == null) ({ onPreview(file.skillText("path")) }) else null) }
     if (version.skillBool("hasScripts")) SkillBanner("包含脚本。安装仅下载并校验，不会执行；模型使用时可能运行这些文件。", "terminal", warning = true)
     SkillValues(listOf("压缩后" to "${version.skillText("size")} 字节", "解包后" to "${version.skillText("unpackedSize")} 字节", "完整性" to version.skillText("integrity"), "版本" to current))
     Button({ spec = "^$current"; install = true }, Modifier.fillMaxWidth()) { Symbol("download"); Text("安装到${state.scopeLabel}") }

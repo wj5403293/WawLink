@@ -29,7 +29,7 @@ const ctx = {
   cwd: null, agentDir: "/root/.omp/agent", sessionId: null, send,
   settings: async () => {
     const settings = await Settings.loadReadOnly({cwd:ctx.cwd ?? "/",agentDir:ctx.agentDir});
-    // No-project is a real global-only view, not whichever project happens to be under /root.
+    // No-project is a real global-only view, not whichever project happens to be under HOME.
     return ctx.cwd ? settings : Settings.isolated().restoreOverlay({global:settings.getGlobalSettings(),overrides:{}});
   },
   editSettings: async (scope, changes) => {
@@ -118,7 +118,7 @@ async function validateModels(content, file = "models.yml") {
   return validateNativeModels(content, file);
 }
 async function dispatch(op,args) {
-  if(op==="init"){ctx.cwd=args.workspace??null;ctx.sessionId=args.sessionId??null;return true;}
+  if(op==="init"){ctx.cwd=args.workspace??null;ctx.sessionId=args.sessionId??null;ctx.agentDir=args.agentDir??ctx.agentDir;return true;}
   if(op==="snapshot") {
     const globalYml=path.join(ctx.agentDir,"config.yml"),globalYaml=path.join(ctx.agentDir,"config.yaml");
     const files=[{id:"global",path:(await fs.stat(globalYml).catch(()=>null))?globalYml:globalYaml}];

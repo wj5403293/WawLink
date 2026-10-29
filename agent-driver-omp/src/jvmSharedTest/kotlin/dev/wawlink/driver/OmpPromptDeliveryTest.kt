@@ -848,16 +848,55 @@ class OmpPromptDeliveryTest {
         }
     }
 
+    @Test fun startupAndResumeUseCurrentUsersEffectiveHomeForEveryExtensionAndSessionPath() = runBlocking {
+        for ((user, homeOverride, home) in listOf(
+            Triple("root", null, "/root"),
+            Triple("operator", null, "/home/operator"),
+            Triple("1000", null, "/home/operator"),
+            Triple("1000", "/srv/team/custom-home", "/srv/team/custom-home"),
+        )) {
+            fixture(withManagement = true, user = user, homeOverride = homeOverride) {
+                val guestAgent = "$home/.omp/agent"
+                assertEquals(guestAgent, pool.guestAgentDirectory("fixture"))
+                managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+                awaitState { !it.modelLoading }
+                assertEquals(listOf("/usr/local/bin/bun", "$guestAgent/wawlink/management/bootstrap.mjs"), managementLaunches.single())
+                val sessionId = java.security.MessageDigest.getInstance("SHA-256").digest("session".toByteArray()).joinToString("") { "%02x".format(it) }
+                val guestSessions = "$guestAgent/wawlink/sessions/$sessionId"
+                val history = File(root, "${guestSessions.trimStart('/')}/existing.jsonl").apply {
+                    parentFile.mkdirs()
+                    writeText("{\"type\":\"session\",\"version\":3,\"id\":\"restored\",\"cwd\":\"/workspace\"}\n")
+                }
+                val original = history.readBytes()
+                gate.complete(transport)
+                controller.sendPrompt("恢复当前用户会话")
+                transport.request()
+                assertEquals(guestSessions, chatArguments[chatArguments.indexOf("--session-dir") + 1])
+                assertEquals("$guestSessions/existing.jsonl", chatArguments[chatArguments.indexOf("--resume") + 1])
+                val extensions = chatArguments.zipWithNext().filter { it.first == "--extension" }.map { it.second }
+                assertTrue("$guestAgent/wawlink-model-payload.mjs" in extensions)
+                assertTrue("$guestAgent/wawlink/management/session.mjs" in extensions)
+                assertEquals("$guestSessions/management", chatEnvironment["WAWLINK_MANAGEMENT_DIRECTORY"])
+                assertTrue(File(root, "${guestAgent.trimStart('/')}/wawlink-model-payload.mjs").isFile)
+                assertContentEquals(original, history.readBytes())
+            }
+        }
+    }
+
     private val nativeDefault = Json.parseToJsonElement("""{"models":[{"provider":"local","id":"resolved","available":true}],"roles":[{"id":"default","model":"local/resolved","providerId":"local","modelId":"resolved","thinking":"max"}]}""")
 
-    private suspend fun fixture(autoApprove: Boolean = true, withManagement: Boolean = false, initiallyRunning: Boolean = true, block: suspend Fixture.() -> Unit) {
-        val fixture = Fixture(autoApprove, withManagement, initiallyRunning)
+    private suspend fun fixture(autoApprove: Boolean = true, withManagement: Boolean = false, initiallyRunning: Boolean = true, user: String = "root", homeOverride: String? = null, block: suspend Fixture.() -> Unit) {
+        val fixture = Fixture(autoApprove, withManagement, initiallyRunning, user, homeOverride)
         try { block(fixture) } finally { fixture.close() }
     }
 
-    private class Fixture(autoApprove: Boolean, withManagement: Boolean, initiallyRunning: Boolean) : AutoCloseable {
+    private class Fixture(autoApprove: Boolean, withManagement: Boolean, initiallyRunning: Boolean, user: String, homeOverride: String?) : AutoCloseable {
         val directory = Files.createTempDirectory("wawlink-delivery-").toFile()
         val data = File(directory, "gui")
+        val root = File(directory, "root").apply { mkdirs() }
+        val managementLaunches = CopyOnWriteArrayList<List<String>>()
+        @Volatile var chatArguments: List<String> = emptyList()
+        @Volatile var chatEnvironment: Map<String, String> = emptyMap()
         val transport = RpcTransport()
         val managementTransport = RpcTransport(management = true)
         val gate = CompletableDeferred<Process>()
@@ -904,9 +943,12 @@ class OmpPromptDeliveryTest {
                 }
                 if (arguments.firstOrNull() == "/usr/local/bin/bun") {
                     check(withManagement) { "未配置默认模型" }
+                    managementLaunches += arguments
                     return if (managementStarts.getAndIncrement() == 0) managementTransport else managementReplacements.receive()
                 }
                 chatManagementInstance = environment.getValue("WAWLINK_MANAGEMENT_INSTANCE")
+                chatArguments = arguments.toList()
+                chatEnvironment = environment.toMap()
                 opened.complete(Unit)
                 return if (chatStarts.getAndIncrement() == 0) gate.await() else chatReplacements.receive()
             }
@@ -914,12 +956,12 @@ class OmpPromptDeliveryTest {
         var pool: OmpProcessPool
         val controller: AgentSessionController
         init {
-            val root = File(directory, "root").apply { mkdirs() }
             File(root, "etc").mkdirs()
+            File(root, "etc/passwd").writeText("root:x:0:0:Root:/root:/bin/sh\noperator:x:1000:1000:Operator:/home/operator:/bin/sh\n")
             val shell = File(root, "bin/sh").apply { parentFile.mkdirs() }
             Files.copy(File("/bin/sh").canonicalFile.toPath(), shell.toPath())
             check(shell.setExecutable(true))
-            runBlocking { local.register(ContainerConfig("fixture", "发送验证", root.canonicalPath, arch = "amd64", link2symlink = false)) }
+            runBlocking { local.register(ContainerConfig("fixture", "发送验证", root.canonicalPath, arch = "amd64", user = user, environment = homeOverride?.let { mapOf("HOME" to it) }.orEmpty(), link2symlink = false)) }
             containerState.value = local.containers.value.map { it.copy(running = initiallyRunning) }
             pool = OmpProcessPool(runtime, data)
             controller = pool.session("session", "fixture", "/workspace", autoApprove = autoApprove)
@@ -931,7 +973,9 @@ class OmpPromptDeliveryTest {
             containerState.value = containerState.value.map { it.copy(running = true) }
         }
         suspend fun managementCatalogue(): JsonObject {
-            managementTransport.respondManagement(managementTransport.managementRequest("init"), JsonPrimitive(true))
+            val init = managementTransport.managementRequest("init")
+            assertEquals(pool.guestAgentDirectory("fixture"), init["args"]!!.jsonObject["agentDir"]!!.jsonPrimitive.content)
+            managementTransport.respondManagement(init, JsonPrimitive(true))
             managementTransport.respondManagement(managementTransport.managementRequest("snapshot"), JsonObject(emptyMap()))
             return managementTransport.managementRequest("modelsSnapshot")
         }

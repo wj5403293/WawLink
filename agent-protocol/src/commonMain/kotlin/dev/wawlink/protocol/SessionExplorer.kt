@@ -11,7 +11,8 @@ interface SessionExplorer {
     /** Resolve only the explicitly selected message; the index never carries full chat records. */
     suspend fun entryIdForChatItem(chatItemId: String): String?
     suspend fun chatItemIdForEntry(entryId: String): String?
-    suspend fun refreshHub(activityLimit: Int = 20)
+    /** Omitted arguments retain the current activity query and limit during roster polling. */
+    suspend fun refreshHub(activityLimit: Int? = null, activityQuery: AgentActivityQuery? = null)
     suspend fun setLabel(entryId: String, label: String?)
     suspend fun navigate(entryId: String, summary: HistorySummary = HistorySummary()): RestoredSessionPrompt?
     suspend fun reanswer(entryId: String, answers: List<AskAnswer>)
@@ -87,11 +88,21 @@ enum class AgentActivityKind(val label: String, val icon: String) {
     LIFECYCLE("生命周期", "change_circle"), ERROR("错误", "error")
 }
 
+/** Filtering is applied to the complete native activity index before the response limit. */
+data class AgentActivityQuery(
+    val instanceKey: String? = null,
+    val includeDescendants: Boolean = false,
+    val kind: AgentActivityKind? = null,
+    val search: String = "",
+)
+
 data class AgentHubState(
     val mainSessionId: String = "",
     val agents: List<RuntimeAgent> = emptyList(),
     val activity: List<AgentActivity> = emptyList(),
     val activityLimit: Int = 20,
+    val activityQuery: AgentActivityQuery = AgentActivityQuery(),
+    val activityHasMore: Boolean = false,
     val loading: Boolean = false,
     val connected: Boolean = false,
     val discovering: Boolean = false,

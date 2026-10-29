@@ -11,6 +11,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -46,10 +47,18 @@ internal fun terminalArguments(shell: String, initialCommand: String?): List<Str
 }
 
 @Serializable
-private data class SavedRuntime(val containers: List<ContainerConfig> = emptyList(), val debugRootfsRemoved: Boolean = false)
+private data class SavedRuntime(
+    val containers: List<ContainerConfig> = emptyList(),
+    val debugRootfsRemoved: Boolean = false,
+    val sizes: Map<String, Long> = emptyMap(),
+)
 
 /** One application-owned runtime. All guest commands go through the selected engine. */
-class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
+class LocalContainerRuntime internal constructor(
+    val paths: RuntimePaths,
+    private val measureRootfs: (File, Set<String>) -> Long,
+) : ContainerRuntime {
+    constructor(paths: RuntimePaths) : this(paths, RootfsArchives::size)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
     private val engines = RuntimeEngines(paths)
@@ -68,9 +77,12 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     private val dnsErrors = mutableMapOf<String, String>()
     private val metadataErrors = mutableMapOf<String, String>()
     private val sizes = mutableMapOf<String, Long>()
+    private val sizeRequests = mutableMapOf<String, Any>()
+    private val rootfsOperations = mutableMapOf<String, RootfsOperation>()
     private val idleJobs = mutableMapOf<String, Job>()
     private val packageLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private var debugRootfsRemoved = false
+    @Volatile private var closing = false
     @Volatile private var closed = false
     private val _containers = MutableStateFlow<List<ContainerInfo>>(emptyList())
     override val containers: StateFlow<List<ContainerInfo>> = _containers.asStateFlow()
@@ -90,6 +102,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
                 require(!configurations.containsKey(config.id)) { "容器配置包含重复 ID：${config.id}" }
                 configurations[config.id] = config
             }
+            saved.sizes.forEach { (id, size) -> if (id in configurations && size >= 0) sizes[id] = size }
         }
         if (!debugRootfsRemoved && !configurations.containsKey("ubuntu-main")) {
             paths.debugRootfs?.takeIf { it.isDirectory }?.let { root ->
@@ -99,11 +112,12 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             }
         }
         configurations.values.toList().forEach { config ->
-            try { engines.validateRoot(config); sizes[config.id] = sizeOf(config) }
+            try { engines.validateRoot(config) }
             catch (failure: Exception) { errors[config.id] = "rootfs 不可访问：${failure.message}" }
             refreshMetadata(config)
         }
         publish()
+        scope.launch { mutex.withLock { if (!closing && !closed) configurations.values.forEach(::scheduleSize) } }
         paths.resolvConf?.let { resolver ->
             scope.launch {
                 resolver.collect { content ->
@@ -121,7 +135,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         }
     }
 
-    private fun ensureOpen() = check(!closed) { "容器运行时已关闭" }
+    private fun ensureOpen() = check(!closed && !closing) { "容器运行时已关闭" }
     private fun config(id: String): ContainerConfig = configurations[id] ?: error("找不到容器：$id")
     private fun sizeOf(config: ContainerConfig): Long {
         val root = File(config.rootfsPath).canonicalFile
@@ -130,7 +144,40 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             val target = File(root, mount.target.trimStart('/')).canonicalFile.toPath()
             if (target.startsWith(rootPath)) rootPath.relativize(target).toString() else null
         }.toSet()
-        return RootfsArchives.size(root, excluded)
+        return measureRootfs(root, excluded)
+    }
+
+    /** Called during construction or under mutex; only the latest exact configuration may publish. */
+    private fun scheduleSize(config: ContainerConfig) {
+        val request = Any()
+        sizeRequests[config.id] = request
+        scope.launch {
+            val size = try { sizeOf(config) }
+            catch (failure: Exception) {
+                currentCoroutineContext().ensureActive()
+                return@launch // Keep the last successful cache when an offline tree is inaccessible.
+            }
+            mutex.withLock {
+                if (closed || closing || sizeRequests[config.id] !== request) return@withLock
+                val current = configurations[config.id] ?: return@withLock
+                if (current !== config) {
+                    scheduleSize(current)
+                    return@withLock
+                }
+                sizes[config.id] = size
+                try { persist() }
+                catch (failure: Exception) { errors.putIfAbsent(config.id, "容器体积缓存保存失败：${failure.message}") }
+                publish()
+            }
+        }
+    }
+
+    private fun ensureAvailable(id: String, reservation: String? = null) {
+        rootfsOperations[id]?.let { check(it.config.id == reservation) { "容器正在归档，请稍后重试：$id" } }
+    }
+
+    private fun ensureDefaultAvailable(id: String) {
+        configurations.values.forEach { if (it.isDefault != (it.id == id)) ensureAvailable(it.id) }
     }
     private fun publish() {
         _containers.value = configurations.values.map {
@@ -141,9 +188,14 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     }
     private fun persist() {
         val temp = File(paths.dataDir, "containers.json.tmp")
-        FileOutputStream(temp).use { output -> output.write(json.encodeToString(SavedRuntime(configurations.values.toList(), debugRootfsRemoved)).toByteArray()); output.fd.sync() }
-        try { Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
-        catch (_: AtomicMoveNotSupportedException) { Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+        try {
+            FileOutputStream(temp).use { output -> output.write(json.encodeToString(SavedRuntime(configurations.values.toList(), debugRootfsRemoved, sizes)).toByteArray()); output.fd.sync() }
+            try { Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
+            catch (_: AtomicMoveNotSupportedException) { Files.move(temp.toPath(), stateFile.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+        } catch (failure: Throwable) {
+            try { Files.deleteIfExists(temp.toPath()) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+            throw failure
+        }
     }
 
     /** Metadata failures are independent of engine/config repair and never start a guest. */
@@ -161,6 +213,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
 
     override suspend fun readMetadata(id: String): ContainerMetadataSnapshot = withContext(Dispatchers.IO) { mutex.withLock {
         ensureOpen()
+        ensureAvailable(id)
         val snapshot = refreshMetadata(config(id))
         publish()
         snapshot ?: throw IllegalStateException(metadataErrors.getValue(id))
@@ -168,6 +221,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
 
     override suspend fun saveMetadata(id: String, metadata: ContainerMetadata, expectedRevision: String?): ContainerMetadataSnapshot = withContext(Dispatchers.IO) { mutex.withLock {
         ensureOpen()
+        ensureAvailable(id)
         val current = config(id)
         val snapshot = metadataStore.save(current, metadata, expectedRevision)
         configurations[id] = current.copy(metadata = snapshot.value)
@@ -193,36 +247,56 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         }
     }
 
-    override suspend fun register(config: ContainerConfig) = register(config, initialTitle = null)
+    override suspend fun register(config: ContainerConfig) { register(config, initialTitle = null) }
 
-    private suspend fun register(config: ContainerConfig, initialTitle: String?) = withContext(Dispatchers.IO) {
+    private suspend fun register(config: ContainerConfig, initialTitle: String?, measuredSize: Long? = null, reservation: String? = null, owner: Job? = null): ContainerConfig = withContext(Dispatchers.IO) {
         mutex.withLock {
+            currentCoroutineContext().ensureActive()
+            if (owner?.isActive == false) throw CancellationException("容器注册已取消")
             ensureOpen()
+            ensureAvailable(config.id, reservation)
             require(!configurations.containsKey(config.id)) { "容器 ID 已存在：${config.id}" }
             engines.validateRoot(config)
             require(config.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}")) && config.name.isNotBlank()) { "容器 ID 或名称无效" }
-            require(configurations.values.none { File(it.rootfsPath).canonicalPath == File(config.rootfsPath).canonicalPath }) { "此 rootfs 已注册为另一个容器" }
-            configurations[config.id] = config.copy(rootfsPath = File(config.rootfsPath).canonicalPath, isDefault = config.isDefault || configurations.isEmpty())
-            val snapshot = refreshMetadata(configurations.getValue(config.id))
-            if (initialTitle != null && snapshot != null && snapshot.revision == null) {
-                try {
+            val root = File(config.rootfsPath).canonicalFile
+            require(configurations.values.none { File(it.rootfsPath).canonicalFile == root }) { "此 rootfs 已注册为另一个容器" }
+            require(rootfsOperations.values.none { operation ->
+                operation.reservedId != config.id && operation.reservedId?.let { File(rootfsDir, it).canonicalFile == root } == true
+            }) { "此 rootfs 正在克隆" }
+            if (config.isDefault) ensureDefaultAvailable(config.id)
+            val previous = configurations.toMap()
+            try {
+                configurations[config.id] = config.copy(rootfsPath = root.path, isDefault = config.isDefault || configurations.isEmpty())
+                val snapshot = refreshMetadata(configurations.getValue(config.id))
+                if (initialTitle != null && snapshot != null && snapshot.revision == null) {
                     val saved = metadataStore.save(config, ContainerMetadata(title = initialTitle), null)
                     configurations[config.id] = configurations.getValue(config.id).copy(metadata = saved.value)
-                } catch (failure: Throwable) {
-                    configurations.remove(config.id)
-                    metadataErrors.remove(config.id)
-                    throw failure
                 }
+                if (config.isDefault) configurations.replaceAll { key, existing ->
+                    if (existing.isDefault == (key == config.id)) existing else existing.copy(isDefault = key == config.id)
+                }
+                if (measuredSize != null) sizes[config.id] = measuredSize
+                if (owner?.isActive == false) throw CancellationException("容器注册已取消")
+                persist()
+            } catch (failure: Throwable) {
+                configurations.clear()
+                configurations.putAll(previous)
+                metadataErrors.remove(config.id)
+                sizes.remove(config.id)
+                sizeRequests.remove(config.id)
+                throw failure
             }
-            if (config.isDefault) configurations.replaceAll { key, existing -> existing.copy(isDefault = key == config.id) }
-            sizes[config.id] = sizeOf(config)
-            persist()
+            val registered = configurations.getValue(config.id)
+            if (measuredSize == null) scheduleSize(registered)
             publish()
+            registered
         }
     }
 
     override suspend fun start(id: String) = withContext(Dispatchers.IO) { mutex.withLock { ensureOpen(); startLocked(id) } }
     private suspend fun startLocked(id: String) {
+        currentCoroutineContext().ensureActive()
+        ensureAvailable(id)
         val config = config(id)
         paths.resolvConf?.value?.let { updateDns(config, it) }
         if (keepers[id]?.let { !it.stopping && it.process.isAlive } == true) return
@@ -243,6 +317,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             }
             val output = checkOutput.await()
             check(health.exitValue() == 0) { "容器引擎启动失败：${output.trim()}" }
+            currentCoroutineContext().ensureActive()
             val keeper = launchLocked(config, listOf("/bin/sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait \$!; done"), "/", emptyMap(), true, true)
             keepers[id] = keeper
             runGenerations[id] = ++nextRunGeneration
@@ -305,16 +380,19 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     override suspend fun update(config: ContainerConfig) = withContext(Dispatchers.IO) {
         mutex.withLock {
             ensureOpen()
+            ensureAvailable(config.id)
+            if (config.isDefault) ensureDefaultAvailable(config.id)
             val previous = config(config.id)
             require(File(previous.rootfsPath).canonicalPath == File(config.rootfsPath).canonicalPath) { "请通过导入/克隆更换 rootfs，不能直接修改路径" }
             engines.validate(config)
             val running = keepers[config.id]?.process?.isAlive == true
             if (running) stopLocked(config.id)
-            if (config.isDefault) configurations.replaceAll { _, value -> value.copy(isDefault = false) }
+            if (config.isDefault) configurations.replaceAll { _, value -> if (value.isDefault) value.copy(isDefault = false) else value }
             configurations[config.id] = config.copy(metadata = previous.metadata)
             if (configurations.values.none { it.isDefault }) configurations[config.id] = configurations.getValue(config.id).copy(isDefault = true)
             refreshMetadata(configurations.getValue(config.id))
             persist()
+            scheduleSize(configurations.getValue(config.id))
             publish()
             if (running) startLocked(config.id)
         }
@@ -322,13 +400,16 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
 
     override suspend fun setDefault(id: String) = withContext(Dispatchers.IO) { mutex.withLock {
         ensureOpen(); config(id)
-        configurations.replaceAll { key, value -> value.copy(isDefault = key == id) }
+        ensureAvailable(id); ensureDefaultAvailable(id)
+        configurations.replaceAll { key, value -> if (value.isDefault == (key == id)) value else value.copy(isDefault = key == id) }
         persist(); publish()
     } }
 
     override suspend fun delete(id: String) = withContext(Dispatchers.IO) { mutex.withLock {
         ensureOpen()
+        ensureAvailable(id)
         val existing = config(id)
+        if (existing.isDefault) configurations.values.firstOrNull { it.id != id }?.let { ensureAvailable(it.id) }
         stopLocked(id)
         val root = File(existing.rootfsPath).canonicalFile
         // Registered developer/user-owned external trees are never recursively deleted.
@@ -338,6 +419,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         dnsErrors.remove(id)
         metadataErrors.remove(id)
         sizes.remove(id)
+        sizeRequests.remove(id)
         if (id == "ubuntu-main") debugRootfsRemoved = true
         if (configurations.isNotEmpty() && configurations.values.none { it.isDefault }) {
             val first = configurations.values.first(); configurations[first.id] = first.copy(isDefault = true)
@@ -347,27 +429,90 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
 
     override suspend fun clone(id: String, name: String): ContainerConfig = withContext(Dispatchers.IO) {
         ContainerMetadataStore.validate(ContainerMetadata(title = name))
-        mutex.withLock {
-            ensureOpen()
-            val original = config(id)
-            val wasRunning = keepers[id]?.process?.isAlive == true
-            stopLocked(id)
-            val newId = UUID.randomUUID().toString()
-            val target = File(rootfsDir, newId)
-            val archive = File(cacheDir, "$newId.clone.tar.zst")
+        val owner = currentCoroutineContext()[Job]
+        val newId = UUID.randomUUID().toString()
+        val target = File(rootfsDir, newId)
+        val archive = File(cacheDir, "$newId.clone.tar.zst")
+        withStoppedRootfs(id, newId) { original ->
+            var registered = false
+            var failure: Throwable? = null
             try {
                 RootfsArchives.export(File(original.rootfsPath), archive)
+                currentCoroutineContext().ensureActive()
                 RootfsArchives.extract(archive, target)
+                currentCoroutineContext().ensureActive()
                 val copiedConfig = original.copy(id = newId, name = name, rootfsPath = target.canonicalPath, isDefault = false)
                 val previous = metadataStore.read(copiedConfig)
                 val metadata = metadataStore.save(copiedConfig, previous.value.copy(title = name), previous.revision)
                 val copied = copiedConfig.copy(metadata = metadata.value)
-                configurations[newId] = copied
-                sizes[newId] = sizeOf(copied)
-                persist(); publish()
-                copied
-            } catch (failure: Throwable) { RootfsArchives.deleteTree(target); throw failure }
-            finally { archive.delete(); if (wasRunning) startLocked(id) }
+                val size = sizeOf(copied)
+                currentCoroutineContext().ensureActive()
+                // Finish the commit/ownership handoff even if cancellation arrives after persist.
+                withContext(NonCancellable) {
+                    register(copied, initialTitle = null, measuredSize = size, reservation = id, owner = owner).also { registered = true }
+                }
+            } catch (caught: Throwable) { failure = caught; throw caught }
+            finally {
+                var cleanupFailure = failure
+                try { Files.deleteIfExists(archive.toPath()) }
+                catch (cleanup: Throwable) { if (cleanupFailure == null) cleanupFailure = cleanup else cleanupFailure.addSuppressed(cleanup) }
+                if (!registered) try { RootfsArchives.deleteTree(target) }
+                catch (cleanup: Throwable) { if (cleanupFailure == null) cleanupFailure = cleanup else cleanupFailure.addSuppressed(cleanup) }
+                if (failure == null && cleanupFailure != null) throw cleanupFailure
+            }
+        }
+    }
+
+    private data class RootfsOperation(
+        val config: ContainerConfig,
+        val runGeneration: Long?,
+        val stopGeneration: Long,
+        val reservedId: String?,
+    )
+
+    /** Busy containers reject new work, except explicit stop; the action never holds mutex. */
+    internal suspend fun <T> withStoppedRootfs(id: String, reservedId: String? = null, action: suspend (ContainerConfig) -> T): T {
+        val owner = currentCoroutineContext()[Job]
+        val operation = mutex.withLock {
+            currentCoroutineContext().ensureActive()
+            ensureOpen(); ensureAvailable(id)
+            val original = config(id)
+            if (reservedId != null) {
+                ensureAvailable(reservedId)
+                require(reservedId !in configurations) { "容器 ID 已存在：$reservedId" }
+            }
+            val generation = runGenerations[id]?.takeIf { keepers[id]?.let { !it.stopping && it.process.isAlive } == true }
+            stopLocked(id)
+            RootfsOperation(original, generation, stopGenerations.getValue(id), reservedId).also {
+                rootfsOperations[id] = it
+                if (reservedId != null) rootfsOperations[reservedId] = it
+            }
+        }
+        var failure: Throwable? = null
+        try {
+            currentCoroutineContext().ensureActive()
+            return action(operation.config).also { currentCoroutineContext().ensureActive() }
+        } catch (caught: Throwable) { failure = caught; throw caught }
+        finally {
+            try {
+                withContext(NonCancellable) { mutex.withLock {
+                    val current = rootfsOperations[id] === operation
+                    if (current) rootfsOperations.remove(id)
+                    operation.reservedId?.let { if (rootfsOperations[it] === operation) rootfsOperations.remove(it) }
+                    val restore = current && !closed && !closing && owner?.isActive != false && failure !is CancellationException &&
+                        operation.runGeneration != null && configurations[id] === operation.config &&
+                        stopGenerations[id] == operation.stopGeneration && runGenerations[id] == null
+                    if (restore) {
+                        try {
+                            if (owner != null) withContext(owner) { startLocked(id) } else startLocked(id)
+                        } catch (restoreFailure: Throwable) {
+                            if (owner?.isActive == false) try { stopLocked(id, intentional = false) }
+                            catch (cleanup: Throwable) { restoreFailure.addSuppressed(cleanup) }
+                            throw restoreFailure
+                        }
+                    }
+                } }
+            } catch (cleanup: Throwable) { if (failure == null) throw cleanup else failure.addSuppressed(cleanup) }
         }
     }
 
@@ -454,18 +599,28 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
         return when (machine) { 183 -> "arm64"; 62 -> "amd64"; 40 -> "arm"; else -> error("不支持的 ELF 架构：$machine") }
     }
 
-    override suspend fun exportRootfs(id: String, destination: String) = withContext(Dispatchers.IO) { mutex.withLock {
-        ensureOpen()
-        val config = config(id)
+    override suspend fun exportRootfs(id: String, destination: String) = withContext(Dispatchers.IO) {
         val target = if (destination.startsWith("file:")) File(java.net.URI(destination)) else File(destination)
         require(target.name.endsWith(".tar.zst")) { "导出文件名必须以 .tar.zst 结尾" }
         require(!target.exists()) { "导出文件已存在，请选择新文件名" }
-        val running = keepers[id]?.process?.isAlive == true
-        stopLocked(id)
-        try { RootfsArchives.export(File(config.rootfsPath), target) }
-        catch (failure: Throwable) { target.delete(); throw IllegalStateException("rootfs 导出失败：${failure.message}", failure) }
-        finally { if (running) startLocked(id) }
-    } }
+        val temporary = File(target.absoluteFile.parentFile, ".${target.name}.${UUID.randomUUID()}.part")
+        withStoppedRootfs(id) { config ->
+            var failure: Throwable? = null
+            try {
+                RootfsArchives.export(File(config.rootfsPath), temporary)
+                currentCoroutineContext().ensureActive()
+                Files.move(temporary.toPath(), target.toPath())
+                Unit
+            } catch (caught: Throwable) {
+                val reported = if (caught is CancellationException) caught else IllegalStateException("rootfs 导出失败：${caught.message}", caught)
+                failure = reported
+                throw reported
+            } finally {
+                try { Files.deleteIfExists(temporary.toPath()) }
+                catch (cleanup: Throwable) { if (failure == null) throw cleanup else failure.addSuppressed(cleanup) }
+            }
+        }
+    }
 
     override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
         val generation = containers.value.firstOrNull { it.config.id == id }?.stopGeneration
@@ -476,6 +631,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
                 if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动")
                 if (operation != null && !operation.isCurrent(this@LocalContainerRuntime)) throw CancellationException("容器已停止或重新启动")
                 ensureOpen()
+                ensureAvailable(id)
                 if (operation?.runGeneration == null) startLocked(id)
                 else if (keepers[id]?.let { !it.stopping && it.process.isAlive } != true) throw CancellationException("容器已停止")
                 if (operation != null) operation.runGeneration = runGenerations[id]
@@ -494,6 +650,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
                 if (generation != null && wasInterrupted(id, generation)) throw CancellationException("容器已停止或重新启动")
                 if (operation != null && !operation.isCurrent(this@LocalContainerRuntime)) throw CancellationException("容器已停止或重新启动")
                 ensureOpen()
+                ensureAvailable(id)
                 check(keepers[id]?.let { !it.stopping && it.process.isAlive } == true) { "容器已停止" }
                 idleJobs.remove(id)?.cancel()
                 launchLocked(config(id), arguments, cwd, environment, false, false).process
@@ -690,7 +847,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             if (install) "软件包命令已完成，但 ${tool.title} 仍不可执行，请查看包管理器输出：$result"
             else "包管理器已卸载其管理的文件，但 ${tool.title} 仍在其他路径中；无法安全删除未知的手动安装，请在终端检查 command -v ${tool.probe}"
         }
-        mutex.withLock { sizes[id] = sizeOf(config(id)); publish() }
+        mutex.withLock { ensureOpen(); scheduleSize(config(id)) }
         result.toString()
     }
 
@@ -704,7 +861,7 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
             val result = execute(id, "before=\$(du -sk $cache 2>/dev/null | cut -f1); $clean && after=\$(du -sk $cache 2>/dev/null | cut -f1) && printf '\\n__WAWLINK_FREED__%s\\n' \"\$(( (\${before:-0} - \${after:-0}) * 1024 ))\"", "/")
             val freed = Regex("__WAWLINK_FREED__(-?[0-9]+)").find(result)?.groupValues?.get(1)?.toLongOrNull() ?: error("无法读取实际缓存清理结果")
             total += freed.coerceAtLeast(0)
-            mutex.withLock { sizes[id] = sizeOf(config(id)); publish() }
+            mutex.withLock { ensureOpen(); scheduleSize(config(id)) }
         } }
         return total
     }
@@ -715,11 +872,12 @@ class LocalContainerRuntime(val paths: RuntimePaths) : ContainerRuntime {
     override fun close() {
         runBlocking(Dispatchers.IO) { mutex.withLock {
             if (closed) return@withLock
+            closing = true
+            scope.cancel()
             val failures = mutableListOf<Throwable>()
             configurations.keys.toList().forEach { id -> try { stopLocked(id) } catch (failure: Throwable) { failures += failure } }
             if (failures.isNotEmpty()) throw IllegalStateException("部分容器未能安全关闭；请恢复 Root 权限后重试，进程与挂载记录已保留", failures.first()).also { error -> failures.drop(1).forEach(error::addSuppressed) }
             closed = true
-            scope.cancel()
         } }
     }
 

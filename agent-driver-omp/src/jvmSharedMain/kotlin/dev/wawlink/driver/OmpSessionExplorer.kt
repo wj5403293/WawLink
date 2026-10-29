@@ -30,6 +30,9 @@ internal class OmpSessionExplorer(
     override val hub = mutableHub.asStateFlow()
     private val historyMutex = Mutex()
     private val hubMutex = Mutex()
+    private val hubRequestLock = Any()
+    private data class HubRequest(val revision: Long, val limit: Int, val query: AgentActivityQuery)
+    @Volatile private var desiredHub = HubRequest(0, 20, AgentActivityQuery())
     private val children = linkedMapOf<String, ChildController>()
     private val detailMutex = Mutex()
     private data class DetailKey(val sessionId: String, val sessionFile: String?, val entryId: String, val version: String, val kind: HistoryDetailKind)
@@ -171,32 +174,57 @@ internal class OmpSessionExplorer(
         response.optional("sessionFile") ?: error("原生分支未返回会话路径")
     }
 
-    override suspend fun refreshHub(activityLimit: Int) = hubMutex.withLock {
-        require(activityLimit == 20 || activityLimit == 2000)
-        mutableHub.update { it.copy(loading = true, error = null) }
-        try {
-            val response = call("explorer_hub", buildJsonObject { put("activityLimit", activityLimit) })
-            val mainId = response.string("mainSessionId")
-            if (hub.value.mainSessionId.isNotBlank() && hub.value.mainSessionId != mainId) {
-                synchronized(children) { children.values.forEach { it.invalidate() }; children.clear() }
+    override suspend fun refreshHub(activityLimit: Int?, activityQuery: AgentActivityQuery?) {
+        require(activityLimit == null || activityLimit > 0)
+        val target = synchronized(hubRequestLock) {
+            HubRequest(desiredHub.revision + 1, activityLimit ?: desiredHub.limit, activityQuery ?: desiredHub.query).also { next ->
+                desiredHub = next
+                mutableHub.update { it.copy(loading = true, error = null, activityQuery = next.query, activityLimit = next.limit,
+                    activity = if (it.activityQuery == next.query) it.activity else emptyList(),
+                    activityHasMore = it.activityQuery == next.query && it.activityHasMore) }
             }
-            val previous = hub.value
-            val oldAgents = previous.agents.associateBy { it.instanceKey }
-            val agents = response.objects("agents").map(::runtimeAgent).map { agent -> oldAgents[agent.instanceKey]?.takeIf { it == agent } ?: agent }
-            val oldActivities = previous.activity.associateBy { it.id }
-            val activities = response.objects("activity").map(::activity).map { event -> oldActivities[event.id]?.takeIf { it == event } ?: event }
-            mutableHub.value = AgentHubState(mainSessionId = mainId, agents = agents, activity = activities,
-                activityLimit = (response["activityLimit"] as? JsonPrimitive)?.intOrNull ?: activityLimit, connected = response.bool("connected") == true,
-                discovering = response.bool("discovering") == true, discoveryError = response.optional("discoveryError"))
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            mutableHub.update { it.copy(connected = false, discovering = false, error = failure.message) }; throw failure
-        } finally { mutableHub.update { it.copy(loading = false) } }
+        }
+        try { hubMutex.withLock {
+            if (desiredHub != target) return@withLock
+            try {
+                val response = call("explorer_hub", buildJsonObject {
+                    put("activityLimit", target.limit)
+                    put("activityQuery", buildJsonObject {
+                        put("instanceKey", target.query.instanceKey); put("includeDescendants", target.query.includeDescendants)
+                        put("kind", target.query.kind?.name?.lowercase()); put("search", target.query.search)
+                    })
+                })
+                synchronized(hubRequestLock) {
+                    if (desiredHub != target) return@synchronized
+                    val mainId = response.string("mainSessionId")
+                    if (hub.value.mainSessionId.isNotBlank() && hub.value.mainSessionId != mainId) {
+                        synchronized(children) { children.values.forEach { it.invalidate() }; children.clear() }
+                    }
+                    val previous = hub.value
+                    val oldAgents = previous.agents.associateBy { it.instanceKey }
+                    val agents = response.objects("agents").map(::runtimeAgent).map { agent -> oldAgents[agent.instanceKey]?.takeIf { it == agent } ?: agent }
+                    val oldActivities = previous.activity.associateBy { it.id }
+                    val activities = response.objects("activity").map(::activity).map { event -> oldActivities[event.id]?.takeIf { it == event } ?: event }
+                    mutableHub.value = AgentHubState(mainSessionId = mainId, agents = agents, activity = activities,
+                        activityLimit = target.limit, activityQuery = target.query, activityHasMore = response.bool("activityHasMore") == true,
+                        connected = response.bool("connected") == true, discovering = response.bool("discovering") == true,
+                        discoveryError = response.optional("discoveryError"))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                synchronized(hubRequestLock) {
+                    if (desiredHub == target) mutableHub.update { it.copy(connected = false, discovering = false, error = failure.message) }
+                }
+                throw failure
+            }
+        } } finally {
+            synchronized(hubRequestLock) { if (desiredHub == target) mutableHub.update { it.copy(loading = false) } }
+        }
     }
 
     override suspend fun openAgent(instanceKey: String): RuntimeAgentSessionController {
-        if (hub.value.agents.none { it.instanceKey == instanceKey }) refreshHub(hub.value.activityLimit)
+        if (hub.value.agents.none { it.instanceKey == instanceKey }) refreshHub()
         val agent = hub.value.agents.firstOrNull { it.instanceKey == instanceKey } ?: error("子代理实例已失效")
         val child = synchronized(children) { children.getOrPut(instanceKey) { ChildController(agent) } }
         child.refresh()
@@ -205,7 +233,7 @@ internal class OmpSessionExplorer(
 
     override suspend fun controlAgent(instanceKey: String, operation: RuntimeAgentOperation) {
         call("explorer_agent_control", buildJsonObject { put("instanceKey", instanceKey); put("operation", operation.name.lowercase()) })
-        refreshHub(hub.value.activityLimit)
+        refreshHub()
         synchronized(children) { children[instanceKey] }?.refresh()
     }
 
@@ -217,7 +245,8 @@ internal class OmpSessionExplorer(
     private inner class ChildController(private val agent: RuntimeAgent) : RuntimeAgentSessionController {
         private val mutex = Mutex()
         private val mutable = MutableStateFlow(ChatSessionUiState(id = agent.instanceKey, title = agent.name,
-            workspace = agent.workspace ?: workspace, providerId = agent.providerId.orEmpty(), modelId = agent.modelId.orEmpty()))
+            workspace = agent.workspace ?: workspace, providerId = agent.providerId.orEmpty(), modelId = agent.modelId.orEmpty(),
+            availableModels = emptyList(), availableThinkingLevels = emptyList()))
         override val state = mutable.asStateFlow()
         private var reducer = OmpEventReducer(mutable.value)
         private var cursor: JsonElement? = null
@@ -280,6 +309,13 @@ internal class OmpSessionExplorer(
             reducer.update { current -> current.copy(workspace = result.optional("workspace") ?: current.workspace,
                 providerId = result.optional("providerId") ?: current.providerId, modelId = result.optional("modelId") ?: current.modelId,
                 thinkingLevel = parseThinking(result.optional("thinking"), current.thinkingLevel), modelLoading = false,
+                availableModels = result.objects("availableModels").map { SessionModel(it.string("providerId"), it.string("modelId"), it.string("name", it.string("modelId"))) },
+                availableThinkingLevels = (result["availableThinkingLevels"] as? JsonArray).orEmpty().mapNotNull { value ->
+                    when (value.jsonPrimitive.content) {
+                        "off", "none" -> ThinkingLevel.NONE
+                        else -> enumValue<ThinkingLevel>(value.jsonPrimitive.content)
+                    }
+                }.distinct(),
                 status = when {
                     current.feed.flattenFeed().any { it is AskCardItem && !it.isResolved || it is ApprovalCardItem && it.resolution == null } -> SessionStatus.WAITING
                     result["isRunning"]?.jsonPrimitive?.booleanOrNull == true -> SessionStatus.RUNNING

@@ -23,6 +23,8 @@ fun ManagementAgentsScreen(repository: AgentManagementRepository, configurationS
     onScopeChange: (ConfigurationScope) -> Unit, onBack: () -> Unit, registerBack: ((() -> Boolean)?) -> Unit,
     initialAgent: String? = null) {
     val state by repository.state.collectAsState()
+    val layer = if (configurationScope == ConfigurationScope.GLOBAL) state.globalValues else state.projectValues
+    val disabledInScope = configurationStrings(configurationValue(layer, "task.disabledAgents"))
     val actions = LocalManagementActions.current
     var route by remember { mutableStateOf("list") }
     var selected by remember { mutableStateOf<ManagedAgent?>(null) }
@@ -64,7 +66,7 @@ fun ManagementAgentsScreen(repository: AgentManagementRepository, configurationS
                 val disabled = configurationStrings(configurationValue(state.effectiveValues, "task.disabledAgents"))
                 var more by remember { mutableStateOf(false) }
                 fun toggle(enabled: Boolean) = actions.launch { repository.updateSettings(configurationScope,
-                    mapOf("task.disabledAgents" to if (enabled) disabled - agent.name else (disabled + agent.name).distinct())) }
+                    mapOf("task.disabledAgents" to if (enabled) disabledInScope - agent.name else (disabledInScope + agent.name).distinct())) }
                 fun copy(scope: ConfigurationScope) = actions.launch("已复制定义") {
                     repository.saveAgent(scope, agent.name, agent.fields, agent.systemPrompt)
                 }
@@ -139,7 +141,7 @@ fun ManagementAgentsScreen(repository: AgentManagementRepository, configurationS
                             trailing = {
                                 Switch(item.name !in disabled, { enabled -> actions.launch {
                                     repository.updateSettings(configurationScope, mapOf("task.disabledAgents" to
-                                        if (enabled) disabled - item.name else (disabled + item.name).distinct()))
+                                        if (enabled) disabledInScope - item.name else (disabledInScope + item.name).distinct()))
                                 } }, enabled = !actions.busy)
                             })
                     }

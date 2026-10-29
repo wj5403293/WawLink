@@ -21,7 +21,7 @@ kotlin {
             // HCT / Material dynamic roles; Kotlin 2.1.10, no Compose dependency (Apache-2.0).
             implementation("com.materialkolor:material-color-utilities:2.0.2")
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
         }
         commonTest.dependencies { implementation(kotlin("test")) }
         val jvmSharedMain by creating {

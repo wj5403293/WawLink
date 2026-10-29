@@ -353,6 +353,7 @@ internal fun ContainerFeaturesScreen(
                         }
                     }, onError = { message -> error = "${entry.title}：$message" }, onClick = { onTap(key) }, onSelect = { if (container != null && !working) { editing = true; selected = selected + key } },
                     busyActions = busyActions.filter { it.startsWith("${feature?.id}/") }.map { it.substringAfter('/') }.toSet(),
+                    luaAvailable = lua.available,
                     onNativeAction = { action -> feature?.let { runAction(it, action) } },
                     htmlHeight = htmlHeight,
                     nativeGestures = FeatureCardNativeGestures(
@@ -469,7 +470,7 @@ private fun FeatureCardTile(
     selectionMode: Boolean, selected: Boolean, color: String?, css: String, modifier: Modifier,
     onAction: (String) -> Unit, onError: (String) -> Unit, onClick: () -> Unit, onSelect: () -> Unit,
     nativeGestures: FeatureCardNativeGestures,
-    busyActions: Set<String>, onNativeAction: (ContainerFeatureAction) -> Unit,
+    busyActions: Set<String>, luaAvailable: Boolean, onNativeAction: (ContainerFeatureAction) -> Unit,
     htmlHeight: Int,
 ) {
     val feature = entry.feature
@@ -569,6 +570,7 @@ private fun FeatureCardTile(
                             val filled = index == 0 && !(toggle && running)
                             Button({ onNativeAction(action) }, modifier = Modifier.weight(1f).height(44.dp).semantics { contentDescription = label },
                                 enabled = !selectionMode && !busy && (containerRunning || action.type == ContainerFeatureActionType.LUA || action.type == ContainerFeatureActionType.LOGS) &&
+                                    !(action.type == ContainerFeatureActionType.LUA && !luaAvailable) &&
                                     !(action.type == ContainerFeatureActionType.OPEN && !running) && !(action.type == ContainerFeatureActionType.START && running) && !(action.type == ContainerFeatureActionType.STOP && !running),
                                 shape = CircleShape, contentPadding = PaddingValues(horizontal = 6.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = if (filled) foreground else MaterialTheme.colorScheme.surface.copy(alpha = .65f), contentColor = if (filled) background else foreground)) {

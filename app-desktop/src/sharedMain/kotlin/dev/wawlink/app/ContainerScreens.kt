@@ -263,8 +263,8 @@ internal fun bytesLabel(bytes: Long): String = when {
             SectionLabel("登录身份", "verified_user")
             DetailSegments(listOf(true, false), c.user == "root" || c.user == "0", { if (it) "Root" else "普通用户" }, { root ->
                 if (root) update(c.copy(user = "root")) else { userName = if (c.user == "root" || c.user == "0") "" else c.user; userEditor = true }
-            }, enabled = { c.engine != ContainerEngineType.PROROOT || it })
-            DetailRow("自定义登录用户", if (c.engine == ContainerEngineType.PROROOT) "proroot 不支持切换登录身份" else c.user, "verified_user", if (c.engine != ContainerEngineType.PROROOT) ({ userName = c.user; userEditor = true }) else null) { Symbol("edit") }
+            })
+            DetailRow("自定义登录用户", c.user, "verified_user", { userName = c.user; userEditor = true }) { Symbol("edit") }
             SectionLabel("默认 Shell", "terminal")
             DetailSegments(listOf("/bin/bash", "/bin/zsh", "/bin/sh"), c.shell, { it.substringAfterLast('/').replaceFirstChar(Char::uppercase) }, { update(c.copy(shell = it)) })
             SectionLabel("PRoot 内核特性", "tune")

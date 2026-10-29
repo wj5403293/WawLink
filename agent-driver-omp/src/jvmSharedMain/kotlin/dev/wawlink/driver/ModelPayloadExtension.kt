@@ -18,7 +18,7 @@ internal object ModelPayloadExtension {
     private const val SCRIPT_NAME = "wawlink-model-payload.mjs"
     private const val BUDGET_NAME = "wawlink-model-budgets.json"
 
-    fun install(agentDir: File, guestAgentDir: String = "/root/.omp/agent"): String {
+    fun install(agentDir: File, guestAgentDir: String): String {
         require(guestAgentDir.startsWith('/') && !guestAgentDir.split('/').contains("..")) { "Agent 配置目录必须是容器内绝对路径" }
         val source = checkNotNull(javaClass.getResourceAsStream("/$SCRIPT_NAME")) { "缺少模型预算扩展资源" }
             .use { it.readBytes() }

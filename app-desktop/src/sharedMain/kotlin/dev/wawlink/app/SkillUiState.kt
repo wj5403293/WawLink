@@ -51,8 +51,16 @@ internal class SkillUiState(val repository: AgentResourceRepository, private val
                 } else done(result)
             } catch (cancelled: CancellationException) { busy = null; throw cancelled }
             catch (failure: Exception) {
-                busy = null; error = failure.message ?: "原生操作失败"
+                error = failure.message ?: "原生操作失败"
                 retryAction = if (op == "clawhub.install") null else ({ request(op, args, label, done) })
+                try {
+                    when (op) {
+                        "install", "update", "restore", "uninstall", "bumpVersion", "repairPackageFile" ->
+                            snapshot = repository.request("skills.snapshot")
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* Preserve the original operation error. */ }
+                finally { busy = null }
             }
         }
     }

@@ -42,7 +42,7 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun startupRepairPreservesConfigValuesAndLeavesStableFilesUntouched() = runBlocking {
-        withContainer { dir, _ ->
+        withContainer { rootfs, dir, _ ->
             val models = File(dir, "models.yml").apply { writeText("""
                 # user model comment
                 providers: {
@@ -69,21 +69,21 @@ class OmpConfigRepositoriesTest {
             val expected = listOf(load(models), load(config))
             val auth = File(dir, "auth.json").apply { writeText("{\"external\":\"untouched\"}\n") }
             val originalAuth = auth.readText()
-            prepareOmpConfiguration { dir }
+            prepareOmpConfiguration({ rootfs }) { dir }
             assertEquals(expected, listOf(load(models), load(config)))
             assertTrue(models.readText().contains("# user model comment"))
             assertTrue(config.readText().contains("# user setting comment"))
             assertEquals(originalAuth, auth.readText())
             val timestamp = java.nio.file.attribute.FileTime.fromMillis(1_600_000_000_000)
             listOf(models, config).forEach { Files.setLastModifiedTime(it.toPath(), timestamp) }
-            prepareOmpConfiguration { dir }
+            prepareOmpConfiguration({ rootfs }) { dir }
             listOf(models, config).forEach { assertEquals(timestamp, Files.getLastModifiedTime(it.toPath())) }
         }
     }
 
     @Test
     fun settingEnumRoundTripResetAndCommentsUseRealWireValues() = runBlocking {
-        withContainer { dir, scope ->
+        withContainer { rootfs, dir, scope ->
             val file = File(dir, "config.yml")
             file.writeText("""
                 # operator comment
@@ -97,7 +97,7 @@ class OmpConfigRepositoriesTest {
                   dark: nord
             """.trimIndent() + "\n")
             val calls = Collections.synchronizedList(mutableListOf<Pair<String?, Any?>>())
-            val repo = OmpSettingsRepository({ dir }, scope) { id, value -> calls.add(id to value) }
+            val repo = OmpSettingsRepository({ rootfs }, { dir }, scope) { id, value -> calls.add(id to value) }
             try {
                 repo.updateSetting("tier.openai", "ultrafast")
                 val updated = load(file)
@@ -123,7 +123,7 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun providerSaveUsesActualFormatsAndPreservesOAuthUnknownFieldsAndOtherBudgets() = runBlocking {
-        withContainer { dir, scope ->
+        withContainer { rootfs, dir, scope ->
             val file = File(dir, "models.yml")
             file.writeText("""
                 # model document comment
@@ -155,7 +155,7 @@ class OmpConfigRepositoriesTest {
             val originalAuth = oauth.readText()
             val budgetsFile = File(dir, "wawlink-model-budgets.json")
             budgetsFile.writeText("{\"unsupported/model-z\":2048,\"vendor/old-model\":1024}\n")
-            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            val repo = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
             try {
                 val provider = ProviderConfig(
                     id = "vendor", name = "自定义服务", apiType = ProviderApiType.MESSAGE,
@@ -205,8 +205,8 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun providerApiTypesUseTheThreeRealWireNames() = runBlocking {
-        withContainer { dir, scope ->
-            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+        withContainer { rootfs, dir, scope ->
+            val repo = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
             try {
                 val expected = mapOf(ProviderApiType.CHAT to "openai-completions", ProviderApiType.RESPONSE to "openai-responses", ProviderApiType.MESSAGE to "anthropic-messages")
                 for ((api, wire) in expected) {
@@ -220,10 +220,10 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun settingsObserveExternalEditsAndNotifyWithEffectiveValues() = runBlocking {
-        withContainer { dir, scope ->
+        withContainer { rootfs, dir, scope ->
             val file = File(dir, "config.yml").apply { writeText("temperature: 0.2\n") }
             val calls = Collections.synchronizedList(mutableListOf<Pair<String?, Any?>>())
-            val repo = OmpSettingsRepository({ dir }, scope) { id, value -> calls.add(id to value) }
+            val repo = OmpSettingsRepository({ rootfs }, { dir }, scope) { id, value -> calls.add(id to value) }
             try {
                 withTimeout(4_000) { repo.categories.first { categories -> categories.flatMap { it.groups }.flatMap { it.items }.single { it.id == "temperature" }.value == 0.2 } }
                 file.writeText("temperature: 0.7\n")
@@ -236,7 +236,7 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun capabilitiesPricesAndHighestDefaultsRoundTripWithoutErasingUnknownYaml() = runBlocking {
-        withContainer { dir, scope ->
+        withContainer { rootfs, dir, scope ->
             val file = File(dir, "models.yml")
             file.writeText("""
                 providers:
@@ -266,7 +266,7 @@ class OmpConfigRepositoriesTest {
                             futureEffort: preserve
                         futureModel: preserve
             """.trimIndent() + "\n")
-            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            val repo = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
             try {
                 val provider = withTimeout(4_000) { repo.providers.first { it.isNotEmpty() } }.single()
                 val original = provider.models.single()
@@ -310,8 +310,8 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun allSixDefaultsAndNullableCapabilitiesStayIndependent() = runBlocking {
-        withContainer { dir, scope ->
-            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+        withContainer { rootfs, dir, scope ->
+            val repo = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
             try {
                 val models = ThinkingLevel.entries.map { level -> ModelConfig(level.name, thinkingLevel = level, reasoning = true) } +
                     listOf(ModelConfig("unknown"), ModelConfig("explicitly-disabled", thinkingLevel = ThinkingLevel.NONE, reasoning = false))
@@ -334,7 +334,7 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun remoteDiscoveryMatchesOncePreservesManualModelsAndDoesNotWriteConfiguration() = runBlocking {
-        withContainer { dir, scope ->
+        withContainer { rootfs, dir, scope ->
             val catalogRequests = AtomicInteger()
             val catalog = KnownModelCatalog(load = { url ->
                 catalogRequests.incrementAndGet()
@@ -348,7 +348,7 @@ class OmpConfigRepositoriesTest {
                 exchange.responseBody.use { it.write(body) }
             }
             server.start()
-            val repo = OmpProviderRepository({ dir }, scope, catalog) { _, _ -> }
+            val repo = OmpProviderRepository({ rootfs }, { dir }, scope, catalog) { _, _ -> }
             try {
                 val manual = ModelConfig("manual", "手工资料", reasoning = false, cost = ModelCost(input = 9.0))
                 val provider = ProviderConfig("vendor", "Vendor", baseUrl = "http://127.0.0.1:${server.address.port}/v1", models = listOf(manual))
@@ -370,7 +370,7 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun remoteDiscoveryUsesAuthenticatedGetAndNeverExposesErrorBody() = runBlocking {
-        withContainer { dir, scope ->
+        withContainer { rootfs, dir, scope ->
             val requests = Collections.synchronizedList(mutableListOf<List<String?>>())
             val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
             server.createContext("/v1/models") { exchange ->
@@ -380,7 +380,7 @@ class OmpConfigRepositoriesTest {
                 exchange.responseBody.use { it.write(body) }
             }
             server.start()
-            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            val repo = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
             try {
                 val provider = ProviderConfig("vendor", "Vendor", baseUrl = "http://127.0.0.1:${server.address.port}/v1", apiKey = "fixture-key", headers = mapOf("X-Private" to "fixture-header"))
                 val message = repo.fetchRemoteModels(provider).exceptionOrNull()!!.message!!
@@ -407,13 +407,13 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun rejectedProviderSavePreservesAllDocumentsAndReportsNativeField() = runBlocking {
-        withContainer { dir, scope ->
+        withContainer { rootfs, dir, scope ->
             val models = File(dir, "models.yaml").apply { writeText("# retained fallback\nproviders: {}\n") }
             val config = File(dir, "config.yml").apply { writeText("disabledProviders: [retained]\n") }
             val metadata = File(dir, "wawlink-provider-ui.json").apply { writeText("{}\n") }
             val budgets = File(dir, "wawlink-model-budgets.json").apply { writeText("{}\n") }
             val originals = listOf(models, config, metadata, budgets).associateWith { it.readText() }
-            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            val repo = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
             try {
                 val failure = assertFailsWith<IllegalArgumentException> {
                     repo.saveProvider(ProviderConfig("vendor", "Vendor", baseUrl = "", models = listOf(ModelConfig("chat"))))
@@ -435,9 +435,9 @@ class OmpConfigRepositoriesTest {
 
     @Test
     fun fallbackModelsYamlRemainsTheNativeWriteTarget() = runBlocking {
-        withContainer { dir, scope ->
+        withContainer { rootfs, dir, scope ->
             val file = File(dir, "models.yaml").apply { writeText("providers: {}\n") }
-            val repo = OmpProviderRepository({ dir }, scope) { _, _ -> }
+            val repo = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
             try {
                 repo.saveProvider(ProviderConfig("vendor", "Vendor", baseUrl = "https://example.invalid/v1", apiKey = "fixture-key", models = listOf(ModelConfig("chat"))))
                 assertTrue((load(file)["providers"] as Map<*, *>).containsKey("vendor"))
@@ -448,11 +448,78 @@ class OmpConfigRepositoriesTest {
         }
     }
 
-    private suspend fun withContainer(block: suspend (File, CoroutineScope) -> Unit) {
+    @Test
+    fun configurationEditsStayInExplicitRootfsForAnyHomeDepth() = runBlocking {
+        for (home in listOf("/root", "/home/operator", "/srv/profiles/team/operator/custom-home")) {
+            withContainer(home) { rootfs, dir, scope ->
+                val other = File(rootfs, "untouched/.omp/agent/config.yml").apply { parentFile.mkdirs(); writeText("temperature: 0.9\n") }
+                val settings = OmpSettingsRepository({ rootfs }, { dir }, scope) { _, _ -> }
+                val providers = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
+                try {
+                    settings.updateSetting("temperature", 0.4)
+                    providers.saveProvider(ProviderConfig("vendor", "Vendor", baseUrl = "https://example.invalid/v1", apiKey = "key", models = listOf(ModelConfig("chat"))))
+                    prepareOmpConfiguration({ rootfs }) { dir }
+                    assertEquals(0.4, load(File(dir, "config.yml"))["temperature"])
+                    assertTrue((load(File(dir, "models.yml"))["providers"] as Map<*, *>).containsKey("vendor"))
+                    assertEquals("temperature: 0.9\n", other.readText())
+                } finally { settings.close(); providers.close() }
+            }
+        }
+    }
+
+    @Test
+    fun configurationRejectsUnrelatedRootfsAndHostHome() = runBlocking {
+        withContainer("/home/operator") { rootfs, dir, _ ->
+            val unrelated = File(rootfs.parentFile, "rootfs-other").apply { mkdirs() }
+            val hostHome = File(rootfs.parentFile, "host/.omp/agent").apply { mkdirs() }
+            for (outside in listOf(File(unrelated, "home/operator/.omp/agent"), hostHome)) {
+                assertFailsWith<IllegalArgumentException> { prepareOmpConfiguration({ rootfs }) { outside } }
+            }
+            assertFailsWith<IllegalArgumentException> { prepareOmpConfiguration({ File("/") }) { dir } }
+            assertFailsWith<IllegalArgumentException> { prepareOmpConfiguration({ rootfs }) { File(dir, "child") } }
+        }
+    }
+
+    @Test
+    fun configurationRejectsEscapingLinksAtEveryHomeAncestor() = runBlocking {
+        for (linked in listOf("home", "home/operator", "home/operator/.omp", "home/operator/.omp/agent")) {
+            val temporary = Files.createTempDirectory("wawlink-config-link-").toFile()
+            try {
+                val rootfs = File(temporary, "rootfs").apply { mkdirs() }
+                val outside = File(temporary, "outside").apply { mkdirs() }
+                val link = File(rootfs, linked).apply { parentFile.mkdirs() }
+                Files.createSymbolicLink(link.toPath(), outside.toPath())
+                val dir = File(rootfs, "home/operator/.omp/agent")
+                assertFailsWith<IllegalArgumentException> { prepareOmpConfiguration({ rootfs }) { dir } }
+                assertTrue(outside.listFiles().orEmpty().isEmpty())
+            } finally { temporary.deleteRecursively() }
+        }
+    }
+
+    @Test
+    fun configurationRejectsChildLinksEvenToAnotherUserInsideRootfs() = runBlocking {
+        for (name in listOf("config.yml", "models.yml", "wawlink-provider-ui.json", "wawlink-model-budgets.json")) {
+            withContainer("/srv/custom-home") { rootfs, dir, scope ->
+                val target = File(rootfs, "home/other/.omp/agent/$name").apply { parentFile.mkdirs(); writeText("{}\n") }
+                val original = target.readBytes()
+                Files.createSymbolicLink(File(dir, name).toPath(), target.toPath())
+                val providers = OmpProviderRepository({ rootfs }, { dir }, scope) { _, _ -> }
+                try {
+                    assertFailsWith<IllegalArgumentException> {
+                        providers.saveProvider(ProviderConfig("vendor", "Vendor", baseUrl = "https://example.invalid/v1", apiKey = "key", models = listOf(ModelConfig("chat"))))
+                    }
+                    assertEquals(original.toList(), target.readBytes().toList())
+                } finally { providers.close() }
+            }
+        }
+    }
+
+    private suspend fun withContainer(home: String = "/root", block: suspend (File, File, CoroutineScope) -> Unit) {
         val temporary = Files.createTempDirectory("wawlink-config-test").toFile()
-        val dir = File(temporary, "rootfs/root/.omp/agent").apply { mkdirs() }
+        val rootfs = File(temporary, "rootfs").apply { mkdirs() }
+        val dir = File(rootfs, "${home.trimStart('/')}/.omp/agent").apply { mkdirs() }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        try { block(dir, scope) } finally { scope.cancel(); temporary.deleteRecursively() }
+        try { block(rootfs, dir, scope) } finally { scope.cancel(); temporary.deleteRecursively() }
     }
 
     private fun load(file: File): Map<String, Any?> = assertNotNull(Yaml().load(file.readText()))

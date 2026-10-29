@@ -6,6 +6,7 @@ import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.ContainerFileService
 import dev.wawlink.runtime.installContainerFeatureSkill
 import dev.wawlink.runtime.wasInterrupted
+import dev.wawlink.runtime.containerHome
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -129,7 +130,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             native.parentFile.listFiles().orEmpty().filter { it.isDirectory && it.name == stem }
                 .forEach { copyOwnedTree(it, File(destination, it.name)) }
             rewriteSessionHeader(target, source.workspace, title)
-            writeMetadata(newId, source.containerId, source.workspace, title, guestSessionDirectory(newId) + "/" + target.name)
+            writeMetadata(newId, source.containerId, source.workspace, title, guestSessionDirectory(source.containerId, newId) + "/" + target.name)
             session(newId, source.containerId, source.workspace, title, source.state.value.autoApprove)
         } catch (failure: Throwable) {
             deleteOwnedTree(destination)
@@ -153,7 +154,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             if (history != null) rewriteSessionHeader(history, destinationWorkspace, title, UUID.randomUUID().toString(), source.sessionFile)
             val sourceJournal = journalFile(sourceId)
             if (sourceJournal.exists()) sourceJournal.copyTo(journalFile(newId).also { it.parentFile.mkdirs() }, overwrite = false)
-            writeMetadata(newId, containerId, destinationWorkspace, title, history?.let { guestSessionDirectory(newId) + "/" + it.name })
+            writeMetadata(newId, containerId, destinationWorkspace, title, history?.let { guestSessionDirectory(containerId, newId) + "/" + it.name })
             session(newId, containerId, destinationWorkspace, title, autoApprove = source.state.value.autoApprove)
         }
     }
@@ -175,7 +176,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             copyOwnedTree(oldDirectory, newDirectory)
         }
         newestHistory(newDirectory)?.let { rewriteSessionHeader(it, nextWorkspace, title) }
-        val newPath = newestHistory(newDirectory)?.let { guestSessionDirectory(id) + "/" + it.name }
+        val newPath = newestHistory(newDirectory)?.let { guestSessionDirectory(containerId, id) + "/" + it.name }
         writeMetadata(id, containerId, nextWorkspace, title, newPath)
         synchronized(this@OmpProcessPool) { sessions.remove(id) }
         source.dispose()
@@ -215,7 +216,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     fun providers(containerId: String): ProviderConfigRepository {
         check(!closed)
         return providerRepositories.getOrPut(containerId) {
-            OmpProviderRepository({ agentDirectory(containerId) }, scope) { _, _ -> configurationChanged(containerId, null, null) }
+            OmpProviderRepository({ File(config(containerId).rootfsPath) }, { agentDirectory(containerId) }, scope) { _, _ -> configurationChanged(containerId, null, null) }
         }
     }
 
@@ -223,7 +224,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     fun settings(containerId: String): AgentSettingsRepository {
         check(!closed)
         return settingsRepositories.getOrPut(containerId) {
-            OmpSettingsRepository({ agentDirectory(containerId) }, scope) { key, value -> configurationChanged(containerId, key, value) }
+            OmpSettingsRepository({ File(config(containerId).rootfsPath) }, { agentDirectory(containerId) }, scope) { key, value -> configurationChanged(containerId, key, value) }
         }
     }
 
@@ -237,7 +238,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         } }
         return managementRepositories.getOrPut(Triple(containerId, project, sessionId)) {
             OmpAgentManagementRepository(runtime, AgentConfigurationContext(containerId, configuration.name, projectPath = project, sessionId = sessionId),
-                { agentDirectory(containerId) }, { guest, write -> resolveWorkspace(containerId, guest, write) }, scope,
+                { agentDirectory(containerId) }, { guestAgentDirectory(containerId) }, { guest, write -> resolveWorkspace(containerId, guest, write) }, scope,
                 changed = { changedScope, keys ->
                     val roleOnly = keys.isNotEmpty() && keys.all { it.startsWith("modelRoles") || it.startsWith("modelPresets") || it in setOf("defaultThinkingLevel", "modelTags", "modelRoleStorage", "cycleOrder") }
                     val affected = synchronized(this) { sessions.values.filter { it.containerId == containerId && (changedScope == ConfigurationScope.GLOBAL || it.workspace == project) && (!roleOnly || it === selected) } }
@@ -260,7 +261,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         if (sessionId != null) require(sessions[sessionId]?.let { it.containerId == containerId && it.workspace == project } == true) { "会话不属于当前资源作用域" }
         return resourceRepositories.getOrPut(Triple(containerId, project, sessionId)) {
             OmpAgentManagementRepository(runtime, AgentConfigurationContext(containerId, configuration.name, projectPath = project, sessionId = sessionId),
-                { agentDirectory(containerId) }, { guest, write -> resolveWorkspace(containerId, guest, write) }, scope,
+                { agentDirectory(containerId) }, { guestAgentDirectory(containerId) }, { guest, write -> resolveWorkspace(containerId, guest, write) }, scope,
                 changed = { changedScope, _ ->
                     val affected = synchronized(this) { sessions.values.filter { it.containerId == containerId && (changedScope == ConfigurationScope.GLOBAL || it.workspace == project) } }
                     affected.forEach { it.markConfigurationChanged() }
@@ -284,9 +285,28 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     private fun config(id: String): ContainerConfig = runtime.containers.value.firstOrNull { it.config.id == id }?.config
         ?: error("找不到容器：$id")
 
-    private fun agentDirectory(containerId: String): File = confined(File(config(containerId).rootfsPath), "root/.omp/agent")
+    fun guestAgentDirectory(containerId: String): String = guestAgentDirectory(config(containerId))
+    private fun guestAgentDirectory(configuration: ContainerConfig): String = normalizeGuest(containerHome(configuration).trimEnd('/') + "/.omp/agent")
+    private fun agentDirectory(containerId: String): File {
+        val configuration = config(containerId)
+        val guest = guestAgentDirectory(configuration)
+        val rootfs = File(configuration.rootfsPath)
+        val directory = ompAgentDirectory(rootfs, File(rootfs, guest.trimStart('/')))
+        val canonical = directory.canonicalFile.toPath()
+        fun overlapsMount(target: String): Boolean {
+            val mounted = File(rootfs, target.trimStart('/')).canonicalFile.toPath()
+            return guest == target || guest.startsWith(target.trimEnd('/') + "/") || target.startsWith(guest + "/") ||
+                canonical.startsWith(mounted) || mounted.startsWith(canonical)
+        }
+        // These system paths are bound by the runtime in addition to custom mounts.
+        require(!overlapsMount("/dev") && !overlapsMount("/proc") && !overlapsMount("/sys") &&
+            configuration.mounts.none { overlapsMount(normalizeGuest(it.target)) }) {
+            "OMP 配置和会话目录必须位于容器 Rootfs 内，不能被宿主挂载覆盖"
+        }
+        return directory
+    }
     private fun ownedSessionDirectory(containerId: String, id: String): File = confined(agentDirectory(containerId), "wawlink/sessions/${safeId(id)}")
-    private fun guestSessionDirectory(id: String) = "/root/.omp/agent/wawlink/sessions/${safeId(id)}"
+    private fun guestSessionDirectory(containerId: String, id: String) = "${guestAgentDirectory(containerId)}/wawlink/sessions/${safeId(id)}"
     private fun metadataFile(id: String) = File(dataDir, "omp-sessions/${safeId(id)}.json")
     private fun journalFile(id: String) = File(dataDir, "omp-sessions/${safeId(id)}.jsonl")
 
@@ -1096,20 +1116,20 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             if (!workspaceDirectory.exists()) check(resolveWorkspace(containerId, workspace, write = true).mkdirs()) { "无法创建工作区" }
             installContainerFeatureSkill(runtime, containerId)
             val history = newestHistory(directory)
-            sessionFile = history?.let { guestSessionDirectory(id) + "/" + it.name }
-            val args = mutableListOf("omp", "--mode", "rpc-ui", "--cwd", workspace, "--session-dir", guestSessionDirectory(id), "--approval-mode", if (state.value.autoApprove) "yolo" else "always-ask")
+            sessionFile = history?.let { guestSessionDirectory(containerId, id) + "/" + it.name }
+            val args = mutableListOf("omp", "--mode", "rpc-ui", "--cwd", workspace, "--session-dir", guestSessionDirectory(containerId, id), "--approval-mode", if (state.value.autoApprove) "yolo" else "always-ask")
             sessionFile?.let { args += listOf("--resume", it) }
             // Display-only defaults are resolved again by native startup; only pin explicit selections.
             if (hasModelPreference && state.value.providerId.isNotBlank() && state.value.modelId.isNotBlank()) args += listOf("--provider", state.value.providerId, "--model", state.value.modelId)
-            prepareOmpConfiguration { agentDirectory(containerId) }
+            prepareOmpConfiguration({ File(config(containerId).rootfsPath) }) { agentDirectory(containerId) }
             confined(agentDirectory(containerId), "wawlink-model-payload.mjs")
-            args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId)))
+            args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId), guestAgentDirectory(containerId)))
             for (module in listOf("session.mjs", "diagnostics.mjs", "explorer.mjs", "explorer-runtime.mjs", "explorer-history.mjs")) {
                 val destination = confined(agentDirectory(containerId), "wawlink/management/$module")
                 val source = requireNotNull(javaClass.getResourceAsStream("/omp-management/$module")).bufferedReader().use { it.readText() }
                 if (!destination.exists() || destination.readText() != source) repoAtomicWrite(destination, source)
             }
-            args += listOf("--extension", "/root/.omp/agent/wawlink/management/session.mjs")
+            args += listOf("--extension", "${guestAgentDirectory(containerId)}/wawlink/management/session.mjs")
             managementDefault?.let { role ->
                 val provider = requireNotNull(role.providerId)
                 val modelId = requireNotNull(role.modelId)
@@ -1127,7 +1147,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             startedResolvConf = resolvConf?.value
             val child = try {
                 runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1",
-                    "WAWLINK_MANAGEMENT_DIRECTORY" to "${guestSessionDirectory(id)}/management",
+                    "WAWLINK_MANAGEMENT_DIRECTORY" to "${guestSessionDirectory(containerId, id)}/management",
                     "WAWLINK_MANAGEMENT_INSTANCE" to attempt.managementInstance))
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
@@ -1311,7 +1331,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         private suspend fun receive(frame: JsonObject, attempt: ChatAttempt) {
             val type = frame.string("type")
-            if (type == "extension_error" && frame.string("extensionPath") == "/root/.omp/agent/wawlink/management/session.mjs") {
+            if (type == "extension_error" && frame.string("extensionPath") == "${guestAgentDirectory(containerId)}/wawlink/management/session.mjs") {
                 attempt.managementFailure = "OMP 会话管理扩展加载或初始化失败，历史树与 Agent Hub 暂不可用"
             }
             if (type == "agent_start") { startedNanos = System.nanoTime(); backendSettled = false }
@@ -1320,7 +1340,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             if (type == "response" && frame.string("command") == "get_state") {
                 frame["data"]?.jsonObject?.get("isSettled")?.jsonPrimitive?.booleanOrNull?.let { backendSettled = it }
                 frame["data"]?.jsonObject?.get("sessionFile")?.jsonPrimitive?.contentOrNull?.let { path ->
-                    require(path.startsWith(guestSessionDirectory(id) + "/")) { "OMP 会话离开受管目录，拒绝覆盖其他会话" }
+                    require(path.startsWith(guestSessionDirectory(containerId, id) + "/")) { "OMP 会话离开受管目录，拒绝覆盖其他会话" }
                     if (sessionFile != path) { sessionFile = path; saveMetadata() }
                 }
             }

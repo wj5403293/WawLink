@@ -26,7 +26,7 @@ kotlin {
                 }
                 val javafxPlatform = javafxOs + if (System.getProperty("os.arch") in setOf("aarch64", "arm64")) "-aarch64" else ""
                 listOf("base", "graphics", "controls", "swing", "media", "web").forEach { module ->
-                    implementation("org.openjfx:javafx-$module:21.0.8:$javafxPlatform")
+                    implementation("org.openjfx:javafx-$module:21.0.13:$javafxPlatform")
                 }
             }
         }

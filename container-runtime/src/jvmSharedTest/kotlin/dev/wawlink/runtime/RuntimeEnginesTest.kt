@@ -65,6 +65,49 @@ class RuntimeEnginesTest {
         assertFalse("LD_PRELOAD" in builder.environment())
     }
 
+    @Test fun prorootResolvesNamedAndNumericAccounts() = fixture { _, data, root, native ->
+        val engines = RuntimeEngines(RuntimePaths(data, native, isAndroid = true))
+        for (account in listOf("alice", "1001")) {
+            val config = ContainerConfig("proroot-user", "Proroot", root.path,
+                engine = ContainerEngineType.PROROOT, user = account, shell = "/bin/sh")
+            val command = engines.builder(config, listOf("/bin/sh"), "/home/alice", emptyMap(), mergeError = true).command()
+            val launcher = command.take(command.indexOf("/usr/bin/env"))
+            assertEquals("1001:1002", launcher[launcher.indexOf("-i") + 1])
+            assertFalse("-0" in launcher)
+            assertTrue("HOME=/home/alice" in command)
+            assertTrue("USER=alice" in command)
+            assertTrue("LOGNAME=alice" in command)
+            assertEquals("/home/alice", containerHome(config))
+        }
+    }
+
+    @Test fun prorootHomeOverridePreservesResolvedAccountIdentity() = fixture { _, data, root, native ->
+        val config = ContainerConfig("proroot-home", "Proroot", root.path,
+            engine = ContainerEngineType.PROROOT, user = "1001", shell = "/bin/sh",
+            environment = mapOf("HOME" to "/srv/alice profile"))
+        val engines = RuntimeEngines(RuntimePaths(data, native, isAndroid = true))
+        val command = engines.builder(config, listOf("/bin/sh"), "/", emptyMap(), mergeError = true).command()
+        assertEquals("/srv/alice profile", containerHome(config))
+        assertEquals("/srv/alice profile", engines.home(config))
+        assertTrue("HOME=/srv/alice profile" in command)
+        assertTrue("USER=alice" in command)
+        assertTrue("LOGNAME=alice" in command)
+        assertEquals("1001:1002", command[command.indexOf("-i") + 1])
+    }
+
+    @Test fun offlineHomeRejectsUnknownAccountsAndInvalidOverrides() = fixture { _, _, root, _ ->
+        val passwd = File(root, "etc/passwd")
+        val original = passwd.readText()
+        val config = ContainerConfig("home-test", "用户", root.path, user = "alice", shell = "/bin/sh")
+        for (account in listOf("missing-user", "9876")) {
+            assertFailsWith<IllegalStateException> { containerHome(config.copy(user = account)) }
+        }
+        for (home in listOf("relative", "//host", "/home/../escape", "/home/./alice", "/home/\u0000alice")) {
+            assertFailsWith<IllegalArgumentException> { containerHome(config.copy(environment = mapOf("HOME" to home))) }
+        }
+        assertEquals(original, passwd.readText())
+    }
+
     @Test fun prootKeepsIdentityFlagsAndCleanGuestEnvironment() = fixture { _, data, root, _ ->
         val config = ContainerConfig(
             id = "proot-test", name = "PRoot", rootfsPath = root.path,
