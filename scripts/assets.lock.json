@@ -38,6 +38,7 @@
       "Package": "proot",
       "Version": "5.1.107.98",
       "Filename": "pool/main/p/proot/proot_5.1.107.98_aarch64.deb",
+      "URL": "https://termux.librehat.com/apt/termux-main/pool/main/p/proot/proot_5.1.107.98_aarch64.deb",
       "SHA256": "29de40efea4daa2a6168b617915206511c63e8d46bf5f4b07d48723441ef7f3b"
     },
     {

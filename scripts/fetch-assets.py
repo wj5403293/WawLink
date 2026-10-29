@@ -73,7 +73,8 @@ def android():
     vendor = ROOT / "build/vendor/termux"
     license_dir = RESOURCES / "files/native-licenses"
     for entry in LOCK["termux"]:
-        package = download("https://packages.termux.dev/apt/termux-main/" + entry["Filename"], entry["SHA256"])
+        url = entry.get("URL", "https://packages.termux.dev/apt/termux-main/" + entry["Filename"])
+        package = download(url, entry["SHA256"])
         destination = vendor / entry["Package"]
         unpack(package, destination)
         docs = destination / PREFIX / "share/doc" / entry["Package"]
