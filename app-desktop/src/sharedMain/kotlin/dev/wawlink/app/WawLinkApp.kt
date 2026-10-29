@@ -13,6 +13,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -153,6 +154,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         page == "hub" -> { page = "chat"; true }
         page == "chat" && chatNavigations[selectedSession]?.back() == true -> true
         page == "chat" -> { leaveChat(); true }
+        page == "about" -> { page = "appearance"; true }
         page != "home" -> { page = "home"; true }
         else -> false
     }
@@ -201,6 +203,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         "terminal" -> HostRoute(page, containerId = selectedContainer, installationId = terminalInstallationId, returnPage = terminalReturn)
         "files" -> HostRoute(page, containerId = selectedContainer, returnPage = filesReturn)
         "install" -> HostRoute(page, rootfs = installRootfs)
+        "about" -> HostRoute(page, returnPage = "appearance")
         else -> HostRoute(page)
     }
     LaunchedEffect(sessions, route) {
@@ -300,7 +303,9 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                             "appearance" -> AppearanceScreen(app, { page = "home" },
                                 { if (configurationContainer != null) { settingsReturn = "appearance"; page = "providers" } else openNew() },
                                 { if (configurationContainer != null) { settingsReturn = "appearance"; page = "management" } else openNew() },
-                                { if (configurationContainer != null) { settingsReturn = "appearance"; page = "framework" } else openNew() })
+                                { if (configurationContainer != null) { settingsReturn = "appearance"; page = "framework" } else openNew() },
+                                { page = "about" })
+                            "about" -> AboutScreen({ page = "appearance" }, app::showError)
                             "install" -> InstallContainerScreen(app, files, current.rootfs, { page = "home" })
                             "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }, ::openTerminal, { id -> selectedContainer = id; filesReturn = "container"; page = "files" }) } ?: MissingContainer { page = "home" }
                             "files" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerFilesScreen(app, files, it.config, { page = current.returnPage }, { fileNavigation.onBack = it }) } ?: MissingContainer { page = "home" }
@@ -415,7 +420,7 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
         trailing()
     }
 }
-@Composable private fun AppearanceScreen(app: AppCoordinator, onBack: () -> Unit, providers: () -> Unit, agent: () -> Unit, framework: () -> Unit) {
+@Composable private fun AppearanceScreen(app: AppCoordinator, onBack: () -> Unit, providers: () -> Unit, agent: () -> Unit, framework: () -> Unit, about: () -> Unit) {
     val appearance by app.appearance.collectAsState()
     val defaultAutoApprove by app.defaultAutoApprove.collectAsState()
     Column {
@@ -459,6 +464,29 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
             HostRow("模型服务", icon = "deployed_code", onClick = providers) { Symbol("chevron_right") }
             HostRow("Agent 设置", icon = "smart_toy", onClick = agent) { Symbol("chevron_right") }
             HostRow("框架设置", icon = "tune", onClick = framework) { Symbol("chevron_right") }
+            SectionLabel("应用", "apps")
+            HostRow("关于", "项目与作者", "info", onClick = about) { Symbol("chevron_right") }
+        }
+    }
+}
+
+@Composable private fun AboutScreen(onBack: () -> Unit, onError: (Throwable) -> Unit) {
+    val uriHandler = LocalUriHandler.current
+    val githubUrl = "https://github.com/wsdx233/WawLink"
+    Column {
+        AgentTopBar("关于", onBack)
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            ListItem(
+                headlineContent = { Text("GitHub") },
+                supportingContent = { Text(githubUrl) },
+                leadingContent = { Symbol("code") },
+                modifier = Modifier.clickable { runCatching { uriHandler.openUri(githubUrl) }.onFailure(onError) },
+            )
+            ListItem(
+                headlineContent = { Text("作者") },
+                supportingContent = { Text("wsdx233") },
+                leadingContent = { Symbol("person") },
+            )
         }
     }
 }

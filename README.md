@@ -36,6 +36,8 @@ Agent 设置先加载运行配置、Agent 与文件来源，再异步读取模�
 
 Android“应用设置 → 外观与显示 → 屏幕常亮”默认关闭，开关状态跨重启保留。开启后主页、聊天、终端和其他应用页面在前台可见时均保持亮屏；关闭或切到后台恢复系统自动熄屏，终端不再单独强制常亮。仅使用当前窗口的常亮标志，不修改系统熄屏时间，也不申请唤醒锁权限。
 
+“应用设置 → 关于”使用“图标 + 标题 + 描述”的 Material 3 标准列表，展示项目 GitHub 地址 `https://github.com/wsdx233/WawLink` 与作者 `wsdx233`。点击 GitHub 项由系统打开外部链接，Android 使用 `ACTION_VIEW` Intent；返回应用设置保留原滚动位置。
+
 ## 构建与运行
 
 构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35、Build Tools 35.0.0 与 NDK 27.0.12077973（编译终端 JNI）、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
