@@ -183,7 +183,7 @@ internal object RootfsArchives {
         Files.setPosixFilePermissions(path, permissions)
     }
 
-    fun export(rootfs: File, archive: File) {
+    fun export(rootfs: File, archive: File, exclude: (String) -> Boolean = { false }) {
         val root = rootfs.toPath().toRealPath()
         require(!archive.canonicalFile.toPath().startsWith(root)) { "导出文件不能位于容器 rootfs 内（包括符号链接目录）" }
         require(!Files.isSymbolicLink(archive.toPath())) { "导出目标不能是符号链接" }
@@ -196,14 +196,17 @@ internal object RootfsArchives {
                 override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                     if (dir == root) return FileVisitResult.CONTINUE
                     val name = root.relativize(dir).toString().replace(File.separatorChar, '/')
+                    if (exclude(name)) return FileVisitResult.SKIP_SUBTREE
                     writeEntry(dir, "$name/", attrs)
                     return if (name in runtimeMounts) FileVisitResult.SKIP_SUBTREE else FileVisitResult.CONTINUE
                 }
                 override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    writeEntry(file, root.relativize(file).toString().replace(File.separatorChar, '/'), attrs)
+                    val name = root.relativize(file).toString().replace(File.separatorChar, '/')
+                    if (!exclude(name)) writeEntry(file, name, attrs)
                     return FileVisitResult.CONTINUE
                 }
                 override fun visitFileFailed(file: Path, failure: java.io.IOException): FileVisitResult {
+                    if (exclude(root.relativize(file).toString().replace(File.separatorChar, '/'))) return FileVisitResult.SKIP_SUBTREE
                     if (root.relativize(file).toString() in runtimeMounts) return FileVisitResult.SKIP_SUBTREE
                     throw failure
                 }

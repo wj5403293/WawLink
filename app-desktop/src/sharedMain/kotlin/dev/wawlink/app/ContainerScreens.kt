@@ -2,6 +2,13 @@
 package dev.wawlink.app
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -17,6 +24,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.wawlink.runtime.*
@@ -185,6 +193,7 @@ internal fun bytesLabel(bytes: Long): String = when {
     var clone by remember { mutableStateOf(false) }
     var cloneName by remember { mutableStateOf("${c.displayName}-copy") }
     var delete by remember { mutableStateOf(false) }
+    var export by remember(c.id) { mutableStateOf(false) }
     var metadataEditor by remember(c.id) { mutableStateOf(false) }
     var metadataRetryBusy by remember(c.id) { mutableStateOf(false) }
     val uiScope = rememberCoroutineScope()
@@ -209,7 +218,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                     DetailAction("终端", "terminal") { onTerminal(c.id) }
                     DetailAction("安装 / 修复 OMP", "build") { app.requestOmpInstallation(c.id) }
                     DetailAction("克隆", "content_copy") { clone = true }
-                    DetailAction("导出", "ios_share") { app.launch { if (files.exportRootfs(app.runtime, c)) app.report("容器归档已导出") } }
+                    DetailAction("导出", "ios_share") { export = true }
                 }
             }
             info.error?.let { Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error) }
@@ -280,6 +289,10 @@ internal fun bytesLabel(bytes: Long): String = when {
     if (metadataEditor) key(c.id, c.rootfsPath, c.user, c.environment["HOME"]) {
         ContainerMetadataSheet(app, files, c) { metadataEditor = false }
     }
+    if (export) ExportContainerSheet(c.displayName, { export = false }) { sanitization ->
+        export = false
+        app.launch { if (files.exportRootfs(app.runtime, c, sanitization)) app.report("容器归档已导出") }
+    }
     pendingTool?.let { tool ->
         val operation = if (tool.installed) "卸载" else "安装"
         AlertDialog(
@@ -321,6 +334,52 @@ internal fun bytesLabel(bytes: Long): String = when {
     if (userEditor) ExistingUserSheet(userName, { userName = it }, { userEditor = false }) { name ->
         withContext(Dispatchers.IO) { app.runtime.update(c.copy(user = name)) }
         userEditor = false
+    }
+}
+
+@Composable private fun ExportContainerSheet(containerName: String, onDismiss: () -> Unit, onExport: (RootfsExportSanitization) -> Unit) {
+    var sanitized by rememberSaveable { mutableStateOf(false) }
+    var ompConfig by rememberSaveable { mutableStateOf(true) }
+    var ompSessions by rememberSaveable { mutableStateOf(true) }
+    var history by rememberSaveable { mutableStateOf(true) }
+    var credentials by rememberSaveable { mutableStateOf(true) }
+    val options = RootfsExportSanitization(ompConfig, ompSessions, history, credentials)
+    val easing = CubicBezierEasing(.2f, 0f, 0f, 1f)
+
+    AgentSheet("导出容器", onDismiss) {
+        Text(containerName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 12.dp))
+        DetailSegments(listOf(false, true), sanitized, { if (it) "脱敏导出" else "完整导出（默认）" }, { sanitized = it })
+        Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(top = 12.dp)) {
+            if (!sanitized) {
+                Text("保留容器内全部文件、配置与会话记录，适合个人完整备份与迁移。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            AnimatedVisibility(sanitized,
+                enter = expandVertically(tween(320, easing = easing)) + fadeIn(tween(220)),
+                exit = shrinkVertically(tween(240, easing = easing)) + fadeOut(tween(150))) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("仅移除下列指定路径，其他文件仍可能包含敏感信息；分享前请自行检查。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    ExportSanitizationOption("OMP 配置与凭据", "移除 ~/.omp/agent/config.yml、models.yml、auth.json、agent.db 及多配置档下的对应文件", ompConfig) { ompConfig = it }
+                    ExportSanitizationOption("OMP 会话、历史与日志", "移除 ~/.omp/agent/sessions/、logs/、wawlink/、~/.wawlink/logs/ 及 /tmp/wawlink/", ompSessions) { ompSessions = it }
+                    ExportSanitizationOption("Shell 历史记录", "移除 ~/.bash_history、~/.zsh_history、~/.ash_history、~/.sh_history、~/.python_history、~/.node_repl_history 等", history) { history = it }
+                    ExportSanitizationOption("SSH / Git 凭据与系统包缓存", "移除 ~/.ssh/、~/.gnupg/、~/.git-credentials、~/.netrc、~/.config/gh/、~/.npm/、~/.bun/install/cache/、~/.cache/ 及 apt/apk/pacman 缓存文件", credentials) { credentials = it }
+                }
+            }
+        }
+        HostAction("选择保存位置并导出", "ios_share", {
+            onExport(if (sanitized) options else RootfsExportSanitization())
+        }, Modifier.fillMaxWidth().padding(top = 20.dp), enabled = !sanitized || options.isSanitized)
+    }
+}
+
+@Composable private fun ExportSanitizationOption(title: String, description: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow)
+        .toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Checkbox(checked = checked, onCheckedChange = null)
     }
 }
 

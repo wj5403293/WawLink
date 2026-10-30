@@ -599,7 +599,7 @@ class LocalContainerRuntime internal constructor(
         return when (machine) { 183 -> "arm64"; 62 -> "amd64"; 40 -> "arm"; else -> error("不支持的 ELF 架构：$machine") }
     }
 
-    override suspend fun exportRootfs(id: String, destination: String) = withContext(Dispatchers.IO) {
+    override suspend fun exportRootfs(id: String, destination: String, sanitization: RootfsExportSanitization) = withContext(Dispatchers.IO) {
         val target = if (destination.startsWith("file:")) File(java.net.URI(destination)) else File(destination)
         require(target.name.endsWith(".tar.zst")) { "导出文件名必须以 .tar.zst 结尾" }
         require(!target.exists()) { "导出文件已存在，请选择新文件名" }
@@ -607,7 +607,13 @@ class LocalContainerRuntime internal constructor(
         withStoppedRootfs(id) { config ->
             var failure: Throwable? = null
             try {
-                RootfsArchives.export(File(config.rootfsPath), temporary)
+                val rootfs = File(config.rootfsPath)
+                if (sanitization.isSanitized) {
+                    val filter = RootfsSanitizer(sanitizedExportHomes(config), sanitization)
+                    RootfsArchives.export(rootfs, temporary, filter::shouldSkip)
+                } else {
+                    RootfsArchives.export(rootfs, temporary)
+                }
                 currentCoroutineContext().ensureActive()
                 Files.move(temporary.toPath(), target.toPath())
                 Unit

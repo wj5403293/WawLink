@@ -111,4 +111,36 @@ class AppCoordinatorAppearanceTest {
             }
         }
     }
+
+    @Test fun keepAliveSettingsSurviveReopenAndUnrelatedPreferenceChanges() = runBlocking {
+        val enabled = KeepAliveSettings(enabled = true, wakeLock = true, wifiLock = false, silentAudio = true)
+        val disabled = KeepAliveSettings(enabled = false, wakeLock = false, wifiLock = true, silentAudio = false)
+        Fixture(Properties()).use { fixture ->
+            fixture.open().use { app ->
+                assertEquals(KeepAliveSettings(), app.keepAlive.value)
+                app.updateKeepAlive(enabled)
+                fixture.awaitSaved("keepAlive.enabled", "true")
+                app.updateKeepAliveStatus { it.copy(serviceRunning = true, wakeLockHeld = true) }
+            }
+            fixture.open().use { app ->
+                assertEquals(enabled, app.keepAlive.value)
+                assertEquals(KeepAliveStatus(), app.keepAliveStatus.value)
+                app.updateDefaultAutoApprove(false)
+                fixture.awaitSaved("defaultAutoApprove", "false")
+                app.updateKeepAlive(disabled)
+                fixture.awaitSaved("keepAlive.wifiLock", "true")
+            }
+            fixture.open().use { app ->
+                assertEquals(disabled, app.keepAlive.value)
+                assertFalse(app.defaultAutoApprove.value)
+                app.updateAppearance(app.appearance.value.copy(darkTheme = true))
+                fixture.awaitSaved("dark", "true")
+            }
+            fixture.open().use { app ->
+                assertEquals(disabled, app.keepAlive.value)
+                assertTrue(app.appearance.value.darkTheme)
+                assertFalse(app.defaultAutoApprove.value)
+            }
+        }
+    }
 }

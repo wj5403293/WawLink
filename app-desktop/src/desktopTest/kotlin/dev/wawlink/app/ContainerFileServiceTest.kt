@@ -3,6 +3,7 @@ package dev.wawlink.app
 import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.ContainerFileService
+import dev.wawlink.runtime.RootfsExportSanitization
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -41,7 +42,7 @@ class ContainerFileServiceTest {
         override suspend fun pickRootfs(): String? = error("Unexpected rootfs picker")
         override suspend fun pickMountDirectory(): String? = error("Unexpected mount picker")
         override suspend fun prepareMountSource(source: String, readWrite: Boolean): String = error("Unexpected mount access request")
-        override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean = error("Unexpected rootfs export")
+        override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig, sanitization: RootfsExportSanitization): Boolean = error("Unexpected rootfs export")
         override suspend fun pickImportFiles(): List<HostImportFile> = error("Unexpected import picker")
         override suspend fun pickContainerIcon(): HostImportFile? = error("Unexpected icon picker")
         override suspend fun openFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit) {

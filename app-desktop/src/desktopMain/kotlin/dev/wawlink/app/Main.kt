@@ -130,7 +130,7 @@ private class DesktopHostFiles : HostFiles {
         val chooser = JFileChooser().apply { dialogTitle = "选择 rootfs 归档"; fileSelectionMode = JFileChooser.FILES_ONLY; fileFilter = FileNameExtensionFilter("Rootfs (*.gz, *.xz, *.zst, *.tar)", "gz", "xz", "zst", "tar") }
         if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile.absolutePath else null
     }
-    override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean {
+    override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig, sanitization: RootfsExportSanitization): Boolean {
         val destination = withContext(Dispatchers.Swing) {
             val chooser = JFileChooser().apply { dialogTitle = "导出容器归档"; selectedFile = File("${hostFileName(container.displayName)}.tar.zst") }
             if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
@@ -138,7 +138,7 @@ private class DesktopHostFiles : HostFiles {
                 if (file.exists() && javax.swing.JOptionPane.showConfirmDialog(null, "文件已存在，是否替换？", "确认替换", javax.swing.JOptionPane.YES_NO_OPTION) != javax.swing.JOptionPane.YES_OPTION) null else file
             } else null
         } ?: return false
-        withContext(Dispatchers.IO) { runtime.exportRootfs(container.id, destination.absolutePath) }
+        withContext(Dispatchers.IO) { runtime.exportRootfs(container.id, destination.absolutePath, sanitization) }
         return true
     }
 }

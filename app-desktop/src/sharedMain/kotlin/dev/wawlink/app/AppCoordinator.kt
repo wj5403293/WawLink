@@ -21,12 +21,32 @@ interface HostFiles {
     suspend fun pickRootfs(): String?
     suspend fun pickMountDirectory(): String?
     suspend fun prepareMountSource(source: String, readWrite: Boolean): String
-    suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean
+    suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig, sanitization: RootfsExportSanitization = RootfsExportSanitization()): Boolean
     suspend fun pickImportFiles(): List<HostImportFile>
     suspend fun pickContainerIcon(): HostImportFile?
     suspend fun saveFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit): Boolean
     suspend fun openFile(name: String, mimeType: String, write: suspend (java.io.OutputStream) -> Unit)
+    fun openBatteryOptimizationSettings() { throw UnsupportedOperationException("当前平台不支持 Android 电池优化设置") }
+    fun openAutoStartSettings() { throw UnsupportedOperationException("当前平台不支持 Android 自启动设置") }
 }
+
+/** Opt-in foreground service retention, independent of container and session lifecycles. */
+data class KeepAliveSettings(
+    val enabled: Boolean = false,
+    val wakeLock: Boolean = false,
+    val wifiLock: Boolean = false,
+    val silentAudio: Boolean = false,
+)
+
+/** Live Android observations; acquired resources must never be restored from preferences. */
+data class KeepAliveStatus(
+    val ignoringBatteryOptimizations: Boolean = false,
+    val serviceRunning: Boolean = false,
+    val wakeLockHeld: Boolean = false,
+    val wifiLockHeld: Boolean = false,
+    val silentAudioPlaying: Boolean = false,
+    val error: String? = null,
+)
 
 enum class SessionTitleSource { MANUAL, PENDING, FIRST_QUESTION }
 
@@ -74,6 +94,10 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     val defaultAutoApprove: StateFlow<Boolean> = _defaultAutoApprove.asStateFlow()
     private val _keepScreenOn = MutableStateFlow(false)
     val keepScreenOn: StateFlow<Boolean> = _keepScreenOn.asStateFlow()
+    private val _keepAlive = MutableStateFlow(KeepAliveSettings())
+    val keepAlive: StateFlow<KeepAliveSettings> = _keepAlive.asStateFlow()
+    private val _keepAliveStatus = MutableStateFlow(KeepAliveStatus())
+    val keepAliveStatus: StateFlow<KeepAliveStatus> = _keepAliveStatus.asStateFlow()
     private val notices = MutableStateFlow<List<HostNotice>>(emptyList())
     val notice: StateFlow<HostNotice?> = notices.map { it.firstOrNull() }.stateIn(scope, SharingStarted.Eagerly, null)
     private val ompSetupLock = Any()
@@ -91,9 +115,6 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     val sessions = combine(records.map { items -> items.sortedByDescending { it.updatedAt } }, sessionStates) { items, states ->
         items.map { item -> HomeSession(item, (states[item.id] ?: ChatSessionUiState(item.id)).copy(title = item.title, workspace = item.workspace)) }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
-    val active = combine(runtime.containers, runtime.deployments, sessions, busy) { containers, deployments, sessions, busy ->
-        containers.any { it.running } || deployments.any { it.error == null && it.progress < 1f } || sessions.any { it.state.isRunning } || busy > 0
-    }.stateIn(scope, SharingStarted.Eagerly, false)
 
     init {
         dataDir.mkdirs()
@@ -119,6 +140,12 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             )
             _defaultAutoApprove.value = flag("defaultAutoApprove", true)
             _keepScreenOn.value = flag("keepScreenOn", false)
+            _keepAlive.value = KeepAliveSettings(
+                enabled = flag("keepAlive.enabled", false),
+                wakeLock = flag("keepAlive.wakeLock", false),
+                wifiLock = flag("keepAlive.wifiLock", false),
+                silentAudio = flag("keepAlive.silentAudio", false),
+            )
             val metadata = Properties()
             File(dataDir, "sessions.properties").takeIf { it.exists() }?.inputStream()?.use(metadata::load)
             records.value = metadata.getProperty("ids", "").split(',').filter { it.isNotBlank() }.map { id ->
@@ -163,6 +190,12 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
             }
         }
     }
+    // Initialize after loading preferences so sticky recreation never starts from a false idle value.
+    // Retaining the service must not start a container or restore a session.
+    val active = combine(runtime.containers, runtime.deployments, sessions, busy, keepAlive) { containers, deployments, sessions, busy, keepAlive ->
+        (isAndroid && keepAlive.enabled) || containers.any { it.running } ||
+            deployments.any { it.error == null && it.progress < 1f } || sessions.any { it.state.isRunning } || busy > 0
+    }.stateIn(scope, SharingStarted.Eagerly, isAndroid && keepAlive.value.enabled)
     fun report(text: String) { notices.update { it + HostNotice(text = text) } }
     fun showError(error: Throwable) {
         if (error is CancellationException && error !is TimeoutCancellationException) return
@@ -508,6 +541,13 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         _keepScreenOn.value = enabled
         launch { persistPreferences() }
     }
+    fun updateKeepAlive(next: KeepAliveSettings) {
+        _keepAlive.value = next
+        launch { persistPreferences() }
+    }
+    fun updateKeepAliveStatus(update: (KeepAliveStatus) -> KeepAliveStatus) {
+        _keepAliveStatus.update(update)
+    }
     private fun persistPreferences() = synchronized(persistenceLock) {
         val current = _appearance.value
         val p = Properties()
@@ -516,6 +556,11 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
         p["hideTools"] = current.hideToolCalls.toString(); p["collapse"] = current.collapseCompacted.toString()
         p["defaultAutoApprove"] = _defaultAutoApprove.value.toString()
         p["keepScreenOn"] = _keepScreenOn.value.toString()
+        val keepAlive = _keepAlive.value
+        p["keepAlive.enabled"] = keepAlive.enabled.toString()
+        p["keepAlive.wakeLock"] = keepAlive.wakeLock.toString()
+        p["keepAlive.wifiLock"] = keepAlive.wifiLock.toString()
+        p["keepAlive.silentAudio"] = keepAlive.silentAudio.toString()
         p["uiScalePercent"] = current.effectiveUiScalePercent.toString()
         p["uiScaleBaseline"] = AgentAppearance.UI_SCALE_BASELINE_PERCENT.toString()
         p["colorSource"] = current.colorSource.name

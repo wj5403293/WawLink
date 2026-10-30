@@ -46,6 +46,7 @@ internal val featureBuiltins = listOf(
     FeatureBuiltin("terminal", "终端", "进入容器的交互式终端", "terminal"),
     FeatureBuiltin("files", "文件", "浏览和管理容器文件", "folder"),
     FeatureBuiltin("rules", "规则", "查看与编辑容器用户规则", "rule"),
+    FeatureBuiltin("prompts", "提示词", "编辑 AGENTS.md、SYSTEM.md 与提示词模板", "chat_paste_go"),
     FeatureBuiltin("plugins", "插件", "安装、配置与管理用户插件", "extension"),
     FeatureBuiltin("skills", "技能", "管理 Skill 与原生技能包", "psychology"),
 )

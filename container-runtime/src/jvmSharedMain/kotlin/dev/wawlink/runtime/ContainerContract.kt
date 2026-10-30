@@ -61,6 +61,15 @@ interface TerminalSession : AutoCloseable {
     val isAlive: StateFlow<Boolean>
     fun resize(columns: Int, rows: Int, cellWidthPixels: Int = 0, cellHeightPixels: Int = 0)
 }
+data class RootfsExportSanitization(
+    val ompConfigAndCredentials: Boolean = false,
+    val ompSessionsAndLogs: Boolean = false,
+    val shellHistory: Boolean = false,
+    val sshGitAndCaches: Boolean = false,
+) {
+    val isSanitized: Boolean get() = ompConfigAndCredentials || ompSessionsAndLogs || shellHistory || sshGitAndCaches
+}
+
 interface ContainerRuntime : AutoCloseable {
     val containers: StateFlow<List<ContainerInfo>>
     val deployments: StateFlow<List<DeploymentProgress>>
@@ -75,7 +84,7 @@ interface ContainerRuntime : AutoCloseable {
     suspend fun setDefault(id: String)
     suspend fun installDistro(distro: DistroSpec, name: String, mirror: MirrorSource, engine: ContainerEngineType): ContainerConfig
     suspend fun importRootfs(source: String, name: String, engine: ContainerEngineType = ContainerEngineType.PROOT, expectedSha256: String? = null): ContainerConfig
-    suspend fun exportRootfs(id: String, destination: String)
+    suspend fun exportRootfs(id: String, destination: String, sanitization: RootfsExportSanitization = RootfsExportSanitization())
     suspend fun cleanPackageCaches(): Long
     suspend fun probeToolchains(id: String): List<ToolchainInfo>
     suspend fun changeToolchain(id: String, toolId: String, install: Boolean): String

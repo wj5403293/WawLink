@@ -52,7 +52,7 @@ private data class HostRoute(
     val stateKey: String = when (page) {
         "chat", "hub" -> "$page:$sessionId"
         "providers", "management" -> "$page:$containerId:${sessionId ?: "global"}:${initialResource.orEmpty()}"
-        "framework", "container", "files", "rules" -> "$page:$containerId"
+        "framework", "container", "files", "rules", "prompts" -> "$page:$containerId"
         "plugins", "skills" -> "$page:$containerId:${resourceWorkspace ?: "user"}:$sessionId:$initialResource"
         "extension" -> "extension:$containerId:${feature?.id}"
         "terminal" -> "terminal:$containerId:${installationId ?: "shell"}"
@@ -93,6 +93,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
     var activeFeature by remember { mutableStateOf<ContainerFeature?>(null) }
     val resourceNavigation = remember { HostNavigation() }
     val rulesNavigation = remember { HostNavigation() }
+    val promptsNavigation = remember { HostNavigation() }
     val fileNavigation = remember { HostNavigation() }
     val settingsNavigation = remember { HostNavigation() }
     val hubNavigation = remember { HostNavigation() }
@@ -134,6 +135,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
             "terminal" -> openTerminal(id)
             "files" -> { selectedContainer = id; filesReturn = "home"; page = "files" }
             "rules" -> { selectedContainer = id; page = "rules" }
+            "prompts" -> { selectedContainer = id; page = "prompts" }
             "plugins", "skills" -> openResources(kind, id)
         }
     }
@@ -150,11 +152,12 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
         (page == "plugins" || page == "skills") && resourceNavigation.onBack?.invoke() == true -> true
         page == "plugins" || page == "skills" -> { page = resourcesReturn; true }
         page == "rules" && rulesNavigation.onBack?.invoke() == true -> true
+        page == "prompts" && promptsNavigation.onBack?.invoke() == true -> true
         page == "hub" && hubNavigation.onBack?.invoke() == true -> true
         page == "hub" -> { page = "chat"; true }
         page == "chat" && chatNavigations[selectedSession]?.back() == true -> true
         page == "chat" -> { leaveChat(); true }
-        page == "about" -> { page = "appearance"; true }
+        page == "about" || page == "keepalive" -> { page = "appearance"; true }
         page != "home" -> { page = "home"; true }
         else -> false
     }
@@ -197,13 +200,13 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
             returnPage = settingsReturn, resourceWorkspace = resourceWorkspace.takeIf { settingsReturn == "plugins" || settingsReturn == "skills" },
             initialResource = definitionName.takeIf { settingsReturn == "hub" })
         "framework" -> HostRoute(page, containerId = configurationContainer?.config?.id, returnPage = settingsReturn)
-        "container", "rules" -> HostRoute(page, containerId = selectedContainer)
+        "container", "rules", "prompts" -> HostRoute(page, containerId = selectedContainer)
         "plugins", "skills" -> HostRoute(page, containerId = selectedContainer, sessionId = resourceSession, returnPage = resourcesReturn, resourceWorkspace = resourceWorkspace, initialResource = initialResource)
         "extension" -> HostRoute(page, containerId = selectedContainer, feature = activeFeature)
         "terminal" -> HostRoute(page, containerId = selectedContainer, installationId = terminalInstallationId, returnPage = terminalReturn)
         "files" -> HostRoute(page, containerId = selectedContainer, returnPage = filesReturn)
         "install" -> HostRoute(page, rootfs = installRootfs)
-        "about" -> HostRoute(page, returnPage = "appearance")
+        "about", "keepalive" -> HostRoute(page, returnPage = "appearance")
         else -> HostRoute(page)
     }
     LaunchedEffect(sessions, route) {
@@ -260,7 +263,8 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                         explorer = app.pool.explorer(record.id), onOpenAgentHub = { page = "hub" },
                                         onFork = { source -> app.registerFork(record.id, source) },
                                         onOpenFork = { id -> selectedSession = id; page = "chat" },
-                                        navigation = chatNavigations.getOrPut(record.id) { AgentChatNavigation() }, appearance = appearance)
+                                        navigation = chatNavigations.getOrPut(record.id) { AgentChatNavigation() }, appearance = appearance,
+                                        onRequestOmpRepair = { app.requestOmpInstallation(record.containerId) })
                                     }
                                     else Box(Modifier.windowInsetsPadding(topInsets)) { EmptyHost("会话已删除") }
                                 }, onFailure = { error -> Column(Modifier.windowInsetsPadding(topInsets)) { AgentTopBar("无法进入会话", { page = "home" }); EmptyHost(error.message ?: error.toString()) } })
@@ -304,13 +308,15 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                 { if (configurationContainer != null) { settingsReturn = "appearance"; page = "providers" } else openNew() },
                                 { if (configurationContainer != null) { settingsReturn = "appearance"; page = "management" } else openNew() },
                                 { if (configurationContainer != null) { settingsReturn = "appearance"; page = "framework" } else openNew() },
-                                { page = "about" })
+                                { page = "keepalive" }, { page = "about" })
                             "about" -> AboutScreen({ page = "appearance" }, app::showError)
+                            "keepalive" -> KeepAliveScreen(app, files, { page = "appearance" })
                             "install" -> InstallContainerScreen(app, files, current.rootfs, { page = "home" })
                             "container" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerDetailScreen(app, files, it, { page = "home" }, ::openTerminal, { id -> selectedContainer = id; filesReturn = "container"; page = "files" }) } ?: MissingContainer { page = "home" }
                             "files" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerFilesScreen(app, files, it.config, { page = current.returnPage }, { fileNavigation.onBack = it }) } ?: MissingContainer { page = "home" }
                             "terminal" -> containers.firstOrNull { it.config.id == current.containerId }?.let { TerminalScreen(app, it.config, { page = terminalReturn }, current.installationId) } ?: MissingContainer { page = terminalReturn }
                             "rules" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerRulesScreen(app, it.config, { page = "home" }, { rulesNavigation.onBack = it }) } ?: MissingContainer { page = "home" }
+                            "prompts" -> containers.firstOrNull { it.config.id == current.containerId }?.let { ContainerPromptsScreen(app, it.config, { page = "home" }, { promptsNavigation.onBack = it }) } ?: MissingContainer { page = "home" }
                             "extension" -> if (current.containerId != null && current.feature != null) ContainerExtensionScreen(app.features, current.containerId, current.feature, { page = "home" }) else MissingContainer { page = "home" }
                             "plugins", "skills" -> if (current.containerId != null && containers.any { it.config.id == current.containerId }) {
                                 val repository = remember(current.containerId, current.resourceWorkspace, current.sessionId) { app.pool.resources(current.containerId, current.resourceWorkspace, current.sessionId) }
@@ -420,7 +426,7 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
         trailing()
     }
 }
-@Composable private fun AppearanceScreen(app: AppCoordinator, onBack: () -> Unit, providers: () -> Unit, agent: () -> Unit, framework: () -> Unit, about: () -> Unit) {
+@Composable private fun AppearanceScreen(app: AppCoordinator, onBack: () -> Unit, providers: () -> Unit, agent: () -> Unit, framework: () -> Unit, keepAlive: () -> Unit, about: () -> Unit) {
     val appearance by app.appearance.collectAsState()
     val defaultAutoApprove by app.defaultAutoApprove.collectAsState()
     Column {
@@ -465,6 +471,7 @@ internal fun EmptyHost(text: String, icon: String = "forum") {
             HostRow("Agent 设置", icon = "smart_toy", onClick = agent) { Symbol("chevron_right") }
             HostRow("框架设置", icon = "tune", onClick = framework) { Symbol("chevron_right") }
             SectionLabel("应用", "apps")
+            HostRow("后台保活", "电池与后台运行", "shield", onClick = keepAlive) { Symbol("chevron_right") }
             HostRow("关于", "项目与作者", "info", onClick = about) { Symbol("chevron_right") }
         }
     }

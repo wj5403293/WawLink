@@ -2,6 +2,7 @@ package dev.wawlink.app
 
 import android.Manifest
 import android.content.ClipData
+import android.content.ComponentName
 import android.content.Intent
 import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
@@ -9,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.os.storage.StorageManager
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -34,8 +36,10 @@ import androidx.lifecycle.repeatOnLifecycle
 import dev.wawlink.protocol.AttachmentFile
 import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
+import dev.wawlink.runtime.RootfsExportSanitization
 import java.io.File
 import java.util.UUID
+import java.util.Locale
 import kotlin.coroutines.resume
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
@@ -111,6 +115,79 @@ class MainActivity : ComponentActivity(), HostFiles {
             ) { WawLinkApp(app, this@MainActivity, navigation) }
         }
         if (Build.VERSION.SDK_INT >= 33 && savedInstanceState == null) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    override fun onResume() {
+        super.onResume()
+        refreshBatteryOptimizationStatus()
+    }
+    private fun refreshBatteryOptimizationStatus(): Boolean {
+        val ignoring = getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(packageName) == true
+        (application as WawLinkApplication).coordinator.updateKeepAliveStatus {
+            it.copy(ignoringBatteryOptimizations = ignoring)
+        }
+        return ignoring
+    }
+    override fun openBatteryOptimizationSettings() {
+        val ignoring = refreshBatteryOptimizationStatus()
+        if (!ignoring && tryOpenSettings(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))) return
+        if (tryOpenSettings(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))) return
+        openApplicationSettings()
+    }
+    override fun openAutoStartSettings() {
+        val components = when (Build.MANUFACTURER.lowercase(Locale.ROOT)) {
+            "xiaomi", "redmi", "poco" -> listOf(
+                "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
+                "com.miui.powerkeeper" to "com.miui.powerkeeper.ui.HiddenAppsConfigActivity",
+            )
+            "huawei" -> listOf(
+                "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+                "com.huawei.systemmanager" to "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity",
+            )
+            "honor" -> listOf(
+                "com.hihonor.systemmanager" to "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+                "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            )
+            "oppo", "realme", "oneplus" -> listOf(
+                "com.oplus.safecenter" to "com.oplus.safecenter.startupapp.StartupAppListActivity",
+                "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+                "com.coloros.safecenter" to "com.coloros.safecenter.startupapp.StartupAppListActivity",
+                "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
+                "com.oneplus.security" to "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity",
+            )
+            "vivo", "iqoo" -> listOf(
+                "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+                "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.PurviewTabActivity",
+            )
+            "samsung" -> listOf(
+                "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity",
+                "com.samsung.android.sm" to "com.samsung.android.sm.ui.battery.BatteryActivity",
+            )
+            "asus" -> listOf(
+                "com.asus.mobilemanager" to "com.asus.mobilemanager.powersaver.PowerSaverSettings",
+            )
+            else -> emptyList()
+        }
+        for ((owner, activity) in components) {
+            val intent = Intent().setComponent(ComponentName(owner, activity))
+                .putExtra("package_name", packageName)
+                .putExtra("package_label", applicationInfo.loadLabel(packageManager).toString())
+            if (tryOpenSettings(intent)) return
+        }
+        openApplicationSettings()
+    }
+    private fun openApplicationSettings() {
+        if (tryOpenSettings(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))) return
+        if (tryOpenSettings(Intent(Settings.ACTION_SETTINGS))) return
+        throw ActivityNotFoundException("系统未提供可用的应用设置页面")
+    }
+    private fun tryOpenSettings(intent: Intent): Boolean = try {
+        // Launch directly: package visibility can hide otherwise accessible settings activities.
+        startActivity(intent)
+        true
+    } catch (_: ActivityNotFoundException) {
+        false
+    } catch (_: SecurityException) {
+        false
     }
     override suspend fun pickMountDirectory(): String? {
         requireSharedStorageAccess()
@@ -279,7 +356,7 @@ class MainActivity : ComponentActivity(), HostFiles {
         } ?: return null
         return withContext(Dispatchers.IO) { copyPrivate(uri, "imports", displayName(uri)).absolutePath }
     }
-    override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig): Boolean {
+    override suspend fun exportRootfs(runtime: ContainerRuntime, container: ContainerConfig, sanitization: RootfsExportSanitization): Boolean {
         val uri = withContext(Dispatchers.Main.immediate) {
             check(exportResult == null) { "导出选择器已打开" }
             suspendCancellableCoroutine<Uri?> { continuation ->
@@ -291,7 +368,7 @@ class MainActivity : ComponentActivity(), HostFiles {
         return withContext(Dispatchers.IO) {
             val temporary = File(cacheDir, "${UUID.randomUUID()}.tar.zst")
             try {
-                runtime.exportRootfs(container.id, temporary.absolutePath)
+                runtime.exportRootfs(container.id, temporary.absolutePath, sanitization)
                 val output = contentResolver.openOutputStream(uri, "wt") ?: error("无法写入所选文档")
                 output.use { destination -> temporary.inputStream().use { it.copyTo(destination) } }
                 true
