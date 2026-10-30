@@ -102,15 +102,15 @@ Fedora 安装先更新 `sqlite-libs`，修复旧基础镜像的 SQLite 不含新
 # 首次准备 Android SDK；JDK 17 须已安装。
 sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.0.12077973'
 chmod 600 ~/.android/wsdx233.keystore ~/.android/.env
-./scripts/build-release.sh              # 默认 1.0.0
-./scripts/build-release.sh v1.0.1       # 指定下一版本
+./scripts/build-release.sh              # 默认 0.1.2
+./scripts/build-release.sh v0.1.3       # 指定下一版本
 ```
 
 SDK 优先使用 `ANDROID_HOME`，其次为 `ANDROID_SDK_ROOT`，未设置时使用 `~/Android/Sdk`。签名读取 `~/.android/wsdx233.keystore`、别名 `wsdx233`，以及私有 Shell 环境文件 `~/.android/.env` 中的 `WSDX233_KEY_PASSWORD`；同一密码用于仓库与私钥。也可在签名进程环境中提供 `WSDX233_KEYSTORE_PATH` 与 `WSDX233_KEY_PASSWORD`，环境密码优先，不把密码放在命令参数、Gradle properties 或项目文件中。该 `.env` 是会被 Shell 加载的本机可信文件，不接收仓库下载的替代文件。
 
-固定输出为 `app-android/build/outputs/apk/release/app-android-release.apk` 和同目录的 `app-android-release.apk.sha256`；后续构建覆盖这两个产物。单独运行 `./gradlew :app-android:assembleRelease` 或 `./scripts/build-release.sh --unsigned v1.0.1` 只产生未签名 APK，不能直接安装。签名只在 Gradle 结束后的独立进程进行，构建子进程不继承上述密码或 Base64 私钥环境变量；缺少签名输入或证书不匹配时失败，不退回 Debug 签名。保留现有未混淆配置，不在发布环境配置中引入未经设备验证的 R8 裁剪。
+固定输出为 `app-android/build/outputs/apk/release/app-android-release.apk` 和同目录的 `app-android-release.apk.sha256`；后续构建覆盖这两个产物。单独运行 `./gradlew :app-android:assembleRelease` 或 `./scripts/build-release.sh --unsigned v0.1.3` 只产生未签名 APK，不能直接安装。签名只在 Gradle 结束后的独立进程进行，构建子进程不继承上述密码或 Base64 私钥环境变量；缺少签名输入或证书不匹配时失败，不退回 Debug 签名。保留现有未混淆配置，不在发布环境配置中引入未经设备验证的 R8 裁剪。
 
-版本采用稳定的 `MAJOR.MINOR.PATCH`，不带前导零；次版本和修订号范围为 `0..999`。`versionCode = MAJOR × 1,000,000 + MINOR × 1,000 + PATCH`，须在 Android 的 `1..2,100,000,000` 范围内；例如 `1.0.0` 对应 `1000000`。本地参数与 tag 使用同一版本规则；可用 Gradle 属性 `-Pwawlink.version=1.0.1` 显式设置版本，默认版本在 `app-android/build.gradle.kts` 中维护。
+版本采用稳定的 `MAJOR.MINOR.PATCH`，不带前导零；次版本和修订号范围为 `0..999`。`versionCode = 1,000,000 + MAJOR × 1,000,000 + MINOR × 1,000 + PATCH`，须在 Android 的 `1..2,100,000,000` 范围内；例如 `0.1.2` 对应 `1001002`，`1.0.0` 对应 `2000000`。本地参数与 tag 使用同一版本规则；可用 Gradle 属性 `-Pwawlink.version=0.1.3` 显式设置版本，默认版本在 `app-android/build.gradle.kts` 中维护。
 
 GitHub 私有仓库为 [wsdx233/WawLink](https://github.com/wsdx233/WawLink)，工作流位于 `.github/workflows/android-release.yml`，只在推送 `vMAJOR.MINOR.PATCH` tag 时运行，普通分支推送和 Pull Request 不触发发布。远端 `release` Environment 只允许 `v*` tag，保存两个 Environment Secrets：
 

@@ -93,8 +93,8 @@ Signed Release APK (independent of Rootfs):
   ./scripts/build-release.sh [vMAJOR.MINOR.PATCH]
 This provisions the same pinned native inputs and builds with JDK 17, Platform 35,
 Build Tools 35.0.0 and NDK 27.0.12077973. ANDROID_HOME/ANDROID_SDK_ROOT overrides
-the default ~/Android/Sdk. The version defaults to 0.1.1; versionCode is
-major*1000000 + minor*1000 + patch (minor/patch 0..999, Android code limits apply).
+the default ~/Android/Sdk. The version defaults to 0.1.2; versionCode is
+1000000 + major*1000000 + minor*1000 + patch (minor/patch 0..999, Android code limits apply).
 The separate sign-release.sh reads ~/.android/wsdx233.keystore, alias wsdx233,
 and WSDX233_KEY_PASSWORD from the trusted ~/.android/.env or process environment.
 Keep both private files mode 0600; never commit or print their contents.

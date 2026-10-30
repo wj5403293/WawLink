@@ -5,12 +5,12 @@ plugins {
     id("org.jetbrains.compose")
 }
 
-val appVersion = providers.gradleProperty("wawlink.version").orElse("0.1.1").get()
+val appVersion = providers.gradleProperty("wawlink.version").orElse("0.1.2").get()
 require(Regex("(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})").matches(appVersion)) {
     "wawlink.version must be MAJOR.MINOR.PATCH (minor and patch: 0..999, no leading zeroes)"
 }
 val (major, minor, patch) = appVersion.split('.').map(String::toInt)
-val appVersionCode = major.toLong() * 1_000_000 + minor * 1_000 + patch
+val appVersionCode = 1_000_000L + major.toLong() * 1_000_000 + minor * 1_000 + patch
 require(appVersionCode in 1..2_100_000_000L) { "wawlink.version exceeds Android's versionCode range" }
 
 android {

@@ -194,6 +194,7 @@
 - 多发行版镜像与 OMP 安装适配仅本轮获准在开发机的隔离 Linux PRoot/QEMU 客体中执行真实下载、导入、依赖安装与原生 RPC 验证；不使用 Android 模拟器，不把客体结果写成 Android 真机验收。
 - 每次修改完成并通过必要验证后，必须为本次修改创建 Git commit，提交仅包含本次任务的变更。
 - Debug APK 交付统一使用 Gradle 默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`；Release 使用 `app-android/build/outputs/apk/release/app-android-release.apk` 与同目录 SHA-256 文件。后续更新覆盖对应固定产物，不按任务复制或新增命名 APK。
+- Android `versionCode` 使用 `1000000 + major*1000000 + minor*1000 + patch`；`0.1.2` 的 `1001002` 高于历史 `1.0.0` 的 `1000000`，覆盖安装仍要求签名一致。
 - Release 使用用户私有的 `~/.android/wsdx233.keystore`、别名 `wsdx233` 与 `~/.android/.env` 中的 `WSDX233_KEY_PASSWORD`；本机私有文件保持 0600，不将密码、keystore 或 Base64 私钥提交或输出到日志。GitHub 私钥仅保存于限制 `v*` tag 的 `release` Environment Secrets，编译任务不得接触；不回退到 Debug 签名。既有 Debug 与 Release 签名不同，不声称可直接覆盖安装。
 - 已确认：Rootfs 完整预装功能优先，不将 150–220 MB 作为硬上限；必须报告实际解压体积和归档体积。
 - 已确认：依上游真实能力提供引擎；Proroot 仅 Android arm64，桌面使用 PRoot/QEMU 或 chroot；强制只读绑定仅 chroot 支持，其他引擎必须明确拒绝，禁止静默变为可写。
