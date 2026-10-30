@@ -59,7 +59,10 @@ private fun loginHome(config: ContainerConfig, user: LoginIdentity): String = (c
 /** Resolves the configured account and HOME override offline, exactly as the engine launcher does. */
 fun containerHome(config: ContainerConfig): String = loginHome(config, loginIdentity(config))
 
-internal class RuntimeEngines(private val paths: RuntimePaths) {
+internal class RuntimeEngines(
+    private val paths: RuntimePaths,
+    private val runRootCommand: (String) -> String = { HostCommands.run(listOf("su", "-c", it)) },
+) {
     private val ownedMounts = mutableMapOf<String, MutableList<File>>()
     private val prootCapabilities = mutableMapOf<String, String>()
     private val prootLibraryPath: String by lazy {
@@ -138,7 +141,7 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
                 require(!config.sysvipc && !config.fakeKernel) { "chroot 使用真实系统 IPC/内核，不能启用伪装选项" }
                 require(guestArch(config.arch) == hostArch()) { "chroot 不能直接运行异构架构；请改用 PRoot + QEMU" }
                 val result = rootCommand("id")
-                require(Regex("(?:^|\\s)uid=0(?:\\D|$)").containsMatchIn(result)) { "未获得 Root 权限，请授权 su 或切回 PRoot/proroot" }
+                require(Regex("(?:^|\\s)uid=0(?:\\D|$)").containsMatchIn(result)) { "未获得 Root 权限，请授权 su 或切换其他引擎" }
                 rootCommand("command -v mountpoint >/dev/null && command -v mount >/dev/null && command -v umount >/dev/null && command -v chroot >/dev/null || { echo 'Root 环境缺少 mountpoint/mount/umount/chroot 命令' >&2; exit 127; }")
             }
         }
@@ -176,7 +179,7 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         if (config.engine != ContainerEngineType.CHROOT) return
         val root = validateRoot(config)
         val owned = ownedMounts.getOrPut(config.id) { mutableListOf() }
-        fun mount(target: File, command: String, readOnly: Boolean = false) {
+        fun mount(target: File, command: String, readOnlySource: File? = null) {
             val quoted = shellQuote(target.path)
             if (target in owned) {
                 if (rootCommand("if mountpoint -q $quoted; then echo mounted; fi").trim() == "mounted") return
@@ -184,10 +187,13 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
             }
             rootCommand("if mountpoint -q $quoted; then echo '挂载点已被其他程序占用' >&2; exit 1; fi; $command")
             owned += target
-            rootCommand("mount --make-private $quoted")
-            if (readOnly) {
-                rootCommand("mount -o remount,bind,ro $quoted")
-                val mountpoint = target.canonicalPath.replace(" ", "\\040")
+            // Android mount implementations may not support propagation flags. Only this
+            // optional step may fail there; bind/remount errors must still trigger rollback.
+            rootCommand("mount --make-private $quoted" + if (paths.isAndroid) " || true" else "")
+            if (readOnlySource != null) {
+                rootCommand("mount -o remount,bind,ro ${shellQuote(readOnlySource.path)} $quoted")
+                val mountpoint = target.canonicalPath.replace("\\", "\\134").replace(" ", "\\040")
+                    .replace("\t", "\\011").replace("\n", "\\012")
                 val info = rootCommand("cat /proc/self/mountinfo")
                 require(info.lineSequence().any { line -> val fields = line.split(' '); fields.size > 5 && fields[4] == mountpoint && "ro" in fields[5].split(',') }) { "内核未确认只读绑定挂载：$target" }
             }
@@ -198,14 +204,14 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
             val sys = guestTarget(root, "/sys", true)
             mount(sys, "mount -t sysfs sysfs ${shellQuote(sys.path)}")
             val dev = guestTarget(root, "/dev", true)
-            mount(dev, "mount --bind /dev ${shellQuote(dev.path)}")
+            mount(dev, "mount -o bind /dev ${shellQuote(dev.path)}")
             val pts = File(dev, "pts")
             require(pts.isDirectory) { "宿主 /dev/pts 不存在，无法挂载终端设备" }
             mount(pts, "mount -t devpts devpts ${shellQuote(pts.path)}")
             config.mounts.forEach { binding ->
                 val source = File(binding.source).canonicalFile
                 val target = guestTarget(root, binding.target, source.isDirectory)
-                mount(target, "mount --bind ${shellQuote(source.path)} ${shellQuote(target.path)}", !binding.readWrite)
+                mount(target, "mount -o bind ${shellQuote(source.path)} ${shellQuote(target.path)}", source.takeUnless { binding.readWrite })
             }
             rootCommand(owned.joinToString(" && ") { "mountpoint -q ${shellQuote(it.path)}" } + " || { echo 'su 挂载命名空间不共享，无法安全运行 chroot' >&2; exit 1; }")
         } catch (failure: Throwable) {
@@ -337,6 +343,6 @@ internal class RuntimeEngines(private val paths: RuntimePaths) {
         """.trimIndent()).lineSequence().filter { it.isNotBlank() }.toList()
     }
 
-    fun rootCommand(command: String): String = try { HostCommands.run(listOf("su", "-c", command)) }
-    catch (failure: Throwable) { throw IllegalStateException("Root 操作失败，请授权 su 或切回 PRoot/proroot：${failure.message}", failure) }
+    fun rootCommand(command: String): String = try { runRootCommand(command) }
+    catch (failure: Throwable) { throw IllegalStateException("chroot Root 命令执行失败：${failure.message}", failure) }
 }

@@ -345,7 +345,7 @@ class LocalContainerRuntime internal constructor(
         owned.forEach { it.outputDrainer?.cancel(); it.refreshDescendants() }
         val root = configurations[id]?.engine == ContainerEngineType.CHROOT
         terminate(owned, root, false)
-        owned.forEach { it.process.destroy() }
+        owned.forEach { if (it.process.isAlive) it.process.destroy() }
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
         while (System.nanoTime() < deadline && owned.any { it.hasLiveProcesses() }) Thread.sleep(50)
         terminate(owned, root, true)
@@ -361,6 +361,7 @@ class LocalContainerRuntime internal constructor(
     }
 
     private fun terminate(owned: List<TrackedProcess>, asRoot: Boolean, force: Boolean) {
+        if (!asRoot) owned.forEach { it.terminateFallback(force) }
         val identities = owned.flatMap { it.liveIdentities() }.distinct().asReversed()
         if (identities.isEmpty()) return
         val signal = if (force) "KILL" else "TERM"
@@ -686,7 +687,10 @@ class LocalContainerRuntime internal constructor(
             process.destroyForcibly(); terminal?.close(); pidFile?.delete()
             error("无法安全识别 su 启动的 chroot PID；执行确认未发送，Root Shell 将超时退出")
         }
-        val tracked = try { TrackedProcess(process, keeper, identity, if (root) engines::rootSnapshot else null, terminal) }
+        val tracked = try {
+            TrackedProcess(process, keeper, identity, if (root) engines::rootSnapshot else null, terminal,
+                ownsProcessGroup = !root && pty && paths.isAndroid)
+        }
         catch (failure: Throwable) { process.destroyForcibly(); terminal?.close(); pidFile?.delete(); throw failure }
         if (tracked.pid == null) { process.destroyForcibly(); terminal?.close(); pidFile?.delete(); error("无法识别容器进程 PID，拒绝启动以避免遗留进程") }
         processes.getOrPut(config.id) { mutableListOf() } += tracked
@@ -791,7 +795,7 @@ class LocalContainerRuntime internal constructor(
                             try {
                                 tracked.refreshDescendants()
                                 terminate(listOf(tracked), root, false)
-                                process.destroy()
+                                if (process.isAlive) process.destroy()
                                 process.waitFor(2, TimeUnit.SECONDS)
                                 terminate(listOf(tracked), root, true)
                                 if (process.isAlive) process.destroyForcibly()
@@ -904,26 +908,73 @@ class LocalContainerRuntime internal constructor(
 }
 
 
-/** Starttime pins ownership even when a PID is recycled. Root commands use privileged
- * snapshots because Android hides daemon-spawned su children from an ordinary app. */
-private class TrackedProcess(
+/** Starttime pins ownership even when a PID is recycled. Root commands always require
+ * privileged identity snapshots. An ordinary child may be opaque on Android: only its
+ * held, still-live Process authorizes the unverified root, never a later PID occupant. */
+internal class TrackedProcess(
     val process: Process,
     val keeper: Boolean,
     rootIdentity: Pair<Long, String>? = null,
     private val privilegedSnapshot: ((List<Long>) -> List<String>)? = null,
     val terminal: PtyTransport? = null,
+    // Only the Android Termux fork/setsid transport supplies this ownership guarantee.
+    private val ownsProcessGroup: Boolean = false,
+    private val statReader: (Long) -> String? = { File("/proc/$it/stat").readText() },
+    private val groupSignal: (Long, Boolean) -> Unit = { pid, force ->
+        // Signal directly: spawning a shell would widen the exit/PID-reuse race.
+        try {
+            Class.forName("android.system.Os").getMethod("kill", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+                .invoke(null, -pid.toInt(), if (force) 9 else 15)
+        } catch (failure: java.lang.reflect.InvocationTargetException) {
+            val cause = failure.targetException
+            val errno = runCatching { cause.javaClass.getField("errno").getInt(cause) }.getOrNull()
+            if (errno != 3) throw IllegalStateException("无法终止终端进程组", cause) // ESRCH: already exited.
+        }
+        Unit
+    },
 ) {
     @Volatile var stopping = false
     var outputDrainer: Job? = null
     val pid: Long? = rootIdentity?.first ?: findPid(process)
     private val identities = java.util.concurrent.ConcurrentHashMap<Long, String>()
+    private var unverifiedRoot: Long? = if (rootIdentity == null) pid else null
+    private var processExited = false
     private var rootLive = emptyList<Long>()
     private var snapshotTime = 0L
     init {
+        require(privilegedSnapshot == null || rootIdentity != null) { "Root 进程必须提供已验证身份" }
         if (rootIdentity != null) identities[rootIdentity.first] = rootIdentity.second
-        else pid?.let { readStat(it)?.let { stat -> identities[it] = stat.start } }
-        require(identities.isNotEmpty() || !process.isAlive) { "无法读取容器进程 /proc 身份，拒绝启动不受跟踪的进程" }
         refreshDescendants()
+    }
+
+    private fun originalIsAlive(): Boolean {
+        if (!processExited && !process.isAlive) processExited = true
+        return !processExited
+    }
+
+    private fun readStat(pid: Long): ProcStat? = try {
+        statReader(pid)?.let(::parseStat)?.takeIf { it.pid == pid }
+    } catch (_: Exception) { null }
+
+    private fun ownsPid(candidate: Long): Boolean {
+        if (candidate == pid && !originalIsAlive()) return false
+        if (candidate == unverifiedRoot) return originalIsAlive()
+        val start = identities[candidate] ?: return false
+        return readStat(candidate)?.let { it.start == start && it.state != "Z" } == true
+    }
+
+    /** No PID-only fallback for descendants or privileged chroot identities. */
+    @Synchronized fun terminateFallback(force: Boolean) {
+        if (privilegedSnapshot != null || pid == null || !originalIsAlive()) return
+        val stat = readStat(pid)
+        val start = identities[pid]
+        if (stat != null && start != null && stat.start != start) return
+        if (ownsProcessGroup && (stat == null || stat.group == pid && stat.session == pid) && originalIsAlive()) {
+            groupSignal(pid, force)
+        }
+        if ((stat == null || start == null) && originalIsAlive()) {
+            if (force) process.destroyForcibly() else process.destroy()
+        }
     }
 
     @Synchronized fun refreshDescendants() {
@@ -936,9 +987,11 @@ private class TrackedProcess(
             File("/proc/$parent/task").listFiles().orEmpty().forEach { task ->
                 val children = try { File(task, "children").readText() } catch (_: Exception) { "" }
                 children.trim().split(Regex("\\s+")).mapNotNull(String::toLongOrNull).forEach childLoop@ { child ->
+                    if (!ownsPid(parent)) return@childLoop
                     val stat = readStat(child) ?: return@childLoop
+                    if (stat.parent != parent || child == pid) return@childLoop
                     identities.putIfAbsent(child, stat.start)
-                    pending.add(child)
+                    if (ownsPid(child)) pending.add(child)
                 }
             }
         }
@@ -963,21 +1016,36 @@ private class TrackedProcess(
 
     @Synchronized fun livePids(): List<Long> {
         if (privilegedSnapshot != null) { refreshPrivileged(false); return rootLive }
-        return identities.entries.filter { (pid, start) -> readStat(pid)?.let { it.start == start && it.state != "Z" } == true }.map { it.key }
+        var liveUnverifiedRoot: Long? = null
+        unverifiedRoot?.let { root ->
+            if (originalIsAlive()) {
+                val stat = readStat(root)
+                if (stat == null) {
+                    if (originalIsAlive()) liveUnverifiedRoot = root
+                } else if (stat.state != "Z" && originalIsAlive()) {
+                    identities[root] = stat.start
+                    unverifiedRoot = null
+                }
+            } else unverifiedRoot = null
+        }
+        val live = identities.keys.filter(::ownsPid).toMutableList()
+        liveUnverifiedRoot?.let(live::add)
+        return live
     }
-    fun liveIdentities(): List<Pair<Long, String>> = livePids().mapNotNull { pid -> identities[pid]?.let { pid to it } }
+    @Synchronized fun liveIdentities(): List<Pair<Long, String>> = livePids().mapNotNull { pid -> identities[pid]?.let { pid to it } }
     fun hasLiveProcesses(): Boolean = process.isAlive || livePids().isNotEmpty()
 
     companion object {
-        private data class ProcStat(val pid: Long, val parent: Long, val start: String, val state: String)
+        private data class ProcStat(val pid: Long, val parent: Long, val start: String, val state: String, val group: Long, val session: Long)
         private fun parseStat(text: String): ProcStat? {
             val pid = text.substringBefore(' ').toLongOrNull() ?: return null
             val fields = text.substringAfterLast(") ").split(' ')
             val parent = fields.getOrNull(1)?.toLongOrNull() ?: return null
             val start = fields.getOrNull(19)?.takeIf { it.toLongOrNull() != null } ?: return null
-            return ProcStat(pid, parent, start, fields[0])
+            val group = fields.getOrNull(2)?.toLongOrNull() ?: return null
+            val session = fields.getOrNull(3)?.toLongOrNull() ?: return null
+            return ProcStat(pid, parent, start, fields[0], group, session)
         }
-        private fun readStat(pid: Long): ProcStat? = try { parseStat(File("/proc/$pid/stat").readText()) } catch (_: Exception) { null }
         fun handshake(file: File): Pair<Long, String>? = try {
             val lines = file.readLines()
             val pid = lines.firstOrNull()?.toLongOrNull()

@@ -24,7 +24,7 @@
 - Android“后台保活”独立于屏幕常亮，默认关闭并持久化；开启后可选择 CPU 唤醒锁、Wi-Fi 锁与静音音频，并提供电池优化和 ROM 自启动设置入口。关闭时释放可选资源，不中断仍有活动的容器/会话服务；状态反映实际获取结果，不保证绕过系统限制或强行停止。
 - 启动及容器列表更新只读取会话元数据，打开某个会话时才恢复其正文与控制器；主页继续观察已打开的会话，不批量恢复未打开的历史。
 - 容器运行时初始化不递归遍历 Rootfs 统计体积，先加载轻量配置、校验根目录并读取元数据，体积在后台计算并发布，可使用上次持久化值作初始缓存；迟到结果不得覆盖已删除或已变更的容器。克隆/导出的归档读写与体积遍历不持有全局锁，同容器启动、修改和删除与归档隔离，其他容器仍可操作；手动停止、关闭及取消后不得由收尾自动重新启动容器。
-- 容器导出默认完整备份；脱敏导出允许分别排除 OMP 配置与凭据、会话日志、Shell 历史及 SSH/Git 凭据与缓存，仅在归档中按用户 HOME 和配置档过滤，不修改源 Rootfs。路径和用户数据库越界必须拒绝，向用户说明未列入过滤的文件仍可能包含敏感内容。
+- 容器导出默认完整备份，分段标签为“完整导出”和“脱敏导出”，避免换行；脱敏导出允许分别排除 OMP 配置与凭据、会话日志、Shell 历史及 SSH/Git 凭据与缓存，仅在归档中按用户 HOME 和配置档过滤，不修改源 Rootfs。路径和用户数据库越界必须拒绝，向用户说明未列入过滤的文件仍可能包含敏感内容。
 - 未命名会话使用首条用户问题作为标题，过长时截断展示，不覆盖手动命名；主页会话列表长按进入多选。会话内右上角新建直接沿用当前容器与工作区，不弹配置表单且不预设名称。
 - 主页会话卡片展开与收起使用轻快的非线性动画，不叠加高度动画；展开后的分支按钮仅显示 Material Symbols 图标，保留中文无障碍说明和足够点击区域，减少操作栏换行与遮挡。
 - 全应用持久化单个当前容器；点击容器卡片选择，右侧开关独立启停，卡片不再放终端按钮。容器名称单行截断，选中卡片使用主题主色粗边框；新建会话直接使用当前选择容器且无预设名称，未发送消息的空会话离开后不进入持久化列表。
@@ -85,6 +85,8 @@
 - 容器主机目录挂载保留手填 `/sdcard/...`，并提供系统目录选择；Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，启动不自动申请。只把可直接访问的本机目录解析为实际挂载路径，不把 SAF URI 或云盘伪装成路径，不复制目录内容；取消选择、拒绝授权及保存失败保留挂载草稿，不放宽 Android 私有目录及引擎只读能力的限制。
 - PRoot/Proroot 启动前按宿主补充 GID 为容器追加缺失的组名，不覆盖已有组记录，不隐藏 `groups` 错误；既有动态 DNS 修复继续适用，更新 APK 不要求重新导入 Rootfs。
 - Proroot 所有绑定均使用上游要求的 host:guest 显式格式，包括 /dev、/proc、/sys 和工作区；普通登录身份支持容器中已有的用户名或数字 UID，按实际账户设置 UID/GID、HOME、USER 与 LOGNAME，不自动创建用户。OMP 进程、会话、扩展与管理桥统一使用当前配置用户的有效 HOME（含配置的 HOME 覆盖），离线解析，不为查目录启动容器；宿主配置目录须限定在所属 Rootfs 内，不固定为 /root，也不接入宿主主目录或挂载目录。
+- chroot 的 bind 与只读重挂载必须显式传入源和目标，实际只读状态通过 `/proc/self/mountinfo` 校验；Android 不支持 `--make-private` 时允许继续，不能把它当作挂载传播已隔离。实际挂载失败仍回滚并展示 chroot Root 命令的真实原因。
+- PRoot/Proroot 的宿主进程 `/proc/<pid>/stat` 不可读时不能拒绝正常启动；只在持有的原进程仍存活时回退跟踪和终止，恢复可读后固定 starttime 防止 PID 复用。Android Termux PTY 可对已知 setsid 进程组发信号；`/proc` 受限时不能保证发现所有后代，组长退出后不对未验证的进程组继续发信号。chroot 的 Root 身份握手与特权跟踪不放宽。
 - Proroot 五库按作者同一固定来源整套校验并原样打包；启动显式指定当前 APK 配套的 runtime/linker，不混用旧组件。OMP/Bun 启动修复须验证真实原生模块与 RPC，不靠屏蔽错误、禁用原生模块或伪造成功输出，也不要求重建已有 Rootfs。
 - 在线镜像安装完成后检查容器内 OMP，缺失或损坏时弹出安装/修复确认；OMP 运行进程或原生管理桥故障也须提示。只有用户同意才打开独立真实 PTY 终端并自动执行随应用打包的安装脚本，取消不执行，重组不重复安装。保留已有配置、认证、工作区与会话，安装失败保留终端真实原因；不要求重导入 Rootfs，也不复制宿主认证。
 - 切换容器、启停/重启容器、离开终端或功能页造成的预期中断，不弹 OMP 安装/修复引导或会话、终端、卡片报错。停止前先撤销旧操作代次；延迟回执、退出检查与快速重启不能把旧故障带到新代次，后台诊断不得重新启动已停止容器。真实安装损坏、进程异常退出及服务失败仍保留提示，取消不得吞掉后续操作或丢失已接收消息。
@@ -133,9 +135,9 @@
   - `RootfsSanitizer.kt` 按容器用户 HOME、原生配置档和选项过滤归档中的配置、日志、历史、凭据及缓存；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RootfsExportSanitizationTest.kt` 覆盖各选项、源文件保留、链接和越界拒绝。
   - 同目录的 `RuntimeIdentity.kt` 负责 PRoot/Proroot 补充组名的边界检查与原子更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeIdentityTest.kt` 覆盖保留已有记录、幂等与链接越界；`ContainerFileService.kt` 通过客体进程提供文件枚举、流式导入导出、复制、重命名、删除及 UTF-8 文本原子保存，不访问宿主 Rootfs 路径；多进程写入通过协程上下文保留首次运行身份，`LocalContainerRuntime.kt` 在进程准入锁内复核，后续提交和清理不按需启动。
   - `src/androidUnitTest/kotlin/dev/wawlink/runtime/ContainerFileTextTest.kt` 覆盖文本保存的精确字节与权限、2 MiB 边界、外部修改冲突、链接及挂载根保护、暂存文件清理和停止/快速重启后的提交拒绝及原始错误保留；运行于 Android JVM，不冒充设备端编辑器或引擎验收。
-  - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份，并通过 `containerHome(config)` 对驱动公开与启动器共用的离线有效 HOME 解析；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID、HOME 覆盖与无效账户/路径边界。
+  - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份，并通过 `containerHome(config)` 对驱动公开与启动器共用的离线有效 HOME 解析；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID、HOME 覆盖与无效账户/路径边界，`RuntimeChrootMountTest.kt` 覆盖 chroot 挂载参数、只读验证、失败回滚及错误。
   - 同目录的 `ContainerMetadata.kt` 提供容器内四项分发信息、当前登录 HOME 的离线边界检查、SHA256 冲突检测与原子保存；`LocalContainerRuntime.kt` 在启动、注册、导入和配置变更时读取，信息错误独立于引擎错误，保存不改变运行代次。`src/jvmSharedTest/kotlin/dev/wawlink/runtime/ContainerMetadataTest.kt`、`ContainerMetadataActionTest.kt` 覆盖持久化、Rootfs 迁移、链接/挂载边界、外部修改与运行中动作不受改名影响。
-  - `LocalContainerRuntime.kt` 冷启动先发布持久化的体积缓存，再在后台 IO 离线统计，以请求和配置身份隔离删除、重注册及关闭后的迟到结果；克隆/导出通过单容器归档占用在全局锁外执行，准入拒绝同容器冲突操作，自动恢复校验原运行状态与停止代次，不恢复旧配置快照。`src/jvmSharedTest/kotlin/dev/wawlink/runtime/LocalContainerRuntimeTest.kt` 覆盖缓存首屏、异步尺寸竞态、跨容器并发、同容器准入、取消/关闭及克隆与导出失败清理。
+  - `LocalContainerRuntime.kt` 冷启动先发布持久化的体积缓存，再在后台 IO 离线统计，以请求和配置身份隔离删除、重注册及关闭后的迟到结果；克隆/导出通过单容器归档占用在全局锁外执行，准入拒绝同容器冲突操作，自动恢复校验原运行状态与停止代次，不恢复旧配置快照。`src/jvmSharedTest/kotlin/dev/wawlink/runtime/LocalContainerRuntimeTest.kt` 覆盖缓存首屏、异步尺寸竞态、跨容器并发、同容器准入、取消/关闭及克隆与导出失败清理；`TrackedProcessTest.kt` 覆盖进程身份不可读、恢复、PID 复用与进程组回收。
   - 同目录的 `PtyTransport.kt` 及 `src/androidMain/kotlin/dev/wawlink/runtime/PtyTransport.android.kt`、`src/desktopMain/kotlin/dev/wawlink/runtime/PtyTransport.desktop.kt` 提供两端真实 PTY，`ContainerContract.kt` 定义原始字节读写、调整尺寸与会话回收契约。
   - 同目录的 `ContainerFeatures.kt` 扫描功能/卡片及动作声明，按 `ContainerContract.kt` 的运行代次与原子运行中进程接口自动启动及隔离回收；`ContainerFeatureRuntime.kt` 解析跨度、按钮和动态 URL，监管真实服务进程组、RSS、生命周期与停服卸载；`ContainerFeatureScriptActions.kt` 执行校验、去重及取消回收的容器脚本动作。`ContainerFeatureGateway.kt`、`ContainerFeatureHttpConnection.kt` 提供随机 loopback、令牌门控的 HTTP/WebSocket 网关与主题/图标注入；`ContainerFeatureSkill.kt` 保存明确创建请求才触发的原生/动态 HTML、LuaJ 契约。`src/jvmSharedTest/kotlin/dev/wawlink/runtime/ContainerFeatureRuntimeTest.kt` 覆盖运行代次、自动启动、取消回收、入场竞态与 URL/令牌边界。
   - `ContainerFeatureSkill.kt` 同时维护预置 Skill 的 SHA-256 安装记录、已发布无记录版本接管与中断可恢复的客体原子升级；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/ContainerFeatureSkillTest.kt` 通过真实 Shell/文件覆盖跨版本更新、幂等、用户修改保留、两侧中断恢复及符号链接/无效记录拒绝。

@@ -243,7 +243,7 @@ internal fun bytesLabel(bytes: Long): String = when {
             }
             SectionLabel("运行引擎", "deployed_code")
             DetailSegments(ContainerEngineType.entries, c.engine, { it.name.lowercase() }, { update(c.copy(engine = it)) }, enabled = { app.isAndroid || it != ContainerEngineType.PROROOT })
-            Text("切换引擎或配置会停止相关进程并应用新配置。chroot 需要 Root 权限。${if (!app.isAndroid) "proroot 仅支持 Android。" else "proroot 仅支持 root 登录身份。"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
+            Text("切换引擎或配置会停止相关进程并应用新配置。chroot 需要 Root 权限。${if (!app.isAndroid) "proroot 仅支持 Android。" else "proroot 支持 root 与普通用户。"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
             SectionLabel("预装工具链", "construction", action = { TextButton({ uiScope.launch { probe() } }, enabled = toolBusy == null) { Text("重新探测") } })
             if (tools == null && probeError == null) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在容器内探测实际工具版本", Modifier.padding(12.dp)) }
             probeError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -348,7 +348,7 @@ internal fun bytesLabel(bytes: Long): String = when {
 
     AgentSheet("导出容器", onDismiss) {
         Text(containerName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 12.dp))
-        DetailSegments(listOf(false, true), sanitized, { if (it) "脱敏导出" else "完整导出（默认）" }, { sanitized = it })
+        DetailSegments(listOf(false, true), sanitized, { if (it) "脱敏导出" else "完整导出" }, { sanitized = it })
         Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(top = 12.dp)) {
             if (!sanitized) {
                 Text("保留容器内全部文件、配置与会话记录，适合个人完整备份与迁移。", color = MaterialTheme.colorScheme.onSurfaceVariant)

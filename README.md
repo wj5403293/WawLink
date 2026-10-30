@@ -193,9 +193,10 @@ git push origin v1.0.0
 - Proroot 五库固定为作者 [andClaw 2.3.47 的同一提交](https://github.com/coderredlab/andClaw/tree/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a)，逐文件校验 SHA-256 并原样打包；启动时显式选择当前 APK 配套的 runtime/linker，避免自动发现混用旧组件。该更新修复旧 syscall relay 破坏寄存器导致的 Bun 崩溃及原生模块加载失败；保留原 Bun、OMP 和 Rootfs，无需禁用缓存、屏蔽错误或加入兼容 shim，更新 APK 即可生效。
 - 容器详情按原型重置操作按钮、工具链卡片、主题色分段控件和挂载 bottom sheet；保留原有功能。包括 Proroot 在内的普通登录身份可填写容器中已有的用户名或数字 UID，实际启动使用该账户的 UID/GID、HOME、USER 与 LOGNAME，不固定为 `user`，不自动创建账户。有效 HOME 使用与启动器共用的离线账户解析，并遵循容器配置中的 `HOME` 环境覆盖。
 - 容器详情 → 挂载目录支持主机目录选择，主机路径右侧的文件夹按钮在 Android 打开系统目录选择器，Desktop 打开原生目录选择器；也可手填 `/sdcard/项目` 等实际主机路径并指定容器内挂载点。Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，Android 10 使用传统共享储存访问；启动不自动申请。仅解析本机共享储存卷的目录，保存实际路径而非 `content://`，不复制或同步目录内容；取消选择、拒绝授权或保存失败保留草稿。云盘等文档提供方不能直接挂载；系统选择器不允许选择共享储存根目录或 Download 时，可在授权后手填路径。权限不绕过 Android 对其他应用私有目录的限制；只读保护仍仅由 chroot 提供。更新 APK 即可使用，无需重新导入 Rootfs。
-- 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，并在停止容器时回收所属进程、卸载挂载点。
+- 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，bind 和只读重挂载都显式传入源与目标，并校验内核报告的只读状态；挂载失败回滚并保留实际错误。Android 的 mount 不支持私有化标志时允许继续，不能保证挂载传播隔离；停止容器时回收所属进程、卸载挂载点。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
 - 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 保留 Love2Droid 的黑色控制台、Maple Mono 字体及两行等宽快捷键栏，移植 Termux TerminalView/TerminalSession；挂载和窗口获焦后重建输入连接，点击终端唤出软键盘，快捷键不抢焦点。Desktop 使用 JediTerm 3.63 + pty4j 0.13.4。支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新；离开页面关闭其终端进程，退出后保留输出并提示重新打开，不关闭其他会话的进程。
+- 容器宿主进程的 `/proc/<pid>/stat` 不可读时，以仍存活的原进程句柄回退跟踪和终止；恢复可读后固定 starttime，避免将复用的 PID 当作原进程。Android Termux PTY 的已知会话进程组也会收到停止信号；若 `/proc` 持续不可读，无法保证发现所有后代，组长退出后不会再向未验证的进程组发信号，忽略停止信号或脱离进程组的后代可能残留。chroot 仍要求经过 Root 身份握手及特权快照。
 - PRoot/Proroot 启动前为宿主补充 GID 追加缺失的容器组名，保留已有 `/etc/group` 条目并原子更新，解决 `groups: cannot find name for ...`，不屏蔽报错。DNS 继续使用已有的默认网络监听与客体配置更新，无需替换 PRoot 二进制或重新导入 Rootfs。
 - 工具链安装/卸载先确认，取消不执行，执行期间禁止重复触发；同一行卡片按较高内容等高，长版本自动换行。Git 版本去掉 `git version` 前缀。
 - rootfs 支持 `.tar.gz`、`.tar.xz`、`.tar.zst` 导入，导出为 `.tar.zst`。归档路径和符号链接受边界检查；克隆/导出保留可执行及访问权限。文件系统允许时保留真实硬链接；Android 等环境拒绝创建硬链接时，导入器改为复制普通文件并保留权限和修改时间，不生成替代符号链接。此时文件不再共享 inode，可能增加磁盘占用。体积统计不遍历运行时挂载和 PRoot/QEMU 的临时宿主视图。
