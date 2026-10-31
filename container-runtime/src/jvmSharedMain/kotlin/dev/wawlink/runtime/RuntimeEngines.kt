@@ -148,7 +148,7 @@ internal class RuntimeEngines(
     }
 
     private fun hostArch(): String = guestArch(System.getProperty("os.arch", ""))
-    private fun guestArch(value: String): String = when (value.lowercase()) {
+    fun guestArch(value: String): String = when (value.lowercase()) {
         "aarch64", "arm64", "arm64-v8a" -> "arm64"
         "amd64", "x86_64" -> "amd64"
         "arm", "armv7l", "armeabi-v7a" -> "arm"

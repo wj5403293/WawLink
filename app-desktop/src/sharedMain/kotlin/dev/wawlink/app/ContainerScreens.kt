@@ -112,21 +112,14 @@ internal fun bytesLabel(bytes: Long): String = when {
     var mirror by rememberSaveable { mutableStateOf(MirrorSource.OFFICIAL) }
     var engine by rememberSaveable { mutableStateOf(ContainerEngineType.PROOT) }
     var expanded by rememberSaveable { mutableStateOf<String?>(app.runtime.catalog.firstOrNull()?.id) }
-    var sourceType by rememberSaveable { mutableStateOf("本地文件") }
-    var source by rememberSaveable { mutableStateOf("") }
-    var url by rememberSaveable { mutableStateOf("") }
-    var name by rememberSaveable { mutableStateOf("custom-rootfs") }
-    var family by rememberSaveable { mutableStateOf("Ubuntu") }
-    var shell by rememberSaveable { mutableStateOf("/bin/bash") }
-    var checksum by rememberSaveable { mutableStateOf("") }
     Column {
         AgentTopBar("添加容器", onBack)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 40.dp)) {
             HostChips(listOf("发行版库", "导入 rootfs"), tab, { it }, { tab = it })
-            SectionLabel("运行引擎", "deployed_code")
-            EngineSelector(engine, app.isAndroid) { engine = it }
-            if (engine == ContainerEngineType.CHROOT) Text("chroot 需要系统 Root 权限。无权限时会显示实际错误，请改用 proot。", Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.error, fontSize = 15.sp)
             if (tab == "发行版库") {
+                SectionLabel("运行引擎", "deployed_code")
+                EngineSelector(engine, app.isAndroid) { engine = it }
+                if (engine == ContainerEngineType.CHROOT) Text("chroot 需要系统 Root 权限。无权限时会显示实际错误，请改用 proot。", Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.error, fontSize = 15.sp)
                 HostField("搜索 Linux 发行版", query, { query = it })
                 HostChips(MirrorSource.entries, mirror, { it.label }, { mirror = it }, "language")
                 SectionLabel("可安装发行版", "explore")
@@ -150,24 +143,7 @@ internal fun bytesLabel(bytes: Long): String = when {
                     }
                 }
             } else {
-                SectionLabel("来源方式", "folder_zip")
-                HostChips(listOf("本地文件", "网络地址"), sourceType, { it }, { sourceType = it })
-                if (sourceType == "本地文件") {
-                    HostRow(if (source.isBlank()) "选择 rootfs 归档" else java.io.File(source).name, ".tar.gz / .tar.xz / .tar.zst", "folder_zip", { app.launch { files.pickRootfs()?.let { source = it } } }) { Symbol("folder") }
-                } else HostField("下载链接", url, { url = it })
-                HostField("容器名称", name, { name = it })
-                HostField("SHA256（可选）", checksum, { checksum = it })
-                SectionLabel("系统类型", "deployed_code")
-                HostChips(listOf("Ubuntu", "Debian", "Alpine", "Arch", "Fedora", "Kali"), family, { it }, { family = it })
-                SectionLabel("默认 Shell", "terminal")
-                ShellSelector(shell) { shell = it }
-                HostAction("校验并导入容器", "folder_zip", {
-                    app.launch {
-                        val config = app.runtime.importRootfs(if (sourceType == "本地文件") source else url.trim(), name.trim(), engine, checksum.trim().ifBlank { null })
-                        app.runtime.update(config.copy(distro = family.lowercase(), shell = shell))
-                        app.checkOmpInstallation(config.id)
-                    }; onBack()
-                }, Modifier.fillMaxWidth().padding(top = 28.dp), enabled = name.isNotBlank() && (if (sourceType == "本地文件") source.isNotBlank() else url.isNotBlank()))
+                RootfsImportForm(app, files, onBack)
             }
         }
     }

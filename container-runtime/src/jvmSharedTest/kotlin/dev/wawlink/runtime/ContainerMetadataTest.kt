@@ -257,7 +257,9 @@ class ContainerMetadataTest {
         RootfsArchives.export(File(config.rootfsPath), archive)
         val runtime = LocalContainerRuntime(RuntimePaths(data, hostProot = "/missing-engine-must-not-be-launched"))
         try {
-            val imported = runtime.importRootfs(archive.path, "临时导入名称")
+            val inspection = runtime.inspectRootfsArchive(archive.path, "临时导入名称")
+            assertEquals(metadata, inspection.metadata)
+            val imported = runtime.importRootfs(inspection.id, "临时导入名称")
             assertEquals(metadata, imported.metadata)
             assertEquals("归档标题", imported.displayName)
             val cloned = runtime.clone(imported.id, "明确克隆名称")
@@ -269,13 +271,15 @@ class ContainerMetadataTest {
             document(config).delete()
             val bare = File(directory, "bare.tar.zst")
             RootfsArchives.export(File(config.rootfsPath), bare)
-            val created = runtime.importRootfs(bare.path, "全新标题")
+            val bareInspection = runtime.inspectRootfsArchive(bare.path, "全新标题")
+            val created = runtime.importRootfs(bareInspection.id, "全新标题")
             assertEquals(ContainerMetadata("全新标题"), runtime.readMetadata(created.id).value)
             val invalid = "{\"title\":false}"
             writeDocument(config, invalid)
             val malformed = File(directory, "malformed.tar.zst")
             RootfsArchives.export(File(config.rootfsPath), malformed)
-            val repairable = runtime.importRootfs(malformed.path, "可修复导入")
+            val malformedInspection = runtime.inspectRootfsArchive(malformed.path, "可修复导入")
+            val repairable = runtime.importRootfs(malformedInspection.id, "可修复导入")
             val info = runtime.containers.value.single { it.config.id == repairable.id }
             assertTrue(info.metadataError != null)
             assertNull(info.error)

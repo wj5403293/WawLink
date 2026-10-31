@@ -134,13 +134,13 @@ internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expand
                     }
                 }
             }
-            if (item.accepted) FeedHistoryActions(item.id, alignEnd = true)
+            if (item.accepted) FeedHistoryActions(item, alignEnd = true)
         }
         is AssistantMessageItem -> {
             Column(Modifier.padding(horizontal = 4.dp)) {
                 Markdown(streamedText(item.markdownText, item.isStreaming))
                 if (item.isStreaming) StreamingCaret()
-                if (!item.isStreaming) FeedHistoryActions(item.id)
+                if (!item.isStreaming) FeedHistoryActions(item)
             }
         }
         is ThinkingNodeItem -> ThinkingNode(item, expanded, onDetail)
@@ -150,7 +150,7 @@ internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expand
         is ApprovalCardItem -> ApprovalCard(item, controller)
         is AskCardItem -> Column {
             AskCard(item, controller)
-            FeedHistoryActions(item.id)
+            FeedHistoryActions(item)
         }
     }
 }

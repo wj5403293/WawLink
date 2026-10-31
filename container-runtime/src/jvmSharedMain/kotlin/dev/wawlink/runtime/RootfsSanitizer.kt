@@ -5,10 +5,11 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 
 /** Resolves homes within the guest without reading a passwd file outside its rootfs. */
-internal fun sanitizedExportHomes(config: ContainerConfig): Set<String> {
+internal fun sanitizedExportHomes(config: ContainerConfig, requirePasswd: Boolean = true): Set<String> {
     val root = File(config.rootfsPath).toPath().toRealPath()
-    val passwd = root.resolve("etc/passwd").toRealPath()
-    require(passwd.startsWith(root) && Files.isRegularFile(passwd, NOFOLLOW_LINKS)) { "用户数据库路径越界或不是普通文件" }
+    val requestedPasswd = root.resolve("etc/passwd")
+    val passwd = if (!requirePasswd && !Files.exists(requestedPasswd, NOFOLLOW_LINKS)) null else requestedPasswd.toRealPath()
+    require(passwd == null || (passwd.startsWith(root) && Files.isRegularFile(passwd, NOFOLLOW_LINKS))) { "用户数据库路径越界或不是普通文件" }
 
     val homes = linkedSetOf<String>()
     fun addHome(home: String) {
@@ -25,7 +26,7 @@ internal fun sanitizedExportHomes(config: ContainerConfig): Set<String> {
 
     addHome("/root")
     addHome(containerHome(config))
-    passwd.toFile().useLines { lines ->
+    passwd?.toFile()?.useLines { lines ->
         lines.forEach { line ->
             val fields = line.split(':', limit = 7)
             if (fields.size == 7 && fields[2].toLongOrNull()?.let { it >= 0 } == true && fields[5].startsWith('/')) {
@@ -37,7 +38,7 @@ internal fun sanitizedExportHomes(config: ContainerConfig): Set<String> {
 }
 
 /** Prepared once per export; matching is confined to complete path components. */
-internal class RootfsSanitizer(userHomes: Set<String>, sanitization: RootfsExportSanitization) {
+internal class RootfsSanitizer(userHomes: Set<String>, sanitization: RootfsExportSanitization, includeCaches: Boolean = true) {
     private val targets = mutableListOf<String>()
     private val profileRoots = mutableListOf<String>()
     private val profileTargets = mutableListOf<String>()
@@ -57,10 +58,10 @@ internal class RootfsSanitizer(userHomes: Set<String>, sanitization: RootfsExpor
             }
             if (profileTargets.isNotEmpty()) profileRoots += underHome(".omp/profiles/")
             if (sanitization.shellHistory) shellHistoryPaths.forEach { targets += underHome(it) }
-            if (sanitization.sshGitAndCaches) credentialAndCachePaths.forEach { targets += underHome(it) }
+            if (sanitization.sshGitAndCaches) (if (includeCaches) credentialAndCachePaths else credentialPaths).forEach { targets += underHome(it) }
         }
         if (sanitization.ompSessionsAndLogs) targets += "tmp/wawlink"
-        if (sanitization.sshGitAndCaches) systemCacheRoots += listOf(
+        if (sanitization.sshGitAndCaches && includeCaches) systemCacheRoots += listOf(
             "var/cache/apt/archives", "var/lib/apt/lists", "var/cache/apk", "var/cache/pacman/pkg",
         )
     }
@@ -74,6 +75,23 @@ internal class RootfsSanitizer(userHomes: Set<String>, sanitization: RootfsExpor
             if (profileEnd <= prefix.length || !relativePath.startsWith("agent/", profileEnd + 1)) continue
             val targetStart = profileEnd + 1 + "agent/".length
             if (profileTargets.any { matchesPath(relativePath, it, targetStart) }) return true
+        }
+        return false
+    }
+
+    /** Ancestor metadata must not make a protected descendant inaccessible. */
+    fun protectsDescendant(relativePath: String): Boolean {
+        if (targets.any { it.startsWith("$relativePath/") }) return true
+        for (prefix in profileRoots) {
+            val root = prefix.trimEnd('/')
+            if (root == relativePath || root.startsWith("$relativePath/")) return true
+            if (!relativePath.startsWith(prefix)) continue
+            val parts = relativePath.removePrefix(prefix).split('/')
+            if (parts.size == 1 || (parts.getOrNull(1) == "agent" && parts.size == 2)) return true
+            if (parts.getOrNull(1) == "agent") {
+                val nested = parts.drop(2).joinToString("/")
+                if (profileTargets.any { it.startsWith("$nested/") }) return true
+            }
         }
         return false
     }
@@ -93,9 +111,10 @@ internal class RootfsSanitizer(userHomes: Set<String>, sanitization: RootfsExpor
             ".bash_history", ".zsh_history", ".ash_history", ".sh_history", ".local/share/fish/fish_history",
             ".python_history", ".node_repl_history", ".lesshst", ".viminfo", ".wget-hsts",
         )
-        val credentialAndCachePaths = listOf(
+        val credentialPaths = listOf(
             ".ssh", ".gnupg", ".gitconfig", ".git-credentials", ".netrc", ".npmrc", ".pypirc",
-            ".cargo/credentials", ".cargo/credentials.toml", ".config/gh", ".cache", ".npm", ".bun/install/cache",
+            ".cargo/credentials", ".cargo/credentials.toml", ".config/gh",
         )
+        val credentialAndCachePaths = credentialPaths + listOf(".cache", ".npm", ".bun/install/cache")
     }
 }

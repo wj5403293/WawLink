@@ -67,20 +67,22 @@ class RootfsArchivesTest {
         try {
             runBlocking {
                 withTimeout(10_000) {
-                    val first = async(Dispatchers.IO) { runCatching { runtime.importRootfs("http://127.0.0.1:${server.address.port}/import0", "first") } }
+                    val first = async(Dispatchers.IO) { runCatching { runtime.inspectRootfsArchive("http://127.0.0.1:${server.address.port}/import0", "first") } }
                     runtime.deployments.first { it.size == 1 }
-                    val second = async(Dispatchers.IO) { runCatching { runtime.importRootfs("http://127.0.0.1:${server.address.port}/import1", "second") } }
+                    val second = async(Dispatchers.IO) { runCatching { runtime.inspectRootfsArchive("http://127.0.0.1:${server.address.port}/import1", "second") } }
                     val initial = runtime.deployments.first { it.size == 2 }
                     releases[0].countDown()
                     val firstResult = first.await()
                     val updated = runtime.deployments.value
+                    assertFalse(second.isCompleted)
                     releases[1].countDown()
                     val secondResult = second.await()
                     assertTrue(firstResult.isFailure)
                     assertTrue(secondResult.isFailure)
                     assertEquals(initial.map { it.id }, updated.map { it.id })
                     assertTrue(updated[0].error != null)
-                    assertEquals(initial[1], updated[1])
+                    assertEquals("second", updated[1].name)
+                    assertTrue(updated[1].error == null)
                     assertEquals(initial.map { it.id }, runtime.deployments.value.map { it.id })
                 }
             }

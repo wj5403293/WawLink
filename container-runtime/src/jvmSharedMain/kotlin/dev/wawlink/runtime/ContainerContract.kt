@@ -69,6 +69,15 @@ data class RootfsExportSanitization(
 ) {
     val isSanitized: Boolean get() = ompConfigAndCredentials || ompSessionsAndLogs || shellHistory || sshGitAndCaches
 }
+data class RootfsImportInspection(val id: String, val name: String, val metadata: ContainerMetadata)
+enum class RootfsImportMode { NEW, RENAME, UPDATE }
+
+/** Both names are independent identities: a single archive can conflict with several containers. */
+fun rootfsImportConflicts(name: String, archiveTitle: String, configs: List<ContainerConfig>): List<ContainerConfig> {
+    val names = setOf(name.trim(), archiveTitle.trim()) - ""
+    return configs.filter { it.name.trim() in names || it.displayName.trim() in names }
+}
+
 
 interface ContainerRuntime : AutoCloseable {
     val containers: StateFlow<List<ContainerInfo>>
@@ -83,7 +92,9 @@ interface ContainerRuntime : AutoCloseable {
     suspend fun clone(id: String, name: String): ContainerConfig
     suspend fun setDefault(id: String)
     suspend fun installDistro(distro: DistroSpec, name: String, mirror: MirrorSource, engine: ContainerEngineType): ContainerConfig
-    suspend fun importRootfs(source: String, name: String, engine: ContainerEngineType = ContainerEngineType.PROOT, expectedSha256: String? = null): ContainerConfig
+    suspend fun inspectRootfsArchive(source: String, name: String, engine: ContainerEngineType = ContainerEngineType.PROOT, expectedSha256: String? = null): RootfsImportInspection
+    suspend fun importRootfs(inspectionId: String, name: String, mode: RootfsImportMode = RootfsImportMode.NEW, targetId: String? = null): ContainerConfig
+    suspend fun discardRootfsImport(inspectionId: String)
     suspend fun exportRootfs(id: String, destination: String, sanitization: RootfsExportSanitization = RootfsExportSanitization())
     suspend fun cleanPackageCaches(): Long
     suspend fun probeToolchains(id: String): List<ToolchainInfo>

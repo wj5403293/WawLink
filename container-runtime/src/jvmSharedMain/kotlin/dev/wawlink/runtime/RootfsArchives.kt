@@ -246,6 +246,11 @@ internal object RootfsArchives {
     fun deleteTree(file: File) {
         if (!Files.exists(file.toPath(), NOFOLLOW_LINKS)) return
         Files.walkFileTree(file.toPath(), object : SimpleFileVisitor<Path>() {
+            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                val permissions = Files.getPosixFilePermissions(dir, NOFOLLOW_LINKS)
+                Files.setPosixFilePermissions(dir, permissions + setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE))
+                return FileVisitResult.CONTINUE
+            }
             override fun visitFile(path: Path, attrs: BasicFileAttributes): FileVisitResult { Files.delete(path); return FileVisitResult.CONTINUE }
             override fun postVisitDirectory(dir: Path, failure: java.io.IOException?): FileVisitResult {
                 if (failure != null) throw failure

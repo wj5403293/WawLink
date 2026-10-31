@@ -79,6 +79,14 @@ class LocalContainerRuntime internal constructor(
     private val sizes = mutableMapOf<String, Long>()
     private val sizeRequests = mutableMapOf<String, Any>()
     private val rootfsOperations = mutableMapOf<String, RootfsOperation>()
+    private class StagedImport(val id: String, val name: String, val directory: File, var owner: Job?) {
+        val root = File(directory, "rootfs")
+        val archive = File(directory, "archive.part")
+        var config: ContainerConfig? = null
+        var inspection: RootfsImportInspection? = null
+        var discarded = false
+    }
+    private val rootfsImports = mutableMapOf<String, StagedImport>()
     private val idleJobs = mutableMapOf<String, Job>()
     private val packageLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private var debugRootfsRemoved = false
@@ -249,13 +257,16 @@ class LocalContainerRuntime internal constructor(
 
     override suspend fun register(config: ContainerConfig) { register(config, initialTitle = null) }
 
-    private suspend fun register(config: ContainerConfig, initialTitle: String?, measuredSize: Long? = null, reservation: String? = null, owner: Job? = null): ContainerConfig = withContext(Dispatchers.IO) {
+    private suspend fun register(config: ContainerConfig, initialTitle: String?, measuredSize: Long? = null, reservation: String? = null, owner: Job? = null, importNames: Pair<String, String>? = null): ContainerConfig = withContext(Dispatchers.IO) {
         mutex.withLock {
             currentCoroutineContext().ensureActive()
             if (owner?.isActive == false) throw CancellationException("容器注册已取消")
             ensureOpen()
             ensureAvailable(config.id, reservation)
             require(!configurations.containsKey(config.id)) { "容器 ID 已存在：${config.id}" }
+            importNames?.let { (name, title) ->
+                require(rootfsImportConflicts(name, title, configurations.values.toList()).isEmpty()) { "容器名称已存在，请选择覆盖更新或重命名" }
+            }
             engines.validateRoot(config)
             require(config.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}")) && config.name.isNotBlank()) { "容器 ID 或名称无效" }
             val root = File(config.rootfsPath).canonicalFile
@@ -465,7 +476,7 @@ class LocalContainerRuntime internal constructor(
     }
 
     private data class RootfsOperation(
-        val config: ContainerConfig,
+        var config: ContainerConfig,
         val runGeneration: Long?,
         val stopGeneration: Long,
         val reservedId: String?,
@@ -541,14 +552,163 @@ class LocalContainerRuntime internal constructor(
         }
     }
 
-    override suspend fun importRootfs(source: String, name: String, engine: ContainerEngineType, expectedSha256: String?): ContainerConfig = withContext(Dispatchers.IO) {
-        ensureOpen(); ContainerMetadataStore.validate(ContainerMetadata(title = name))
+    override suspend fun inspectRootfsArchive(source: String, name: String, engine: ContainerEngineType, expectedSha256: String?): RootfsImportInspection {
+        var preparedId: String? = null
+        try {
+            return withContext(Dispatchers.IO) { prepareRootfsImport(source, name, engine, expectedSha256).also { preparedId = it.id } }
+        } catch (failure: Throwable) {
+            // withContext can discard an already prepared result when delivering cancellation.
+            if (failure is CancellationException) preparedId?.let { discardRootfsImport(it) }
+            throw failure
+        }
+    }
+
+    private suspend fun prepareRootfsImport(source: String, name: String, engine: ContainerEngineType, expectedSha256: String?): RootfsImportInspection {
+        val requestedName = name.trim()
+        ContainerMetadataStore.validate(ContainerMetadata(title = requestedName))
         val id = UUID.randomUUID().toString()
-        try { deploy(id, name, source, expectedSha256, engine, null, null, if (expectedSha256 == null) "导入归档（未提供发行者 SHA256）" else "导入并校验 SHA256") }
-        catch (failure: Throwable) {
-            val message = "rootfs 导入失败：${failure.message}"
-            deployment(DeploymentProgress(id, name, 0f, "导入失败", message))
-            throw IllegalStateException(message, failure)
+        val staged = StagedImport(id, requestedName, File(cacheDir, "import-$id"), currentCoroutineContext()[Job])
+        mutex.withLock { ensureOpen(); rootfsImports[id] = staged }
+        deployment(DeploymentProgress(id, requestedName, 0f, "读取 rootfs 归档"))
+        var prepared = false
+        return try {
+            staged.directory.mkdirs()
+            var lastUpdate = 0L
+            val context = currentCoroutineContext()
+            DistroSources.transfer(source, staged.archive, expectedSha256) { bytes, total ->
+                context.ensureActive()
+                val now = System.nanoTime()
+                if (now - lastUpdate > 100_000_000 || bytes == total) {
+                    deployment(DeploymentProgress(id, requestedName, if (total > 0) bytes.toFloat() / total * .70f else 0f, "读取归档 · ${bytes / 1024 / 1024} MB"))
+                    lastUpdate = now
+                }
+            }
+            deployment(DeploymentProgress(id, requestedName, .72f, "安全解压并检查 rootfs"))
+            RootfsArchives.extract(staged.archive, staged.root) { context.ensureActive() }
+            val os = readOsRelease(staged.root)
+            val distro = when (os["ID"]) { "archarm", "arch" -> "arch"; else -> os["ID"] ?: "custom" }
+            val candidate = ContainerConfig(id, requestedName, staged.root.canonicalPath, distro, os["VERSION_ID"] ?: "custom", detectArch(staged.root), engine,
+                link2symlink = paths.isAndroid, shell = if (File(staged.root, "bin/bash").let { it.isFile && it.canExecute() }) "/bin/bash" else "/bin/sh")
+            engines.validateRoot(candidate)
+            // Invalid portable metadata remains repairable, as for ordinary offline registration.
+            val metadata = try { metadataStore.read(candidate).value } catch (_: Exception) { ContainerMetadata() }
+            val inspection = RootfsImportInspection(id, requestedName, metadata)
+            currentCoroutineContext().ensureActive()
+            Files.deleteIfExists(staged.archive.toPath())
+            mutex.withLock {
+                ensureOpen(); check(!staged.discarded) { "导入已取消" }
+                staged.config = candidate
+                staged.inspection = inspection
+                staged.owner = null
+                prepared = true
+            }
+            finishDeployment(id)
+            inspection
+        } catch (failure: Throwable) {
+            if (failure !is CancellationException) deployment(DeploymentProgress(id, requestedName, 0f, "导入检查失败", failure.message))
+            throw failure
+        } finally {
+            if (!prepared) withContext(NonCancellable) {
+                mutex.withLock { rootfsImports.remove(id) }
+                RootfsArchives.deleteTree(staged.directory)
+                if (staged.discarded || staged.owner?.isActive == false) finishDeployment(id)
+            }
+        }
+    }
+
+    override suspend fun discardRootfsImport(inspectionId: String) = withContext(Dispatchers.IO + NonCancellable) {
+        val staged = mutex.withLock {
+            rootfsImports.remove(inspectionId)?.also { it.discarded = true; it.owner?.cancel(CancellationException("导入已取消")) }
+        }
+        if (staged != null && staged.owner == null) RootfsArchives.deleteTree(staged.directory)
+        finishDeployment(inspectionId)
+    }
+
+    override suspend fun importRootfs(inspectionId: String, name: String, mode: RootfsImportMode, targetId: String?): ContainerConfig = withContext(Dispatchers.IO) {
+        val requestedName = name.trim()
+        ContainerMetadataStore.validate(ContainerMetadata(title = requestedName))
+        val owner = currentCoroutineContext()[Job]
+        val staged = mutex.withLock {
+            ensureOpen()
+            val staged = rootfsImports[inspectionId] ?: error("导入检查已失效，请重新选择归档")
+            check(staged.owner == null && staged.inspection != null) { "归档正在处理中" }
+            val conflicts = rootfsImportConflicts(requestedName, if (mode == RootfsImportMode.RENAME) "" else staged.inspection!!.metadata.title, configurations.values.toList())
+            if (mode == RootfsImportMode.UPDATE) require(targetId != null && conflicts.any { it.id == targetId }) { "必须选择实际冲突的容器进行更新" }
+            else { require(targetId == null) { "新容器不能指定覆盖目标" }; require(conflicts.isEmpty()) { "容器名称已存在，请选择覆盖更新或重命名" } }
+            staged.owner = owner
+            staged
+        }
+        var committed = false
+        try {
+            deployment(DeploymentProgress(inspectionId, requestedName, .85f, if (mode == RootfsImportMode.UPDATE) "更新容器文件（保留工作区和凭据）" else "保存容器配置"))
+            val candidate = requireNotNull(staged.config)
+            val result = if (mode == RootfsImportMode.UPDATE) {
+                withStoppedRootfs(requireNotNull(targetId)) { original ->
+                    mutex.withLock {
+                        ensureOpen(); check(!staged.discarded)
+                        require(rootfsImportConflicts(requestedName, staged.inspection!!.metadata.title, configurations.values.toList()).any { it.id == original.id }) { "所选容器不再与导入名称冲突" }
+                    }
+                    engines.validateRoot(original)
+                    engines.validateRoot(candidate.copy(engine = original.engine))
+                    require(candidate.arch == engines.guestArch(original.arch)) { "更新归档的 ELF 架构与原容器配置不兼容" }
+                    val overlay = RootfsOverlay(candidate, original)
+                    currentCoroutineContext().ensureActive()
+                    overlay.apply()
+                    val measured = sizeOf(original)
+                    currentCoroutineContext().ensureActive()
+                    mutex.withLock {
+                        ensureOpen(); check(!staged.discarded)
+                        check(configurations[original.id] === original)
+                        refreshMetadata(original)
+                        val updated = configurations.getValue(original.id)
+                        // The lease restores the refreshed identity, not the stale pre-update snapshot.
+                        rootfsOperations.getValue(original.id).config = updated
+                        sizes[original.id] = measured
+                        sizeRequests.remove(original.id)
+                        persist(); publish()
+                        updated
+                    }
+                }
+            } else {
+                val snapshot = try { metadataStore.read(candidate) } catch (failure: Exception) {
+                    if (mode == RootfsImportMode.RENAME) throw failure
+                    null
+                }
+                if (snapshot != null) {
+                    val title = if (mode == RootfsImportMode.RENAME) requestedName else staged.inspection!!.metadata.title.ifBlank { requestedName }
+                    if (snapshot.value.title != title || snapshot.revision == null) metadataStore.save(candidate, snapshot.value.copy(title = title), snapshot.revision)
+                }
+                val measured = sizeOf(candidate)
+                currentCoroutineContext().ensureActive()
+                val destination = File(rootfsDir, inspectionId)
+                var registered = false
+                Files.move(staged.root.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                try {
+                    withContext(NonCancellable) {
+                        register(candidate.copy(name = requestedName, rootfsPath = destination.canonicalPath), initialTitle = null, measuredSize = measured, owner = owner,
+                            importNames = requestedName to if (mode == RootfsImportMode.RENAME) "" else staged.inspection!!.metadata.title).also { registered = true }
+                    }
+                } finally {
+                    if (!registered) Files.move(destination.toPath(), staged.root.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                }
+            }
+            committed = true
+            finishDeployment(inspectionId)
+            result
+        } catch (failure: Throwable) {
+            if (failure !is CancellationException) deployment(DeploymentProgress(inspectionId, requestedName, .85f, "导入失败，可重试", failure.message))
+            throw failure
+        } finally {
+            withContext(NonCancellable) {
+                val cleanup = mutex.withLock {
+                    staged.owner = null
+                    if (committed || staged.discarded || closing || closed || owner?.isActive == false) {
+                        rootfsImports.remove(inspectionId)
+                        true
+                    } else false
+                }
+                if (cleanup) { RootfsArchives.deleteTree(staged.directory); finishDeployment(inspectionId) }
+            }
         }
     }
 
@@ -594,6 +754,7 @@ class LocalContainerRuntime internal constructor(
     private fun detectArch(root: File): String {
         val shell = File(root, "bin/sh").canonicalFile
         require(shell.toPath().startsWith(root.canonicalFile.toPath())) { "Shell 链接逃逸 rootfs" }
+        require(shell.isFile && shell.canExecute()) { "导入的 /bin/sh 必须是可执行普通文件" }
         val header = shell.inputStream().use { stream -> ByteArray(20).also { check(stream.read(it) == 20) { "无法读取 Shell ELF 架构" } } }
         require(header.take(4) == listOf(0x7f.toByte(), 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte())) { "导入的 /bin/sh 不是 ELF 程序" }
         val machine = if (header[5].toInt() == 1) (header[18].toInt() and 255) or ((header[19].toInt() and 255) shl 8) else ((header[18].toInt() and 255) shl 8) or (header[19].toInt() and 255)
@@ -885,6 +1046,13 @@ class LocalContainerRuntime internal constructor(
             closing = true
             scope.cancel()
             val failures = mutableListOf<Throwable>()
+            rootfsImports.values.toList().forEach { staged ->
+                staged.discarded = true
+                staged.owner?.cancel(CancellationException("容器运行时已关闭"))
+                if (staged.owner == null) try { RootfsArchives.deleteTree(staged.directory) } catch (failure: Throwable) { failures += failure }
+                finishDeployment(staged.id)
+            }
+            rootfsImports.clear()
             configurations.keys.toList().forEach { id -> try { stopLocked(id) } catch (failure: Throwable) { failures += failure } }
             if (failures.isNotEmpty()) throw IllegalStateException("部分容器未能安全关闭；请恢复 Root 权限后重试，进程与挂载记录已保留", failures.first()).also { error -> failures.drop(1).forEach(error::addSuppressed) }
             closed = true

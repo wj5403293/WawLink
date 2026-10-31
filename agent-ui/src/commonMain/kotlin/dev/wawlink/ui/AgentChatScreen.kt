@@ -69,12 +69,17 @@ fun AgentChatScreen(
         var detail by remember(state.id) { mutableStateOf<FeedDetail?>(null) }
         var historyOpen by rememberSaveable(state.id) { mutableStateOf(false) }
         var historyFocus by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
-        var historyCopy by rememberSaveable(state.id) { mutableStateOf(false) }
+        val messageActions = remember(explorer, state.id) { MessageHistoryActionsState(explorer) { controller.state.value.isRunning } }
+        val messageScope = key(explorer, state.id) { rememberCoroutineScope() }
         val historyStates = rememberSaveableStateHolder()
         val draft = rememberComposerDraft(state.id)
         SideEffect {
             navigation.backHandler = {
                 when {
+                    messageActions.action != null -> {
+                        if (!messageActions.dismiss()) messageScope.launch { messageActions.cancelNavigation() }
+                        true
+                    }
                     historyOpen -> { historyOpen = false; true }
                     detail != null -> { detail = null; true }
                     settingsMenu -> { settingsMenu = false; true }
@@ -245,7 +250,11 @@ fun AgentChatScreen(
         }
         CompositionLocalProvider(LocalFeedClock provides clock, LocalFeedBounds provides nodeBounds,
             LocalFeedInteraction provides { followTail = false }, LocalFeedItemNavigation provides { id -> anchorFeedItem(id) },
-            LocalFeedHistoryRequest provides { id, copy -> historyFocus = id; historyCopy = copy; historyOpen = true }) {
+            LocalFeedHistoryRunning provides state.isRunning,
+            LocalFeedHistoryRequest provides { id, action ->
+                if (action == FeedHistoryAction.LOCATE) { historyFocus = id; historyOpen = true }
+                else messageScope.launch { messageActions.open(id, action) }
+            }) {
         val scrolled by remember(list) { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 4 } }
         val barColor by animateColorAsState(if (scrolled) c.surfaceContainer else c.surface, tween(350, easing = EmphEasing))
         val topInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top)
@@ -257,7 +266,7 @@ fun AgentChatScreen(
                         AgentIconButton("forum", "会话列表", onNavigateToSessionList)
                         Text(state.title, Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         AgentIconButton("edit_square", "新建会话", onNewSession)
-                        AgentIconButton("account_tree", "历史树", { historyFocus = null; historyCopy = false; historyOpen = true })
+                        AgentIconButton("account_tree", "历史树", { historyFocus = null; historyOpen = true })
                         AgentIconButton("groups", "Agent 运行总览", onOpenAgentHub)
                         Box {
                             AgentIconButton("settings", "设置", { settingsMenu = true })
@@ -344,8 +353,9 @@ fun AgentChatScreen(
                 onLocate = { id -> historyOpen = false; navigation.locate(id) },
                 onRestorePrompt = { prompt, replace -> draft.restore(prompt, replace) }, hasDraft = draft.hasContent,
                 onFork = onFork, onOpenFork = { id -> historyOpen = false; onOpenFork(id) },
-                focusChatItemId = historyFocus, copyFocusedMessage = historyCopy)
+                focusChatItemId = historyFocus)
         }
+        MessageHistoryActionSheet(messageActions, draft.hasContent, state.isRunning) { prompt, replace -> draft.restore(prompt, replace) }
     }
 }
 

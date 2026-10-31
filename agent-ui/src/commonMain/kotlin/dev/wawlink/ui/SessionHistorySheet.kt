@@ -57,19 +57,17 @@ fun SessionHistorySheet(
     onFork: suspend (String) -> String,
     onOpenFork: (String) -> Unit,
     focusChatItemId: String? = null,
-    copyFocusedMessage: Boolean = false,
 ) {
     val history by explorer.history.collectAsState()
     val session by controller.state.collectAsState()
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    val uri = LocalUriHandler.current
     val c = LocalAgentColors.current
     var query by rememberSaveable(session.id) { mutableStateOf("") }
     var filter by rememberSaveable(session.id) { mutableStateOf("default") }
     var selectedId by rememberSaveable(session.id) { mutableStateOf<String?>(null) }
     var initialized by rememberSaveable(session.id) { mutableStateOf(false) }
-    var focusApplied by remember(session.id, focusChatItemId, copyFocusedMessage) { mutableStateOf(false) }
+    var focusApplied by remember(session.id, focusChatItemId) { mutableStateOf(false) }
     var historyRead by remember(explorer, session.id) { mutableStateOf(false) }
     val list = key(session.id) { rememberLazyListState() }
     var panel by rememberSaveable(session.id) { mutableStateOf<String?>(null) }
@@ -240,21 +238,15 @@ fun SessionHistorySheet(
             else selectedId?.let { focus(it, true) }
         }
     }
-    LaunchedEffect(explorer, session.id, focusChatItemId, copyFocusedMessage) {
+    LaunchedEffect(explorer, session.id, focusChatItemId) {
         if (!focusApplied && focusChatItemId != null) {
             snapshotFlow { historyRead && !history.loading && history.error == null }.first { it }
             try {
-                val entryId = explorer.entryIdForChatItem(focusChatItemId)
-                val node = explorer.history.value.nodes.firstOrNull { it.id == entryId }
-                if (node != null) {
-                    initialized = true
-                    focusApplied = true
-                    error = null
-                    focus(node.id, true)
-                    if (copyFocusedMessage) show("blocks", node)
-                } else if (history.error == null && error == null) {
-                    error = "这条消息尚未写入原生历史"
-                }
+                val node = resolveMessageHistoryNode(explorer, focusChatItemId)
+                initialized = true
+                focusApplied = true
+                error = null
+                focus(node.id, true)
             } catch (failure: Exception) {
                 if (failure is CancellationException) throw failure
                 error = failure.message ?: "消息定位失败"
@@ -345,7 +337,7 @@ fun SessionHistorySheet(
             }
         }
         "switch" -> target?.let { node ->
-            HistorySwitch(node, hasDraft, summaryPreset, busy, error, { dismissPanel() }, {
+            HistorySwitch(node, hasDraft, summaryPreset, busy, session.isRunning, error, { dismissPanel() }, {
                 scope.launch {
                     try { explorer.cancelNavigation() }
                     catch (failure: Exception) {
@@ -432,21 +424,78 @@ fun SessionHistorySheet(
             }
         }, enabled = !busy && !session.isRunning) { Text(if (busy) "正在提交" else "提交并继续") } }, dismissButton = { TextButton({ pendingAnswers = null }, enabled = !busy) { Text("继续编辑") } }, containerColor = c.surface, shape = RoundedCornerShape(28.dp))
     }
-    openingLink?.let { link ->
-        AlertDialog(onDismissRequest = { openingLink = null }, icon = { Symbol("open_in_new", tint = c.primary) }, title = { Text("打开链接") }, text = { SelectionContainer { Text(link) } }, confirmButton = {
-            TextButton({
-                try {
-                    require(link.startsWith("https://", true) || link.startsWith("http://", true)) { "只允许 HTTP(S) 链接" }
-                    uri.openUri(link)
-                    openingLink = null
-                } catch (failure: Exception) { error = "打开失败：${failure.message ?: "没有可用的浏览器"}"; openingLink = null }
-            }) { Text("在浏览器打开") }
-        }, dismissButton = { TextButton({ openingLink = null }) { Text("取消") } }, containerColor = c.surface, shape = RoundedCornerShape(28.dp))
-    }
+    openingLink?.let { link -> HistoryLinkDialog(link, { openingLink = null }) { error = it } }
     detail?.let { request ->
         if (request.markdown) ThinkingDetailScreen(request.id, request.text, false) { detail = null }
         else CodeDetailScreen(request.title, request.text, request.language) { detail = null }
     }
+}
+
+/** Message shortcuts mount only the requested panel; dismissing returns straight to the chat. */
+@Composable
+internal fun MessageHistoryActionSheet(
+    actions: MessageHistoryActionsState,
+    hasDraft: Boolean,
+    isRunning: Boolean,
+    onRestorePrompt: (RestoredSessionPrompt, Boolean) -> Unit,
+) {
+    val requested = actions.action ?: return
+    val explorer = actions.explorer
+    val history by explorer.history.collectAsState()
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    val target = actions.node
+    var copyError by remember(actions.chatItemId, requested) { mutableStateOf<String?>(null) }
+    var notice by remember(actions.chatItemId, requested) { mutableStateOf<String?>(null) }
+    var openingLink by remember(actions.chatItemId, requested) { mutableStateOf<String?>(null) }
+    val dismiss = { actions.dismiss(); Unit }
+    when {
+        target == null -> HistorySurface(if (requested == FeedHistoryAction.COPY_BLOCKS) "复制内容" else "创建分支", dismiss) {
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (actions.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                actions.error?.let { message ->
+                    HistoryBanner(message, error = true, action = "重试", onAction = {
+                        actions.chatItemId?.let { id -> scope.launch { actions.open(id, requested) } }
+                    })
+                }
+            }
+        }
+        requested == FeedHistoryAction.COPY_BLOCKS -> HistoryBlocks(explorer, target, dismiss, { text, title ->
+            try {
+                check(text.isNotEmpty()) { "没有可复制的内容" }
+                clipboard.setText(AnnotatedString(text))
+                notice = "已复制：$title"
+                copyError = null
+            } catch (failure: Exception) {
+                copyError = "复制失败：${failure.message ?: "剪贴板不可用"}"
+            }
+        }, { openingLink = it }, copyError, notice)
+        requested == FeedHistoryAction.SWITCH -> HistorySwitch(target, hasDraft, false,
+            actions.busy || history.busy, isRunning, actions.error, dismiss,
+            { scope.launch { actions.cancelNavigation() } }) { summary, replace ->
+                scope.launch { actions.switch(summary, replace, onRestorePrompt) }
+            }
+        else -> Unit
+    }
+    openingLink?.let { link -> HistoryLinkDialog(link, { openingLink = null }) { copyError = it } }
+}
+
+@Composable
+private fun HistoryLinkDialog(link: String, onDismiss: () -> Unit, onError: (String) -> Unit) {
+    val uri = LocalUriHandler.current
+    val c = LocalAgentColors.current
+    AlertDialog(onDismissRequest = onDismiss, icon = { Symbol("open_in_new", tint = c.primary) },
+        title = { Text("打开链接") }, text = { SelectionContainer { Text(link) } }, confirmButton = {
+            TextButton({
+                try {
+                    require(link.startsWith("https://", true) || link.startsWith("http://", true)) { "只允许 HTTP(S) 链接" }
+                    uri.openUri(link)
+                } catch (failure: Exception) {
+                    onError("打开失败：${failure.message ?: "没有可用的浏览器"}")
+                }
+                onDismiss()
+            }) { Text("在浏览器打开") }
+        }, dismissButton = { TextButton(onDismiss) { Text("取消") } }, containerColor = c.surface, shape = RoundedCornerShape(28.dp))
 }
 
 private val historyScopes = listOf("default" to "默认", "notool" to "隐藏工具结果", "user" to "仅请求", "labeled" to "仅已标记", "all" to "全部")
@@ -804,7 +853,7 @@ private fun HistoryLabel(node: SessionHistoryNode, busy: Boolean, error: String?
     }
 }
 @Composable
-private fun HistorySwitch(node: SessionHistoryNode, hasDraft: Boolean, preset: Boolean, busy: Boolean, error: String?, onDismiss: () -> Unit, onCancel: () -> Unit, onSwitch: (HistorySummary, Boolean) -> Unit) {
+private fun HistorySwitch(node: SessionHistoryNode, hasDraft: Boolean, preset: Boolean, busy: Boolean, running: Boolean, error: String?, onDismiss: () -> Unit, onCancel: () -> Unit, onSwitch: (HistorySummary, Boolean) -> Unit) {
     var mode by rememberSaveable(node.id, preset) { mutableStateOf(if (preset) "sum" else "none") }
     var focus by rememberSaveable(node.id) { mutableStateOf("") }
     var replace by rememberSaveable(node.id) { mutableStateOf(!hasDraft) }
@@ -813,11 +862,12 @@ private fun HistorySwitch(node: SessionHistoryNode, hasDraft: Boolean, preset: B
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(if (busy) onCancel else onDismiss) { Text(if (busy) "取消导航" else "取消") }
             Spacer(Modifier.weight(1f))
-            if (error != null && mode != "none" && !busy) TextButton({ mode = "none"; onSwitch(HistorySummary(), replace) }) { Text("不摘要切换") }
-            Button({ onSwitch(HistorySummary(mode != "none", focus.takeIf { mode == "focus" && it.isNotBlank() }), replace) }, enabled = !busy && (mode != "focus" || focus.isNotBlank()), modifier = Modifier.height(48.dp)) { Text(if (busy) "处理中" else if (error != null) "重试" else "切换") }
+            if (error != null && mode != "none" && !busy) TextButton({ mode = "none"; onSwitch(HistorySummary(), replace) }, enabled = !running) { Text("不摘要切换") }
+            Button({ onSwitch(HistorySummary(mode != "none", focus.takeIf { mode == "focus" && it.isNotBlank() }), replace) }, enabled = !busy && !running && (mode != "focus" || focus.isNotBlank()), modifier = Modifier.height(48.dp)) { Text(if (busy) "处理中" else if (error != null) "重试" else "切换") }
         }
     }) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp)) {
+            if (running) HistoryBanner("会话正在运行，请停止后再切换。", warning = true)
             if (hasDraft && user) {
                 HistoryBanner("输入框里有未发送的草稿。请明确选择保留还是替换。", warning = true)
                 HistoryChoice("保留我的草稿，不填回原输入", !replace, !busy) { replace = false }
