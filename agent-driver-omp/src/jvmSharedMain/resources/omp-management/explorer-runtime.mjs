@@ -14,7 +14,7 @@ import { isUserAuthoredQueuedMessage, toRestoredQueuedMessage } from '@oh-my-pi/
 import { BlobStore } from '@oh-my-pi/pi-coding-agent/session/blob-store';
 import { getBlobsDir } from '@oh-my-pi/pi-utils/dirs';
 import { requestRpcAskDialog, requestRpcSelect, requestRpcEditor, requestRpcDialog } from '@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode';
-import { askSubmission } from './explorer-history.mjs';
+import { askSubmission, parseAttachmentPrompt, presentedUserEntry } from './explorer-history.mjs';
 import { safeReason } from './diagnostics.mjs';
 
 const registry = () => AgentRegistry.global();
@@ -41,11 +41,17 @@ function queueSnapshot(session) {
     steering: [...session.agent.peekLiveSteeredMessages(), ...session.agent.peekSteeringQueue()].filter(isUserAuthoredQueuedMessage),
     followUp: session.agent.peekFollowUpQueue().filter(isUserAuthoredQueuedMessage),
   };
-  return ['steering', 'followUp'].flatMap(kind => queue[kind].map((text, index) => ({
-    id: JSON.stringify([kind, index, text]), queue: kind, text,
+  return ['steering', 'followUp'].flatMap(kind => queue[kind].map((wireText, index) => ({
+    id: JSON.stringify([kind, index, wireText]), queue: kind, wireText, ...parseAttachmentPrompt(wireText),
     images: records[kind][index] ? toRestoredQueuedMessage(records[kind][index]).images : [],
     removable: kind !== 'steering' || index >= queue.liveSteered,
   })));
+}
+
+function presentedEvent(event) {
+  if (event.message?.role !== 'user') return event;
+  const prompt = parseAttachmentPrompt(textOf(event.message.content));
+  return { ...event, userText: prompt.text, attachments: prompt.attachments };
 }
 
 // Public native tool instances retain their original execute implementation and
@@ -272,7 +278,11 @@ export function createRuntimeExplorer(getMain, getContext) {
       if (['irc:message', 'irc:relay', 'irc'].includes(message.customType)) communications.push({
         id: entry.id, text: textOf(message.content), timestamp: entry.timestamp });
       if (entry.type !== 'message') continue;
-      if (message.role === 'user' && !hasUser) { task = textOf(message.content); hasUser = true; }
+      if (message.role === 'user' && !hasUser) {
+        const prompt = parseAttachmentPrompt(textOf(message.content));
+        task = prompt.text.trim() || !prompt.attachments.length ? prompt.text : `${prompt.attachments.length}个附件`;
+        hasUser = true;
+      }
       if (message.isError || message.stopReason === 'error' || message.stopReason === 'aborted')
         failure = safeReason(message.errorMessage ?? textOf(message.content));
       if (message.role !== 'assistant') continue;
@@ -487,8 +497,8 @@ export function createRuntimeExplorer(getMain, getContext) {
         ? session.getAvailableModels().map(model => ({ providerId: model.provider, modelId: model.id, name: model.name })) : [],
       availableThinkingLevels: session && ref.kind !== 'advisor' && ref.status !== 'aborted' ? session.getAvailableEffortSelectors() : [],
       isRunning: session?.isStreaming === true,
-      reset, ...(entries ? { entries, messageIds, leafId: session?.sessionManager.getLeafId() ?? transcript?.leafId ?? null } : {}),
-      events, cursor: `${state.generation}:${baseline}`, requests: [...state.requests.values()], queue: session ? queueSnapshot(session) : [] };
+      reset, ...(entries ? { entries: entries.map(presentedUserEntry), messageIds, leafId: session?.sessionManager.getLeafId() ?? transcript?.leafId ?? null } : {}),
+      events: events.map(presentedEvent), cursor: `${state.generation}:${baseline}`, requests: [...state.requests.values()], queue: session ? queueSnapshot(session) : [] };
   }
   async function exportAgent(ref) {
     if (!ref.sessionFile) throw Error('Cannot export a child without a native transcript');
@@ -516,8 +526,10 @@ export function createRuntimeExplorer(getMain, getContext) {
   }
   async function prompt(ref, request) {
     const text = request.text;
-    if (typeof text !== 'string' || (!text.trim() && !request.images?.length)) throw Error('Message is empty');
-    if (/^\s*[\/!$%]/.test(text)) throw Error('Use a supported focused command or return to Main; shell/Python/slash input is not a child prompt');
+    if (typeof text !== 'string') throw Error('Message must be text');
+    const input = parseAttachmentPrompt(text);
+    if (!input.text.trim() && !input.attachments.length && !request.images?.length) throw Error('Message is empty');
+    if (/^\s*[\/!$%]/.test(input.text)) throw Error('Use a supported focused command or return to Main; shell/Python/slash input is not a child prompt');
     if (!['prompt', 'steer', 'followUp'].includes(request.behavior ?? 'prompt')) throw Error('Unknown child prompt behavior');
     const session = ref.session, state = observe(ref);
     bindUI(ref, state);
@@ -530,7 +542,7 @@ export function createRuntimeExplorer(getMain, getContext) {
     await admitted.promise;
     await session.settleInFlightMessagePersistence();
     const entry = session.sessionManager.getEntries().find(e => !oldIds.has(e.id) && e.type === 'message' && e.message.role === 'user');
-    const queued = queueSnapshot(session).some(item => item.text === text);
+    const queued = queueSnapshot(session).some(item => item.wireText === text);
     if (entry) state.reconcile(session.sessionManager.getEntries());
     return { accepted: true, queued, ...(entry ? { entryId: entry.id, messageId: state.messageIds.get(entry.id) ?? `entry:${entry.id}` } : {}) };
   }
@@ -555,12 +567,15 @@ export function createRuntimeExplorer(getMain, getContext) {
     if (request.operation === 'approval_mode') throw Error('This native release has no session-local approval-mode setter');
     if (['update_queue', 'remove_queue'].includes(request.operation)) {
       const item = queueSnapshot(session).find(item => item.id === request.queueId);
-      if (!item || !item.removable) throw Error('Queued message has already been delivered or changed');
+      if (!item || !item.removable || request.originalText !== item.wireText || request.queue !== item.queue)
+        throw Error('Queued message has already been delivered or changed');
       if (request.operation === 'update_queue') {
-        if (typeof request.text !== 'string' || !request.text.trim()) throw Error('Queued message is empty');
-        if (/^\s*[\/!$%]/.test(request.text)) throw Error('Focused queue cannot execute commands');
+        if (typeof request.text !== 'string') throw Error('Queued message must be text');
+        const input = parseAttachmentPrompt(request.text);
+        if (!input.text.trim() && !input.attachments.length && !item.images?.length) throw Error('Queued message is empty');
+        if (/^\s*[\/!$%]/.test(input.text)) throw Error('Focused queue cannot execute commands');
       }
-      const removed = session.takeQueuedMessage(item.text, item.queue);
+      const removed = session.takeQueuedMessage(item.wireText, item.queue);
       if (!removed) throw Error('Queued message has already been delivered');
       if (request.operation === 'update_queue') {
         try { await session[item.queue === 'steering' ? 'steer' : 'followUp'](request.text, removed.images); }

@@ -166,6 +166,20 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
     }
 
     private val originalUserText = mutableMapOf<String, String>()
+    private val wireUserText = mutableMapOf<String, String>()
+    private val attachmentPromptsByWire = mutableMapOf<String, AttachmentPrompt>()
+    internal fun rememberAttachmentPrompt(id: String, text: String, attachments: List<AttachmentFile>,
+        wireMessage: String = attachmentWireMessage(text, attachments)) {
+        originalUserText[id] = text
+        wireUserText[id] = wireMessage
+        attachmentPromptsByWire[wireMessage] = AttachmentPrompt(text, attachments)
+    }
+    internal fun wireUserText(id: String): String? = wireUserText[id]
+    internal fun discardQueuedPrompt(id: String) {
+        state = state.copy(queuedPrompts = state.queuedPrompts.filterNot { it.id == id })
+        consumedQueue.removeAll { it.id == id }
+        withdrawnQueue = withdrawnQueue.filterNot { it.id == id }
+    }
     internal fun rememberUserText(feedId: String, text: String) { originalUserText[feedId] = text }
     internal fun originalUserText(feedId: String): String? = originalUserText[feedId]
     internal fun nativeUserText(records: List<JsonObject>): Map<String, String> = buildMap {
@@ -203,16 +217,20 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
                 val entryId = entry.string("id").orEmpty()
                 val old = previousIds[entryId]
                 val messageId = when {
-                    entry.string("messageId") != null -> wireMessage(entry.string("messageId").orEmpty())
                     message.string("role") == "user" && old != null -> old
+                    entry.string("messageId") != null -> wireMessage(entry.string("messageId").orEmpty())
                     message.string("role") == "assistant" && old?.contains(":block:") == true -> old.substringBeforeLast(":block:")
                     else -> "native:$entryId"
+                }
+                if (message.string("role") == "user") previousUsers[old]?.let { previous ->
+                    rememberAttachmentPrompt(messageId, originalUserText[previous.id] ?: previous.text, previous.attachments,
+                        contentText(message["content"]))
                 }
                 snapshot(messageId, message, true, historical = true)
                 if (message.string("role") == "user") {
                     val user = item(messageId) as? UserMessageItem
                     val previous = previousUsers[old]
-                    if (user != null) put(user.copy(attachments = previous?.attachments ?: nativeImageAttachments(message),
+                    if (user != null) put(user.copy(attachments = previous?.attachments?.takeIf { it.isNotEmpty() } ?: user.attachments,
                         timestamp = previous?.timestamp ?: user.timestamp))
                 }
                 nativeHistoricalAsk(entry, nativeCalls)?.let(::put)
@@ -407,27 +425,36 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
         when (message.string("role")) {
             "user" -> {
                 if (historical) closeGroup(NodeStatus.OK)
-                val text = contentText(message["content"])
-                val direct = item(id) as? UserMessageItem
+                val wireText = contentText(message["content"])
+                val direct = item(userFeedIds[id] ?: id) as? UserMessageItem
                 if (direct != null) {
                     if (!direct.accepted) put(direct.copy(accepted = true))
+                    reconciledUsers.add(direct.id)
                     reconciledUsers.add(id)
                 } else {
                     val existing = allItems(state.feed).filterIsInstance<UserMessageItem>().firstOrNull {
-                        it.text == text && it.id !in reconciledUsers
+                        (wireUserText[it.id] ?: it.text) == wireText && it.id !in reconciledUsers
                     }
                     if (existing != null) {
                         reconciledUsers.add(existing.id)
                         if (!existing.accepted) put(existing.copy(accepted = true))
-                        // Wire start/end share an id, but the pool owns the original attachments and timestamp.
                         reconciledUsers.add(id)
                         userFeedIds[id] = existing.id
                     } else if (id !in reconciledUsers) {
-                        val index = consumedQueue.indexOfFirst { it.text == text }
-                        val queued = if (index >= 0) consumedQueue.removeAt(index) else null
+                        val index = consumedQueue.indexOfFirst { (wireUserText[it.id] ?: it.text) == wireText }
+                        val queued = if (index >= 0) consumedQueue.removeAt(index) else state.queuedPrompts.firstOrNull {
+                            (wireUserText[it.id] ?: it.text) == wireText
+                        }
                         val feedId = queued?.id ?: id
-                        put(UserMessageItem(feedId, text, attachments = queued?.attachments?.takeIf { it.isNotEmpty() } ?: nativeImageAttachments(message),
-                            timestamp = message.number("timestamp") ?: 0))
+                        val parsed = if (queued != null) AttachmentPrompt(queued.text, queued.attachments)
+                            else attachmentPromptsByWire[wireText] ?: parseAttachmentPrompt(wireText)
+                        val attachments = parsed.attachments.ifEmpty { nativeImageAttachments(message) }
+                        rememberAttachmentPrompt(feedId, parsed.text, attachments, wireText)
+                        if (queued != null) {
+                            if (withdrawnQueue.none { it.id == queued.id }) withdrawnQueue = withdrawnQueue + queued
+                            state = state.copy(queuedPrompts = state.queuedPrompts.filterNot { it.id == queued.id })
+                        }
+                        put(UserMessageItem(feedId, parsed.text, attachments, timestamp = message.number("timestamp") ?: 0))
                         reconciledUsers.add(feedId)
                         userFeedIds[id] = feedId
                         reconciledUsers.add(id)
@@ -783,9 +810,14 @@ class OmpEventReducer(initial: ChatSessionUiState, private val clock: () -> Long
     private fun reconcileQueuedPrompts(frame: JsonObject, available: MutableList<QueuedPrompt>): List<QueuedPrompt> = buildList {
         for (kind in PromptQueue.entries) {
             for (value in frame.array(kind.wireName).orEmpty()) {
-                val text = (value as? JsonPrimitive)?.contentOrNull ?: value.asObject()?.string("text") ?: continue
-                val index = available.indexOfFirst { it.queue == kind && it.text == text }
-                add(if (index >= 0) available.removeAt(index) else QueuedPrompt(generated("queue"), text, queue = kind))
+                val wireText = (value as? JsonPrimitive)?.contentOrNull ?: value.asObject()?.string("text") ?: continue
+                val index = available.indexOfFirst { it.queue == kind && (wireUserText[it.id] ?: it.text) == wireText }
+                val queued = if (index >= 0) available.removeAt(index) else {
+                    val parsed = attachmentPromptsByWire[wireText] ?: parseAttachmentPrompt(wireText)
+                    QueuedPrompt(generated("queue"), parsed.text, parsed.attachments, kind)
+                }
+                rememberAttachmentPrompt(queued.id, queued.text, queued.attachments, wireText)
+                add(queued)
             }
         }
     }

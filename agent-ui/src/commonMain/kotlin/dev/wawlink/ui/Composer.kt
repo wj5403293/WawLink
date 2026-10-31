@@ -193,7 +193,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
     }
     fun submit(followUp: Boolean = false) {
         if (draft.takingQueuedPrompt) return
-        val prompt = text.trim()
+        val prompt = text
         if (prompt.isEmpty() && attachments.isEmpty()) { if (state.isRunning) controller.stopExecution(); return }
         if (prompt.startsWith("/") && attachments.isEmpty()) {
             val commandText = prompt.drop(1)
@@ -290,11 +290,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         UsageCapsule(state.usage) { usageSheet = true }
                     }
                 }
-                if (attachments.isNotEmpty()) FlowRow(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    attachments.forEach { file -> InputChip(selected = true, onClick = { if (!draft.takingQueuedPrompt) attachments.remove(file) }, enabled = !draft.takingQueuedPrompt,
-                        label = { Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        leadingIcon = { Symbol("attach_file", size = 18.dp) }, trailingIcon = { Symbol("close", size = 18.dp) }) }
-                }
+                AttachmentStrip(attachments, !draft.takingQueuedPrompt) { attachments.remove(it) }
                 pickerError?.let { error -> Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = c.error, fontSize = 14.sp)
                     AgentIconButton("close", "关闭错误", { pickerError = null })
@@ -382,7 +378,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         }
                     }
                     Spacer(Modifier.weight(1f))
-                    val hasInput = text.isNotBlank() || attachments.isNotEmpty()
+                    val hasInput = text.isNotEmpty() || attachments.isNotEmpty()
                     val stopping = state.isRunning && !hasInput
                     val radius by animateDpAsState(if (stopping) 24.dp else 16.dp, agentSpring())
                     val color by animateColorAsState(if (stopping) c.onSurface else c.primary, tween(300, easing = EmphEasing))
@@ -511,18 +507,20 @@ private fun QueueRow(prompt: QueuedPrompt, controller: AgentSessionController, c
     var draft by rememberSaveable(prompt.id, prompt.text) { mutableStateOf(prompt.text) }
     val c = LocalAgentColors.current
     val focus = remember { FocusRequester() }
-    fun save() { if (!canEdit()) return; if (draft.isBlank()) controller.removeQueuedPrompt(prompt.id) else controller.updateQueuedPrompt(prompt.id, draft.trim()); editing = false }
+    fun save() { if (!canEdit()) return; if (draft.isEmpty() && prompt.attachments.isEmpty()) controller.removeQueuedPrompt(prompt.id) else controller.updateQueuedPrompt(prompt.id, draft); editing = false }
     LaunchedEffect(editing) { if (editing) focus.requestFocus() }
     val radius by animateDpAsState(if (editing) 28.dp else 20.dp, tween(400, easing = EmphEasing))
     val background by animateColorAsState(if (editing) c.primaryContainer else c.surfaceContainer, tween(300, easing = EmphEasing))
-    Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(radius)).background(background).heightIn(min = 56.dp).padding(start = 16.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Symbol("schedule", size = 22.dp, tint = c.onSurfaceVariant)
-        if (editing) BasicTextField(draft, { if (canEdit()) draft = it }, Modifier.weight(1f).heightIn(max = 160.dp).focusRequester(focus).padding(vertical = 8.dp),
-            readOnly = !canEdit(), textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.onSurface))
-        else Text(prompt.text.ifBlank { "${prompt.attachments.size} 个附件" }, Modifier.weight(1f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        AgentIconButton(if (editing) "check" else "edit", if (editing) "保存" else "编辑", { if (canEdit()) { if (editing) save() else if (!onRestore(prompt)) editing = true } }, Modifier.size(44.dp), enabled = canEdit())
-        AgentIconButton("close", "移除排队消息", { if (canEdit()) controller.removeQueuedPrompt(prompt.id) }, Modifier.size(44.dp), enabled = canEdit())
+    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(radius)).background(background).padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 8.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Symbol("schedule", size = 22.dp, tint = c.primary)
+            if (editing) BasicTextField(draft, { if (canEdit()) draft = it }, Modifier.weight(1f).heightIn(max = 160.dp).focusRequester(focus).padding(vertical = 8.dp),
+                readOnly = !canEdit(), textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.onSurface))
+            else Text(prompt.text.ifBlank { "${prompt.attachments.size}个附件" }, Modifier.weight(1f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            AgentIconButton(if (editing) "check" else "edit", if (editing) "保存" else "编辑", { if (canEdit()) { if (editing) save() else if (!onRestore(prompt)) editing = true } }, Modifier.size(44.dp), enabled = canEdit())
+            AgentIconButton("close", "移除排队消息", { if (canEdit()) controller.removeQueuedPrompt(prompt.id) }, Modifier.size(44.dp), enabled = canEdit())
+        }
+        if (prompt.attachments.isNotEmpty()) AttachmentPills(prompt.attachments)
     }
 }
 
@@ -576,7 +574,7 @@ private fun WorkspacePicker(controller: AgentSessionController, workspace: Strin
         }
         Button({ onPick(selected.values.map { file -> AttachmentFile("workspace:${file.relativePath}", file.name,
             if (file.relativePath.startsWith('/')) file.relativePath else workspace.trimEnd('/') + "/" + file.relativePath,
-            sizeBytes = file.sizeBytes, source = AttachmentSource.WORKSPACE) }) }, Modifier.fillMaxWidth().padding(top = 16.dp).height(48.dp), enabled = selected.isNotEmpty()) {
+            mimeType = attachmentMimeType(file.name), sizeBytes = file.sizeBytes, source = AttachmentSource.WORKSPACE) }) }, Modifier.fillMaxWidth().padding(top = 16.dp).height(48.dp), enabled = selected.isNotEmpty()) {
             Symbol("attach_file", size = 20.dp); Spacer(Modifier.width(8.dp)); Text("添加 ${selected.size} 个文件")
         }
     }

@@ -91,4 +91,28 @@ class RichGraphicSafetyTest {
         kotlin.test.assertEquals(1, bitmap.height)
     }
 
+    @Test fun attachmentPreparationUsesLoadedBytesAndDetectedFormat() = kotlinx.coroutines.runBlocking {
+        val bytes = Base64.getDecoder().decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+        val file = dev.wawlink.protocol.AttachmentFile("gif", "photo.png", "/guest/photo.png", "image/png")
+        val prepared = prepareAttachmentGraphic(file, bytes, theme) { error("Raster attachments must not use SVG rendering") }
+        assertContentEquals(bytes, prepared.bytes)
+        kotlin.test.assertEquals("image/gif", prepared.mimeType)
+        kotlin.test.assertEquals("photo.gif", prepared.fileName)
+        kotlin.test.assertEquals(1, prepared.image.width)
+        kotlin.test.assertEquals(1, prepared.image.height)
+    }
+
+    @Test fun attachmentSvgRejectsActiveContentBeforeRendering() = kotlinx.coroutines.runBlocking {
+        val file = dev.wawlink.protocol.AttachmentFile("svg", "diagram.svg", "/guest/diagram.svg", "image/svg+xml")
+        var reachedRenderer = false
+        val result = runCatching {
+            prepareAttachmentGraphic(file, svg("<script>alert(1)</script>").toByteArray(), theme) {
+                reachedRenderer = true
+                error("Unsafe content reached renderer")
+            }
+        }
+        assertTrue(result.isFailure)
+        kotlin.test.assertFalse(reachedRenderer)
+    }
+
 }

@@ -19,6 +19,25 @@ internal const val MAX_GRAPHIC_BYTES = 8 * 1024 * 1024
 private const val MAX_SVG_BYTES = 1024 * 1024
 private const val MAX_MERMAID_CHARS = 50_000
 
+internal actual suspend fun prepareAttachmentGraphic(
+    file: dev.wawlink.protocol.AttachmentFile,
+    bytes: ByteArray,
+    theme: RichGraphicTheme,
+    svgRasterizer: suspend (String) -> ImageBitmap,
+): PreparedGraphic.Raster {
+    require(bytes.size <= MAX_GRAPHIC_BYTES) { "图片过大（最多 8 MiB）" }
+    val type = detectImageType(bytes, file.mimeType.substringBefore(';').trim().lowercase())
+        ?: error("图片格式不受支持（支持 PNG、JPEG、GIF、WebP、SVG）")
+    val validated = if (type == "image/svg+xml") {
+        safeSvg(bytes.decodeToString(throwOnInvalidSequence = true), theme).toByteArray(Charsets.UTF_8)
+    } else bytes
+    val image = if (type == "image/svg+xml") {
+        val graphic = MarkdownPart.Graphic(GraphicKind.Svg, validated.toString(Charsets.UTF_8), file.name)
+        svgRasterizer(richGraphicDocument(graphic, theme, "data:image/svg+xml;base64," + Base64.getEncoder().encodeToString(validated)))
+    } else rasterImage(validated, type)
+    return PreparedGraphic.Raster(image, validated, type, graphicImageFileName(file.name, type))
+}
+
 internal actual suspend fun prepareRichGraphic(graphic: MarkdownPart.Graphic, theme: RichGraphicTheme, svgRasterizer: suspend (String) -> ImageBitmap): PreparedGraphic {
     if (graphic.kind != GraphicKind.Mermaid) {
         val (bytes, type) = if (graphic.kind == GraphicKind.Image) loadGraphicImage(graphic.source)

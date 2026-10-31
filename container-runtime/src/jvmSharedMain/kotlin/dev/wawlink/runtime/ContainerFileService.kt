@@ -26,6 +26,7 @@ data class ContainerFile(val name: String, val kind: String, val size: Long, val
     val supported get() = directory || regular
 }
 data class ContainerDirectory(val path: String, val entries: List<ContainerFile>)
+data class ContainerFileContent(val bytes: ByteArray, val sizeBytes: Long, val truncated: Boolean)
 
 /** Guest-only filesystem access. No rootfs paths, host shell, Python, Node or SSH are involved. */
 class ContainerFileService(private val runtime: ContainerRuntime, private val config: ContainerConfig) {
@@ -302,6 +303,40 @@ class ContainerFileService(private val runtime: ContainerRuntime, private val co
     suspend fun exportFile(source: String, output: OutputStream) {
         guardPath(source)
         process("checked ${quote(source)}; [ -f ${quote(source)} ] || fail '不是普通文件'; cat -- ${quote(source)}") { it.copyTo(output, 32768) }
+    }
+
+    /** Reads a bounded prefix in one guest process; never downloads the remaining file or follows links. */
+    suspend fun readPrefix(source: String, maxBytes: Int): ContainerFileContent {
+        guardPath(source)
+        require(maxBytes in 1..8 * 1024 * 1024) { "预览读取范围必须在 1 B 到 8 MiB 之间" }
+        val operation = operation()
+        return withContext(operation) {
+            val result = process("""
+                checked ${quote(source)}
+                [ -f ${quote(source)} ] && [ -r ${quote(source)} ] || fail '只能预览可读普通文件'
+                stat -c '%s' -- ${quote(source)}
+                head -c ${maxBytes + 1} -- ${quote(source)}
+            """.trimIndent()) { input ->
+                val buffered = input.buffered()
+                val size = checkNotNull(field(buffered, 10)).toLong()
+                check(size >= 0) { "无法读取附件大小" }
+                val output = java.io.ByteArrayOutputStream(minOf(size, maxBytes.toLong()).toInt())
+                val buffer = ByteArray(minOf(maxBytes + 1, 8192))
+                var count = 0
+                var truncated = size > maxBytes
+                while (count <= maxBytes) {
+                    val read = buffered.read(buffer, 0, minOf(buffer.size, maxBytes + 1 - count))
+                    if (read < 0) break
+                    val keep = minOf(read, maxBytes - count)
+                    if (keep > 0) output.write(buffer, 0, keep)
+                    count += read
+                    if (count > maxBytes) { truncated = true; break }
+                }
+                ContainerFileContent(output.toByteArray(), maxOf(size, count.toLong()), truncated)
+            }
+            if (!operation.isCurrent(runtime)) throw CancellationException("容器已停止或重新启动")
+            result
+        }
     }
     suspend fun readText(source: String): String = withContext(Dispatchers.IO) {
         val bytes = java.io.ByteArrayOutputStream()

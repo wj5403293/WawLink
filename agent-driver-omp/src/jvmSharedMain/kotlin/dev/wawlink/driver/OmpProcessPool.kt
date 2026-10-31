@@ -621,6 +621,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 // A stop preserves queued input for the next run, but never sends a cancelled first prompt.
                 if (prompt.queued) local(buildJsonObject {
                     put("action", "queue_add"); put("queueId", prompt.id); put("text", prompt.text)
+                    put("wireMessage", attachmentWireMessage(prompt.text, prompt.attachments))
                     put("queue", prompt.queue.wireName)
                     put("attachments", attachmentsJson(prompt.attachments))
                     put("position", positionJson(prompt.position))
@@ -643,16 +644,16 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     prompt.dispatching = true
                     prompt.text
                 }
-                val message = if (dispatchText == originalText) prepared.first else attachmentPrompt(dispatchText, prepared.second)
+                val message = if (dispatchText == originalText) prepared.first else attachmentWireMessage(dispatchText, prepared.second)
                 val running = backendState.isRunning || !backendSettled
                 local(buildJsonObject { put("action", "raw_input"); put("promptId", prompt.id); put("text", dispatchText) })
                 val nativeSlash = message.startsWith("/") && prompt.attachments.isEmpty()
                 if (running && !nativeSlash) {
-                    enqueue(message, prepared.second, prepared.third, prompt.id, prompt.position, prompt.queue)
+                    enqueue(dispatchText, prepared.second, prepared.third, prompt.id, prompt.position, prompt.queue, message)
                 } else {
                     if (!running) startedNanos = System.nanoTime()
                     local(buildJsonObject {
-                        put("action", "user"); put("localId", prompt.id); put("text", message)
+                        put("action", "user"); put("localId", prompt.id); put("text", dispatchText); put("wireMessage", message)
                         put("timestamp", prompt.timestamp); put("attachments", attachmentsJson(prepared.second))
                         put("position", positionJson(prompt.position))
                         if (running) put("preserveRun", true)
@@ -679,15 +680,16 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
 
         private suspend fun enqueue(text: String, attachments: List<AttachmentFile>, images: JsonArray,
             queuedId: String = UUID.randomUUID().toString(), position: UserMessagePosition? = null,
-            queue: PromptQueue = PromptQueue.FOLLOW_UP) {
+            queue: PromptQueue = PromptQueue.FOLLOW_UP, wireMessage: String = attachmentWireMessage(text, attachments)) {
             ensureStarted()
             local(buildJsonObject {
-                put("action", "queue_add"); put("queueId", queuedId); put("text", text); put("attachments", attachmentsJson(attachments))
+                put("action", "queue_add"); put("queueId", queuedId); put("text", text); put("wireMessage", wireMessage)
+                put("attachments", attachmentsJson(attachments))
                 put("queue", queue.wireName)
                 position?.let { put("position", positionJson(it)) }
             })
             try {
-                command(if (queue == PromptQueue.STEERING) "steer" else "follow_up", buildJsonObject { put("message", text); if (images.isNotEmpty()) put("images", images) }, timeoutMs = 180_000, requestId = queuedId)
+                command(if (queue == PromptQueue.STEERING) "steer" else "follow_up", buildJsonObject { put("message", wireMessage); if (images.isNotEmpty()) put("images", images) }, timeoutMs = 180_000, requestId = queuedId)
             } catch (failure: Exception) {
                 if (failure !is OmpProcessStoppedException) local(buildJsonObject { put("action", "queue_remove"); put("queueId", queuedId) })
                 throw failure
@@ -695,10 +697,10 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         override fun updateQueuedPrompt(id: String, newText: String) {
-            if (newText.isBlank()) return
             synchronized(presentationLock) {
                 val prompt = outgoingPrompts[id]
                 if (prompt != null && prompt.queued && prompt.preview && !prompt.dispatching) {
+                    if (newText.isBlank() && prompt.attachments.isEmpty()) return
                     prompt.text = newText
                     presentState()
                     return
@@ -706,21 +708,23 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             }
             submit {
                 val item = state.value.queuedPrompts.firstOrNull { it.id == id } ?: return@submit
-                local(buildJsonObject { put("action", "raw_input"); put("promptId", id); put("text", newText) })
+                if (newText.isBlank() && item.attachments.isEmpty()) return@submit
                 if (process == null || deferredExplorerQueue.any { it.id == id }) {
-                    val prepared = prepareAttachments(newText, item.attachments)
-                    deferredExplorerQueue = deferredExplorerQueue.map { if (it.id == id) it.copy(text = prepared.first, attachments = prepared.second) else it }
+                    deferredExplorerQueue = deferredExplorerQueue.map { if (it.id == id) it.copy(text = newText) else it }
+                    local(buildJsonObject { put("action", "raw_input"); put("promptId", id); put("text", newText) })
                     local(buildJsonObject {
-                        put("action", "queue_edit"); put("queueId", id); put("text", prepared.first)
-                        put("attachments", attachmentsJson(prepared.second))
+                        put("action", "queue_edit"); put("queueId", id); put("text", newText)
+                        put("wireMessage", attachmentWireMessage(newText, item.attachments))
+                        put("attachments", attachmentsJson(item.attachments))
                     })
                     return@submit
                 }
+                val prepared = prepareAttachments(newText, item.attachments)
                 val removed = removeNativeQueued(item)
                 check(removed) { "该消息已开始执行，无法编辑" }
                 local(buildJsonObject { put("action", "queue_remove"); put("queueId", id) })
-                val prepared = prepareAttachments(newText, item.attachments)
-                enqueue(prepared.first, prepared.second, prepared.third, id, queue = item.queue)
+                local(buildJsonObject { put("action", "raw_input"); put("promptId", id); put("text", newText) })
+                enqueue(newText, prepared.second, prepared.third, id, queue = item.queue, wireMessage = prepared.first)
             }
         }
 
@@ -763,8 +767,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
 
         private suspend fun removeNativeQueued(item: QueuedPrompt): Boolean {
+            val wireMessage = stateMutex.withLock { reducer.wireUserText(item.id) } ?: attachmentWireMessage(item.text, item.attachments)
             val result = command("remove_queued_message", buildJsonObject {
-                put("message", item.text); put("queue", item.queue.wireName)
+                put("message", wireMessage); put("queue", item.queue.wireName)
             })
             return result["data"]?.jsonObject?.get("removed")?.jsonPrimitive?.booleanOrNull == true
         }
@@ -785,6 +790,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     park()
                     for (queued in withdrawn) local(buildJsonObject {
                         put("action", "queue_add"); put("queueId", queued.id); put("text", queued.text)
+                        put("wireMessage", attachmentWireMessage(queued.text, queued.attachments))
                         put("queue", queued.queue.wireName)
                         put("attachments", attachmentsJson(queued.attachments))
                     })
@@ -1104,7 +1110,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             for ((index, item) in queued.withIndex()) {
                 try {
                     val prepared = prepareAttachments(item.text, item.attachments)
-                    enqueue(prepared.first, prepared.second, prepared.third, item.id, queue = item.queue)
+                    enqueue(item.text, prepared.second, prepared.third, item.id, queue = item.queue, wireMessage = prepared.first)
                     deferredExplorerQueue = queued.drop(index + 1)
                 } catch (failure: Throwable) {
                     deferredExplorerQueue = queued.drop(index)
@@ -1213,6 +1219,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     if (interrupted(attempt) || startupGeneration != stopGeneration.get()) {
                         for (unsubmitted in restoredQueue.drop(index)) local(buildJsonObject {
                             put("action", "queue_add"); put("queueId", unsubmitted.id); put("text", unsubmitted.text)
+                            put("wireMessage", attachmentWireMessage(unsubmitted.text, unsubmitted.attachments))
                             put("queue", unsubmitted.queue.wireName)
                             put("attachments", attachmentsJson(unsubmitted.attachments))
                         })
@@ -1220,7 +1227,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     }
                     val prepared = prepareAttachments(queued.text, queued.attachments)
                     local(buildJsonObject {
-                        put("action", "queue_add"); put("queueId", queued.id); put("text", prepared.first)
+                        put("action", "queue_add"); put("queueId", queued.id); put("text", queued.text); put("wireMessage", prepared.first)
                         put("queue", queued.queue.wireName)
                         put("attachments", attachmentsJson(prepared.second))
                     })
@@ -1253,6 +1260,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 if (stopped) for (queued in restoredQueue) {
                     if (stateMutex.withLock { !reducer.hasConfirmedUser(queued.id) } && backendState.queuedPrompts.none { it.id == queued.id }) local(buildJsonObject {
                         put("action", "queue_add"); put("queueId", queued.id); put("text", queued.text)
+                        put("wireMessage", attachmentWireMessage(queued.text, queued.attachments))
                         put("queue", queued.queue.wireName); put("attachments", attachmentsJson(queued.attachments))
                     })
                 }
@@ -1583,7 +1591,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 "native_branch" -> reducer.restoreNativeBranch((frame["entries"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }, frame["leafId"]?.jsonPrimitive?.contentOrNull)
                 "user" -> {
                     val position = frame["position"] as? JsonObject
-                    reducer.addUserMessage(UserMessageItem(frame.string("localId"), frame.string("text"), parseAttachments(frame["attachments"]),
+                    val prompt = localAttachmentPrompt(frame, frame.string("localId"))
+                    reducer.addUserMessage(UserMessageItem(frame.string("localId"), prompt.text, prompt.attachments,
                         frame["timestamp"]?.jsonPrimitive?.longOrNull ?: 0, accepted = false), position?.let(::parsePosition) ?: reducer.currentUserPosition())
                     if (frame["preserveRun"]?.jsonPrimitive?.booleanOrNull != true)
                         reducer.update { it.copy(status = SessionStatus.RUNNING, error = null, actionText = "正在处理", elapsedSec = 0) }
@@ -1599,16 +1608,20 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     error = frame.string("message")) }
                 "queue_add" -> {
                     val position = frame["position"] as? JsonObject
+                    val prompt = localAttachmentPrompt(frame, frame.string("queueId"))
                     reducer.reserveUserPosition(frame.string("queueId"), position?.let(::parsePosition) ?: reducer.currentUserPosition())
                     reducer.update { current -> current.copy(queuedPrompts =
                         current.queuedPrompts.filterNot { it.id == frame.string("queueId") } +
-                            QueuedPrompt(frame.string("queueId"), frame.string("text"), parseAttachments(frame["attachments"]),
+                            QueuedPrompt(frame.string("queueId"), prompt.text, prompt.attachments,
                                 PromptQueue.entries.firstOrNull { it.wireName == frame.string("queue") } ?: PromptQueue.FOLLOW_UP)) }
                 }
-                "queue_edit" -> reducer.update { current -> current.copy(queuedPrompts = current.queuedPrompts.map { queued ->
-                    if (queued.id == frame.string("queueId")) queued.copy(text = frame.string("text"), attachments = parseAttachments(frame["attachments"])) else queued
-                }) }
-                "queue_remove" -> reducer.update { it.copy(queuedPrompts = it.queuedPrompts.filterNot { queued -> queued.id == frame.string("queueId") }) }
+                "queue_edit" -> {
+                    val prompt = localAttachmentPrompt(frame, frame.string("queueId"))
+                    reducer.update { current -> current.copy(queuedPrompts = current.queuedPrompts.map { queued ->
+                        if (queued.id == frame.string("queueId")) queued.copy(text = prompt.text, attachments = prompt.attachments) else queued
+                    }) }
+                }
+                "queue_remove" -> reducer.discardQueuedPrompt(frame.string("queueId"))
                 "title" -> reducer.update { it.copy(title = frame.string("title")) }
                 "model" -> {
                     hasModelPreference = true
@@ -1647,6 +1660,20 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     current.copy(feed = feed, status = if (hasUnresolvedDialog(feed)) SessionStatus.WAITING else SessionStatus.RUNNING, error = null)
                 }
             }
+        }
+
+        private fun localAttachmentPrompt(frame: JsonObject, id: String): AttachmentPrompt {
+            val text = frame.string("text")
+            val attachments = parseAttachments(frame["attachments"])
+            val wireMessage = frame["wireMessage"]?.jsonPrimitive?.contentOrNull
+            val original = reducer.originalUserText(id)
+            val prompt = when {
+                wireMessage != null -> AttachmentPrompt(text, attachments)
+                original != null -> AttachmentPrompt(original, attachments)
+                else -> parseAttachmentPrompt(text, attachments)
+            }
+            reducer.rememberAttachmentPrompt(id, prompt.text, prompt.attachments, wireMessage ?: text)
+            return prompt
         }
 
         private fun positionJson(position: UserMessagePosition) = buildJsonObject {
@@ -1723,7 +1750,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val transferred = ArrayList<AttachmentFile>(attachments.size)
             val images = ArrayList<JsonElement>()
             for (attachment in attachments) {
-                val image = when (attachment.mimeType) { "image/png", "image/jpeg", "image/webp", "image/gif" -> true; else -> false }
+                val mimeType = attachment.mimeType.takeUnless { it == "application/octet-stream" || it.isBlank() } ?: attachmentMimeType(attachment.name)
+                val image = when (mimeType) { "image/png", "image/jpeg", "image/webp", "image/gif" -> true; else -> false }
                 val guestPath: String
                 val sizeBytes: Long
                 val imageBytes: ByteArray?
@@ -1758,20 +1786,14 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     imageBytes = if (image) file.readBytes() else null
                     source = AttachmentSource.WORKSPACE
                 }
-                transferred += attachment.copy(path = guestPath, sizeBytes = sizeBytes, source = source)
+                transferred += attachment.copy(path = guestPath, mimeType = mimeType, sizeBytes = sizeBytes, source = source)
                 if (imageBytes != null) images += buildJsonObject {
-                    put("type", "image"); put("mimeType", attachment.mimeType); put("data", Base64.getEncoder().encodeToString(imageBytes))
+                    put("type", "image"); put("mimeType", mimeType); put("data", Base64.getEncoder().encodeToString(imageBytes))
                 }
             }
-            return Triple(attachmentPrompt(text, transferred), transferred, JsonArray(images))
+            return Triple(attachmentWireMessage(text, transferred), transferred, JsonArray(images))
         }
 
-        private fun attachmentPrompt(text: String, attachments: List<AttachmentFile>): String {
-            if (attachments.isEmpty()) return text
-            val references = attachments.joinToString("\n") { "- ${it.name}: ${it.path}" }
-            val marker = "\n\n附件（容器内真实文件）：\n$references"
-            return if (text.endsWith(marker)) text else text + marker
-        }
     }
 }
 

@@ -1018,6 +1018,133 @@ class OmpPromptDeliveryTest {
         }
     }
 
+    @Test fun attachmentPathsStayOnTheWireWhileRawUserWhitespaceSurvivesAcceptanceAndReplay() = runBlocking {
+        fixture {
+            val selected = File(directory, "selected.txt").apply { writeText("真实附件内容") }
+            val attachment = AttachmentFile("local-file", selected.name, selected.absolutePath)
+            val raw = "  原始问题\n第二行\n\n "
+            controller.sendPrompt(raw, listOf(attachment))
+            val optimistic = controller.state.value.feed.filterIsInstance<UserMessageItem>().single()
+            assertEquals(raw, optimistic.text)
+            assertEquals(listOf(attachment), optimistic.attachments)
+            gate.complete(transport)
+            val request = transport.request()
+            val pending = awaitState { it.feed.filterIsInstance<UserMessageItem>().singleOrNull()?.attachments?.singleOrNull()?.source == AttachmentSource.WORKSPACE }
+                .feed.filterIsInstance<UserMessageItem>().single()
+            assertEquals(raw, pending.text)
+            assertEquals(optimistic.id, pending.id)
+            assertEquals(attachment.id, pending.attachments.single().id)
+            assertTrue(pending.attachments.single().path.startsWith("/workspace/.wawlink/attachments/"))
+            assertEquals(attachmentWireMessage(raw, pending.attachments), request.string("message"))
+            transport.acceptUser(request)
+            transport.respond(request)
+            transport.finish(request)
+            val accepted = awaitState { it.status == SessionStatus.DONE }.feed.filterIsInstance<UserMessageItem>().single()
+            assertEquals(pending.copy(accepted = true), accepted)
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val restored = pool.session("session", "fixture", "/workspace")
+            val replayed = withTimeout(5_000) { restored.state.first { it.feed.filterIsInstance<UserMessageItem>().isNotEmpty() } }
+            assertEquals(listOf(accepted), replayed.feed.filterIsInstance<UserMessageItem>())
+        }
+    }
+
+    @Test fun queuedAttachmentCanBeEditedToBlankAndTakenOnlyAfterExactWireRemovalSucceeds() = runBlocking {
+        fixture {
+            gate.complete(transport)
+            controller.sendPrompt("开始")
+            val first = transport.request()
+            transport.acceptUser(first)
+            transport.respond(first)
+            val file = File(directory, "queued.txt").apply { writeText("排队附件") }
+            controller.enqueuePrompt("原始追加\n ", listOf(AttachmentFile("queued-file", file.name, file.absolutePath)))
+            val queuedRequest = transport.request()
+            val originalWire = queuedRequest.string("message")
+            transport.emit(buildJsonObject {
+                put("type", "queue_update"); put("steering", JsonArray(emptyList())); put("followUp", buildJsonArray { add(originalWire) })
+            })
+            transport.respond(queuedRequest)
+            val queued = awaitState { it.queuedPrompts.singleOrNull()?.text == "原始追加\n " }.queuedPrompts.single()
+            transport.interceptQueueControls = true
+            val blank = " \n\t"
+            controller.updateQueuedPrompt(queued.id, blank)
+            val remove = transport.queueControl()
+            assertEquals("remove_queued_message", remove.string("type"))
+            assertEquals(originalWire, remove.string("message"))
+            assertEquals("followUp", remove.string("queue"))
+            transport.emit("""{"type":"queue_update","steering":[],"followUp":[]}""")
+            transport.respond(remove, data = buildJsonObject { put("removed", true) })
+            val edited = transport.request()
+            assertEquals("follow_up", edited.string("type"))
+            assertEquals(attachmentWireMessage(blank, queued.attachments), edited.string("message"))
+            transport.emit(buildJsonObject {
+                put("type", "queue_update"); put("steering", JsonArray(emptyList())); put("followUp", buildJsonArray { add(edited.string("message")) })
+            })
+            transport.respond(edited)
+            val updated = awaitState { it.queuedPrompts.singleOrNull()?.text == blank }.queuedPrompts.single()
+            assertEquals(queued.copy(text = blank), updated)
+            assertTrue(File(root, queued.attachments.single().path.trimStart('/')).delete())
+            controller.updateQueuedPrompt(queued.id, "失败时不能覆盖原文")
+            val unreadable = awaitState { it.error?.contains("无法读取附件") == true }
+            assertEquals(listOf(updated), unreadable.queuedPrompts)
+
+            val rejected = async { runCatching { controller.takeQueuedPrompt(queued.id) } }
+            val rejectedRemove = transport.queueControl()
+            assertEquals(edited.string("message"), rejectedRemove.string("message"))
+            transport.respond(rejectedRemove, data = buildJsonObject { put("removed", false) })
+            assertTrue(rejected.await().isFailure)
+            assertEquals(listOf(updated), controller.state.value.queuedPrompts)
+            val taken = async { controller.takeQueuedPrompt(queued.id) }
+            val acceptedRemove = transport.queueControl()
+            assertEquals(edited.string("message"), acceptedRemove.string("message"))
+            transport.respond(acceptedRemove, data = buildJsonObject { put("removed", true) })
+            assertEquals(RestoredSessionPrompt(blank, queued.attachments), taken.await())
+            assertTrue(controller.state.value.queuedPrompts.isEmpty())
+        }
+    }
+
+    @Test fun stopRestoresRawAttachmentOnlySteeringAndOfflineEditsDoNotReadFiles() = runBlocking {
+        fixture {
+            gate.complete(transport)
+            controller.sendPrompt("开始")
+            val first = transport.request()
+            transport.acceptUser(first)
+            transport.respond(first)
+            val selected = File(directory, "steering.txt").apply { writeText("停止后保留附件") }
+            controller.sendPrompt("", listOf(AttachmentFile("steering-file", selected.name, selected.absolutePath)))
+            val queuedRequest = transport.request()
+            assertEquals("steer", queuedRequest.string("type"))
+            val wire = queuedRequest.string("message")
+            transport.emit(buildJsonObject {
+                put("type", "queue_update"); put("steering", buildJsonArray { add(wire) }); put("followUp", JsonArray(emptyList()))
+            })
+            transport.respond(queuedRequest)
+            val queued = awaitState { it.queuedPrompts.singleOrNull()?.text == "" }.queuedPrompts.single()
+            transport.interceptQueueControls = true
+            controller.stopExecution()
+            val abort = transport.queueControl()
+            assertEquals("abort_and_restore_queue", abort.string("type"))
+            transport.emit("""{"type":"queue_update","steering":[],"followUp":[]}""")
+            transport.respond(abort, data = buildJsonObject {
+                put("steering", buildJsonArray { add(buildJsonObject { put("text", wire) }) }); put("followUp", JsonArray(emptyList()))
+            })
+            val stopped = awaitState { it.status == SessionStatus.STOPPED }
+            assertEquals(listOf(queued), stopped.queuedPrompts)
+            val guest = queued.attachments.single().path
+            assertTrue(File(root, guest.trimStart('/')).delete())
+            controller.updateQueuedPrompt(queued.id, "\n ")
+            val edited = awaitState { it.queuedPrompts.singleOrNull()?.text == "\n " }
+            assertEquals(listOf(queued.copy(text = "\n ")), edited.queuedPrompts)
+            assertNull(edited.error)
+            pool.close()
+            pool = OmpProcessPool(runtime, data)
+            val restored = pool.session("session", "fixture", "/workspace")
+            val replayed = withTimeout(5_000) { restored.state.first { it.queuedPrompts.singleOrNull()?.text == "\n " } }
+            assertEquals(edited.queuedPrompts, replayed.queuedPrompts)
+            assertEquals(RestoredSessionPrompt("\n ", queued.attachments), restored.takeQueuedPrompt(queued.id))
+        }
+    }
+
     private val nativeDefault = Json.parseToJsonElement("""{"models":[{"provider":"local","id":"resolved","available":true}],"roles":[{"id":"default","model":"local/resolved","providerId":"local","modelId":"resolved","thinking":"max"}]}""")
 
     private suspend fun fixture(autoApprove: Boolean = true, withManagement: Boolean = false, initiallyRunning: Boolean = true, user: String = "root", homeOverride: String? = null, block: suspend Fixture.() -> Unit) {
@@ -1147,6 +1274,8 @@ class OmpPromptDeliveryTest {
         private val requests = Channel<JsonObject>(Channel.UNLIMITED)
         private val uiResponses = Channel<JsonObject>(Channel.UNLIMITED)
         private val managementRequests = Channel<JsonObject>(Channel.UNLIMITED)
+        private val queueControls = Channel<JsonObject>(Channel.UNLIMITED)
+        @Volatile var interceptQueueControls = false
         val outputOpened = CompletableDeferred<Unit>()
         private var running = false
         @Volatile var failWrites = false
@@ -1161,6 +1290,9 @@ class OmpPromptDeliveryTest {
                 when (request.string("type")) {
                     "prompt", "steer", "follow_up" -> check(requests.trySend(request).isSuccess)
                     "extension_ui_response" -> check(uiResponses.trySend(request).isSuccess)
+                    "remove_queued_message", "abort_and_restore_queue" -> if (interceptQueueControls) {
+                        check(queueControls.trySend(request).isSuccess)
+                    } else respond(request)
                     "get_state" -> respond(request, data = buildJsonObject {
                         put("isStreaming", running); put("isSettled", !running)
                     })
@@ -1171,6 +1303,7 @@ class OmpPromptDeliveryTest {
         }
         init { if (!management && ready) emit("""{"type":"ready"}""") }
         suspend fun request(): JsonObject = withTimeout(5_000) { requests.receive() }
+        suspend fun queueControl(): JsonObject = withTimeout(5_000) { queueControls.receive() }
         suspend fun managementRequest(operation: String): JsonObject = withTimeout(5_000) {
             managementRequests.receive().also { assertEquals(operation, it.string("op")) }
         }

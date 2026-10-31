@@ -248,6 +248,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                     if (record != null) CompositionLocalProvider(
                                         LocalAgentFileLinkHandler provides { source -> openSessionFile(record, source) },
                                         LocalAgentImageSaveHandler provides saveImage,
+                                        LocalAgentAttachmentHandler provides remember(app.runtime, record.containerId) { SessionAttachmentReader(app.runtime, record.containerId) },
                                     ) {
                                         AgentChatScreen(it, app.pool.providers(record.containerId), app.pool.management(record.containerId, record.workspace), ::leaveChat, { createInContext(record.id) },
                                         { selectedContainer = record.containerId; settingsReturn = "chat"; page = "providers" },
@@ -256,7 +257,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                         onPickContainerFiles = {
                                             pickContainerAttachments(record.containerId, record.workspace).map { selected ->
                                                 AttachmentFile(java.util.UUID.randomUUID().toString(), selected.file.name, selected.path,
-                                                    sizeBytes = selected.file.size, source = AttachmentSource.CONTAINER)
+                                                    mimeType = containerFileMimeType(selected.file.name), sizeBytes = selected.file.size, source = AttachmentSource.CONTAINER)
                                             }
                                         }, onOpenProjectPlugins = { openResources("plugins", record.containerId, record.workspace, record.id) },
                                         onOpenProjectSkills = { openResources("skills", record.containerId, record.workspace, record.id) },
@@ -274,7 +275,10 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                 val record = sessions.firstOrNull { it.record.id == current.sessionId }?.record
                                 controller.fold(onSuccess = { main ->
                                     if (record == null) EmptyHost("会话已删除")
-                                    else CompositionLocalProvider(LocalAgentImageSaveHandler provides saveImage) {
+                                    else CompositionLocalProvider(
+                                        LocalAgentImageSaveHandler provides saveImage,
+                                        LocalAgentAttachmentHandler provides remember(app.runtime, record.containerId) { SessionAttachmentReader(app.runtime, record.containerId) },
+                                    ) {
                                         AgentHubScreen(app.pool.explorer(record.id), main, app.pool.providers(record.containerId),
                                             app.pool.management(record.containerId, record.workspace),
                                             onBack = { page = "chat" }, onMain = { page = "chat" },
@@ -283,7 +287,7 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                                             onPickFiles = files::pickAttachments,
                                             onPickContainerFiles = { workspace -> pickContainerAttachments(record.containerId, workspace).map { selected ->
                                                 AttachmentFile(java.util.UUID.randomUUID().toString(), selected.file.name, selected.path,
-                                                    sizeBytes = selected.file.size, source = AttachmentSource.CONTAINER)
+                                                    mimeType = containerFileMimeType(selected.file.name), sizeBytes = selected.file.size, source = AttachmentSource.CONTAINER)
                                             } },
                                             onOpenFile = { workspace, source -> openSessionFile(record.copy(workspace = workspace), source) },
                                             onExport = { export ->

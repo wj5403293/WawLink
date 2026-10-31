@@ -68,6 +68,7 @@
 - Ask 富预览与 Agent 正文共用 SVG、Mermaid、图像及 Markdown 渲染；图表不依赖在线渲染服务，模型内容不得执行脚本、读取宿主文件或通过 SVG 加载外部资源。
 - 内联代码与 Markdown 表格参照 Kelivo 的视觉参数，独立实现而不复制其 AGPL 代码或资源；内联代码保留原文选择及路径点击，长代码可换行。表格统一列宽与网格，保留列对齐，窄屏多列可横向滚动，转义或代码中的竖线不拆列。
 - 正文及 Ask 预览中的图片点击进入原生全屏，支持缩放、拖动、复位与保存；PNG/JPEG/GIF/WebP 保存已加载的原始字节，SVG 导出安全校验后的矢量内容。全屏与保存复用已加载内容，不重复请求；取消保存不提示成功，失败可重试。
+- 附件交互严格遵循 `ref-plan/attachment-preview.html`：输入框内为横向混合缩略图/文件卡，队列显示附件胶囊，用户气泡内嵌相册及文件卡。原始用户 `text` 保留空串与空白，附件路径后缀仅进入 OMP RPC；主会话、子代理、队列编辑/撤回、历史标题/搜索/预览/复制与回退草稿均展示纯净文字和附件，旧记录无缓存时也须还原。图片复用已加载字节全屏缩放与保存；本机文件从本机读取，工作区/容器文件从客体进程读取，输入框普通文件只预览前 64 KiB 严格 UTF-8 并高亮，已传输普通文件沿用会话文件操作面板；拒绝链接及特殊文件，不因预览直接访问宿主 Rootfs。
 - 工具、Todo 与思考的运行耗时实时刷新，结束后固定；不足 1 秒隐藏，1–59 秒显示 `15s`，达到 1 分钟后显示 `1:05`，不显示静止的 `0:00`。
 - 长思考及工具内容展开后，标题滚出可视区时将概况吸附在 Todo 与子任务概况下方；各层可回跳，不遮挡原始标题。思考仅在展开动画期间冻结显示快照，结束后恢复平滑增量输出，复用已完成的 Markdown 段落；阅读、选择或上滑时不强制追尾，全文查看使用 Markdown。
 - 思考与工具左侧既有图标点击后直接全屏查看该节点完整内容，折叠或展开时均可用，并提供裁剪在图标轮廓内的 Material 3 波纹反馈与中文无障碍名称；标题仍负责展开/收起，打开和返回不改变展开状态。计划与任务组图标维持原有展开/收起行为，保留展开后的全文/详情入口。
@@ -109,6 +110,7 @@
   - 同目录的 `MarkdownParts.kt`、`RichGraphic.kt` 共用正文/Ask 富媒体入口；`src/jvmSharedMain/kotlin/dev/wawlink/ui/RichGraphicDocument.kt` 负责离线图表文档、SVG 安全与图像加载。Android `RichGraphic.android.kt` 从精确 URL 拦截复用离线 Mermaid 引擎字节，由原生视图生命周期创建/释放 WebView，串行执行桥回执驱动的 SVG 栅格化，并处理渲染进程退出；Desktop `RichGraphic.desktop.kt` 保留内嵌引擎与无窗口 Canvas/原生图像显示。
   - 同目录的 `MarkdownInline.kt` 提供可选择、可点击的内联代码胶囊与长代码分段，`MarkdownTable.kt` 提供表格解析、统一列宽、对齐网格及窄屏横滚，`MarkdownTest.kt` 覆盖原文与链接偏移、转义竖线、缺格和无效表头边界。
   - 同目录的 `ImageDetailScreen.kt` 提供原生全屏图像、缩放拖动与保存；`RichGraphic.kt` 的 `LocalAgentImageSaveHandler` 由宿主接入系统文档保存，`RichGraphicDocument.kt` 保留校验后的图像字节、MIME 与安全文件名。
+  - 同目录的 `AttachmentPreview.kt` 定义 `LocalAgentAttachmentHandler` 的有界字节读取契约，并实现输入框卡片、队列胶囊、消息相册/文件卡与只读快速预览；`AttachmentPreviewTest.kt` 覆盖图片识别及严格 UTF-8/二进制/截断边界，`RichGraphicSafetyTest.kt` 同时覆盖真实附件解码与 SVG 主动内容拒绝。
   - `src/commonMain/composeResources/files/rich/` 保存 Mermaid 离线引擎、来源与许可证；`src/commonTest/kotlin/dev/wawlink/ui/` 中的 `ComposerSlashCommandsTest.kt`、`AskDraftStateTest.kt`、`MarkdownPartsTest.kt` 覆盖命令覆盖优先级、分组作答和富媒体解析边界，`src/desktopTest/kotlin/dev/wawlink/ui/RichGraphicSafetyTest.kt` 覆盖 SVG 主动内容、图像 URI 与重定向边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/FeedPresentation.kt`、`src/jvmSharedMain/kotlin/dev/wawlink/ui/FeedClock.kt` 统一运行耗时、思考稳定展示与详情；`ThoughtPreview.kt` 按实际宽度准备思考预览而不测量全文超长单行，保留完整来源、语义及全屏内容。`FeedPresentationTest.kt` 覆盖耗时边界，`MarkdownPartsTest.kt` 覆盖稳定段落、流式围栏/SVG 与重写边界。
   - `src/commonMain/kotlin/dev/wawlink/ui/AgentChatScreen.kt` 使用原生 `SnapshotStateMap` 保存相对所属 Lazy 行的吸顶几何，普通滚动不再重写每个节点的坐标；候选只取可见根项，历史计划二分定位，吸顶观察隔离于聊天与输入区。保留有限距离追尾、三层吸顶及各层回跳，不通过结构相等的自定义 Map 包装几何状态。
@@ -123,6 +125,7 @@
   - `src/commonTest/kotlin/dev/wawlink/ui/NativeProviderDraftTest.kt` 覆盖首次配置读取与用户输入合并、显式移除、无效输入和模型子表单状态保存，以及思考默认值的无操作、整段清除、继承与未知字段保留，并覆盖自定义/覆盖混合批量移除、空集合清理、获取结果去重与确认时重检、搜索及可见项全选边界；`ProviderListingTest.kt` 覆盖零模型及未知协议服务可见、内置去重和原生可用性优先的组内排序。
 - `agent-driver-omp/`：OMP JSONL RPC、多会话、事件树、原生历史分支/迁移与 YAML 配置同步；`src/jvmSharedMain/kotlin/dev/wawlink/driver/KnownModelCatalog.kt` 实现双源能力/价格目录与唯一匹配，`src/jvmSharedTest/kotlin/dev/wawlink/driver/` 中的 `KnownModelCatalogTest.kt`、`ModelPayloadExtensionTest.kt`、`OmpPromptDeliveryTest.kt`、`OmpEventReducerTest.kt` 覆盖模型资料、请求参数、消息位置、审批/执行模式及原生命令目录/批量 Ask 边界。
   - 同目录的 `OmpEventReducer.kt` 在归并器内部按稳定 ID 定位当前节点，只复制变更节点的祖先兄弟列表，外部整体替换自动失效索引；重复终态与工具输出的冗余渲染被消除。完整状态及 Todo 快照仍保留稳定 ID、消息位置和思考/模型正文归属。`OmpProcessPool.kt` 的事件日志逐条写入并关闭缓冲 UTF-8 writer，不额外构造整条换行字符串及其 UTF-8 字节数组。
+  - 同目录的 `AttachmentPrompts.kt` 分离纯净用户文字与 RPC 附件路径后缀，恢复无缓存旧记录的附件及稳定身份；`AttachmentPromptsTest.kt`、消息归并/发送回归覆盖空文字、空白、重复消息、队列匹配及撤回恢复，`src/jvmSharedTest/resources/explorer-attachments.test.mjs` 执行生产历史/子代理桥的展示与原生队列身份场景。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpAgentManagementRepository.kt` 管理按容器、项目和会话隔离的原生管理进程、版本冲突与原子写入；`src/jvmSharedMain/resources/omp-management/` 的 Bun 桥直接复用已安装 OMP 的配置注册表、Agent/顾问发现、模型角色解析及认证 API，不内置另一份可编辑配置规则。
   - `src/jvmSharedMain/kotlin/dev/wawlink/driver/OmpSessionExplorer.kt` 将原生轻量历史索引与独立运行实例接入 Kotlin 状态流，按会话、节点与版本缓存所选详情，保留完整快照分页与增量刷新；Hub 活动按范围、类别和文本筛选后限额，查询代次隔离迟到响应，子代理快照传递实例级模型与思考候选。`omp-management/session.mjs` 以会话生命周期内的顺序定时扫描处理原子请求，不依赖 Proroot 未翻译的原始 inotify 路径；通道状态及每条请求/响应按原生进程实例隔离，业务分发前丢弃遗留请求，初始化/排空错误交给调用页，本地超时不冒充页面取消。它加载的 `explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs` 分别负责原生操作分发、完整树索引/按需详情及注册表首屏/异步持久发现/增量活动摘要；原生模块使用 OMP 扩展加载器的规范包导入，避免发行版与源码形成两个注册表。`OmpNativeHistoryTest.kt`、`OmpSessionExplorerHistoryTest.kt` 覆盖完整匹配快照、过期详情拒绝、正文复制边界、Hub 与历史解耦、查询响应代次、实例候选边界、分支返回及稳定消息身份；`src/jvmSharedTest/resources/session.test.mjs` 执行生产轮询器，覆盖启动前后遗留请求零副作用及当前实例操作。
   - 同资源目录的 `plugins.ts`、`plugin-native.mjs`、`plugin-worker.ts` 接入 OMP 真实插件/市场管理、用户与项目覆盖、设置脱敏及可取消的原生操作；`skills.ts`、`skill-files.ts`、`skill-registry.ts` 接入真实技能发现、原文/资源、版本冲突、Skillshare 安装、账号及发布维护，不模拟运行时重载。
@@ -134,6 +137,7 @@
   - 同目录的 `DistroSources.kt` 负责官方/国内 Rootfs 路由、完整性校验、同站 HTTPS 重定向及客体软件源与安装来源记录；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/DistroSourcesTest.kt` 覆盖快照选择、错误校验值、国内源不外逃与软件源边界。`RootfsArchives.kt` / `RootfsArchivesTest.kt` 同时保留 Linux systemd 文件名中的字面反斜杠及链接目标，不放宽目录穿越保护。
   - `RootfsSanitizer.kt` 按容器用户 HOME、原生配置档和选项过滤归档中的配置、日志、历史、凭据及缓存；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RootfsExportSanitizationTest.kt` 覆盖各选项、源文件保留、链接和越界拒绝。
   - 同目录的 `RuntimeIdentity.kt` 负责 PRoot/Proroot 补充组名的边界检查与原子更新，`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeIdentityTest.kt` 覆盖保留已有记录、幂等与链接越界；`ContainerFileService.kt` 通过客体进程提供文件枚举、流式导入导出、复制、重命名、删除及 UTF-8 文本原子保存，不访问宿主 Rootfs 路径；多进程写入通过协程上下文保留首次运行身份，`LocalContainerRuntime.kt` 在进程准入锁内复核，后续提交和清理不按需启动。
+  - `ContainerFileService.readPrefix` 在同一客体进程读取真实大小与有界前缀，不读取剩余文件；结果绑定首次操作的停止/运行代次，拒绝符号链接、特殊文件及停止/快速重启后的迟到结果。
   - `src/androidUnitTest/kotlin/dev/wawlink/runtime/ContainerFileTextTest.kt` 覆盖文本保存的精确字节与权限、2 MiB 边界、外部修改冲突、链接及挂载根保护、暂存文件清理和停止/快速重启后的提交拒绝及原始错误保留；运行于 Android JVM，不冒充设备端编辑器或引擎验收。
   - `RuntimeEngines.kt` 构造各引擎的真实启动参数与已有用户身份，并通过 `containerHome(config)` 对驱动公开与启动器共用的离线有效 HOME 解析；`src/jvmSharedTest/kotlin/dev/wawlink/runtime/RuntimeEnginesTest.kt` 覆盖 Proroot 显式绑定格式、用户名/数字 UID、HOME 覆盖与无效账户/路径边界，`RuntimeChrootMountTest.kt` 覆盖 chroot 挂载参数、只读验证、失败回滚及错误。
   - 同目录的 `ContainerMetadata.kt` 提供容器内四项分发信息、当前登录 HOME 的离线边界检查、SHA256 冲突检测与原子保存；`LocalContainerRuntime.kt` 在启动、注册、导入和配置变更时读取，信息错误独立于引擎错误，保存不改变运行代次。`src/jvmSharedTest/kotlin/dev/wawlink/runtime/ContainerMetadataTest.kt`、`ContainerMetadataActionTest.kt` 覆盖持久化、Rootfs 迁移、链接/挂载边界、外部修改与运行中动作不受改名影响。
@@ -150,6 +154,7 @@
   - `src/sharedMain/kotlin/dev/wawlink/app/ContainerFilesScreen.kt` 移植 WawSSH 独立文件浏览器并提供工作区与附件选择模式；`src/desktopTest/kotlin/dev/wawlink/app/ContainerFileServiceTest.kt` 覆盖文件名、路径、流式字节、覆写与链接边界，不冒充真实引擎验收。
   - `src/sharedMain/kotlin/dev/wawlink/app/HostMounts.kt` 负责主机挂载源访问校验及本机储存卷文档 ID 的边界安全解析；`src/desktopTest/kotlin/dev/wawlink/app/HostMountsTest.kt` 覆盖主储存与可移除卷、路径原名、未知卷、目录越界及已有文件挂载。
   - 同目录的 `ContainerFileActions.kt` 为文件浏览器与模型路径链接共用 MIME、宿主文件名和流式打开/下载操作；`WawLinkApp.kt` 提供当前会话的文件路径处理。
+  - 同目录的 `SessionAttachmentReader.kt` 在聊天与 Hub 注入真实附件读取，按 `AttachmentSource` 区分本机文件与客体绝对路径；`ContainerFileServiceTest.kt` 覆盖三种来源的空文件/64 KiB/溢出、链接及特殊文件边界。
   - 同目录的 `ContainerFeaturesScreen.kt` 提供单双列卡片、原生动作、编辑及既有拖动；`FeatureCardSheets.kt` 实现原型调色/容器选择 bottom sheet，`FeatureCardPreferences.kt` 按需读取并更新容器内布局，`FeatureCardsSettings.kt` 提供设置恢复，`FeatureCardNativeGestures.kt` 统一 HTML/原生手势，`FeatureCardDocument.kt` 提供完整卡片文档、实时事件与离线图标。`FeatureNativeLuaExecutor.kt` 定义原生按钮执行接口，`src/desktopMain/kotlin/dev/wawlink/app/FeatureNativeLuaExecutor.desktop.kt` 明确拒绝 Android 调用。`src/desktopTest/kotlin/dev/wawlink/app/FeatureCardPreferencesTest.kt` 覆盖惰性加载、容器隔离、新 ID 下的设置恢复、保存失败不发布、无效文件不覆盖及外部修改保留。
   - 同目录的 `ContainerRulesScreen.kt` 提供真实规则文件管理和原生编辑，`ContainerExtensionScreen.kt` 提供服务启停与无生命周期说明的居中加载；`src/desktopMain/kotlin/dev/wawlink/app/ContainerFeatureCardSurface.desktop.kt` 与 `ContainerWebSurface.desktop.kt` 使用 JavaFX WebView。桌面卡片在编辑或模态遮挡时使用固定合成快照，保留文档及脚本状态，恢复原视图而不重载；避免原生层覆盖选择标记、拖动或 bottom sheet。Android 对应实现在 `app-android/src/main/kotlin/dev/wawlink/app/ContainerFeatureCardSurface.android.kt` 与 `ContainerWebSurface.android.kt`，卡片使用原生圆角裁剪，共享 WebView 以 `MATCH_PARENT` 填满 Compose 分配的区域，避免 `WRAP_CONTENT` 导致百分比及 `vh` 高度为零。Web 资源仅允许精确卡片来源或当前功能 loopback 来源。
   - `ContainerRulesScreen.kt` 同时提供当前用户提示词模板及七个系统上下文文件的快捷编辑；`KeepAliveScreen.kt` 提供 Android 后台保活设置和真实状态，Desktop 明确不支持 Android 系统资源。
@@ -177,6 +182,7 @@
   - `ref-plan/plugin-management.html`、`ref-plan/skill-management.html` 为插件与技能管理的完整视觉和交互原型；保留原文件，不修改演示数据。
   - `ref-plan/session-history.html`、`ref-plan/agent-hub.html` 为本会话历史树与运行时 Agent Hub/子代理详情的完整视觉和交互原型；保留原文件，不修改演示数据。
   - `ref-plan/feature-cards.html`：功能页卡片、编辑工具栏、调色与切换容器的用户原型；原文保留，拖动仍使用既有实现，不引入原型演示业务。
+  - `ref-plan/attachment-preview.html`：附件输入条、排队胶囊、用户内嵌相册与文件卡、文件快速预览及图片全屏的用户视觉原型；原文保留，不引入演示数据。
 - `README.md`：构建运行、独立 UI 接入、能力边界、产物与已验证范围。
 - `scripts/USAGE.txt`：固定输入、免 Docker 构建、原生程序加载与上游许可说明。
 
@@ -195,6 +201,7 @@
 - 追加手势与空输入框撤回编辑本轮按用户要求不运行测试或打包，完成静态检查后直接提交本次变更；不把静态检查写成运行时或真机验收。
 - 多发行版镜像与 OMP 安装适配仅本轮获准在开发机的隔离 Linux PRoot/QEMU 客体中执行真实下载、导入、依赖安装与原生 RPC 验证；不使用 Android 模拟器，不把客体结果写成 Android 真机验收。
 - 每次修改完成并通过必要验证后，必须为本次修改创建 Git commit，提交仅包含本次任务的变更。
+- 附件交互与预览改造本轮按用户要求只做相关定向验证，不运行完整回归、不打包 APK、不创建 Git commit；完整回归与默认 APK 构建命令在交付中提供，桌面烟测不替代 Android 真机验收。
 - Debug APK 交付统一使用 Gradle 默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`；Release 使用 `app-android/build/outputs/apk/release/app-android-release.apk` 与同目录 SHA-256 文件。后续更新覆盖对应固定产物，不按任务复制或新增命名 APK。
 - Android `versionCode` 使用 `1000000 + major*1000000 + minor*1000 + patch`；`0.1.2` 的 `1001002` 高于历史 `1.0.0` 的 `1000000`，覆盖安装仍要求签名一致。
 - Release 使用用户私有的 `~/.android/wsdx233.keystore`、别名 `wsdx233` 与 `~/.android/.env` 中的 `WSDX233_KEY_PASSWORD`；本机私有文件保持 0600，不将密码、keystore 或 Base64 私钥提交或输出到日志。GitHub 私钥仅保存于限制 `v*` tag 的 `release` Environment Secrets，编译任务不得接触；不回退到 Debug 签名。既有 Debug 与 Release 签名不同，不声称可直接覆盖安装。

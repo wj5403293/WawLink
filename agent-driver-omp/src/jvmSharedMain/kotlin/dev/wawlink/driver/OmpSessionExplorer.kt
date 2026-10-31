@@ -101,10 +101,14 @@ internal class OmpSessionExplorer(
         val calls = response.objects("calls").associateBy { it.string("id") }
         val detail = withContext(Dispatchers.Default) {
             val message = entry?.obj("message") ?: entry?.takeIf { it.string("type") == "custom_message" }
-            val text = if (entry == null) "" else originalTexts(listOf(entry))[entryId] ?: response.optional("userText")
-                ?: message?.let(::messageText) ?: entry.optional("text") ?: entry.optional("summary") ?: entry.optional("label") ?: entry.optional("name").orEmpty()
+            val sourceText = if (entry == null) "" else message?.let(::messageText) ?: entry.optional("text")
+                ?: entry.optional("summary") ?: entry.optional("label") ?: entry.optional("name").orEmpty()
+            val parsed = if (response.containsKey("userText") || message?.string("role") == "user")
+                parseAttachmentPrompt(sourceText, bridgeAttachmentFiles(response)) else AttachmentPrompt(sourceText, emptyList())
+            val text = if (entry == null) parsed.text else originalTexts(listOf(entry))[entryId] ?: response.optional("userText") ?: parsed.text
+            val prompt = parsed.copy(text = text)
             SessionHistoryDetail(state.sessionId, entryId, node.version, text,
-                feed = if (kind == HistoryDetailKind.PREVIEW && entry != null) renderEntry(entry, calls) else emptyList(),
+                feed = if (kind == HistoryDetailKind.PREVIEW && entry != null) renderEntry(entry, calls, prompt) else emptyList(),
                 rawRecord = response.string("rawRecord"),
                 copyBlocks = if (kind == HistoryDetailKind.COPY) copyBlocks(message, text) else emptyList(),
                 ask = if (kind == HistoryDetailKind.ASK || kind == HistoryDetailKind.PREVIEW) entry?.let { nativeHistoricalAsk(it, calls) } else null)
@@ -154,7 +158,8 @@ internal class OmpSessionExplorer(
         synchronize(call("explorer_history_branch"))
         refreshHistory()
         response.obj("prompt")?.let { prompt ->
-            RestoredSessionPrompt(prompt.string("text"), restoredImages(prompt))
+            val restored = restoredPrompt(prompt)
+            RestoredSessionPrompt(restored.text, restored.attachments)
         }
     }
 
@@ -257,6 +262,7 @@ internal class OmpSessionExplorer(
         private val uiRequests = linkedMapOf<String, JsonObject>()
         private var queueMetadata = emptyMap<String, JsonObject>()
         private val queuedInputs = mutableMapOf<String, RestoredSessionPrompt>()
+        private val attachmentInputs = mutableMapOf<String, AttachmentPrompt>()
         init {
             scope.launch {
                 mutable.subscriptionCount.collectLatest { count ->
@@ -278,9 +284,11 @@ internal class OmpSessionExplorer(
             val result = childCall("explorer_agent_snapshot", buildJsonObject { cursor?.let { put("cursor", it) } })
             if (result["reset"]?.jsonPrimitive?.booleanOrNull == true || cursor == null) {
                 reducer = OmpEventReducer(mutable.value.copy(feed = emptyList(), queuedPrompts = emptyList(), error = null, usage = UsageInfo()))
+                attachmentInputs.entries.forEachIndexed { index, (wire, prompt) -> reducer.rememberAttachmentPrompt("attachment-cache:$index", prompt.text, prompt.attachments, wire) }
                 uiRequests.clear()
                 val messageIds = result.obj("messageIds")
                 val entries = result.objects("entries").map { entry ->
+                    rememberBridgePrompt(entry)
                     val messageId = messageIds?.get(entry.string("id"))
                     if (messageId == null) entry else JsonObject(entry + ("messageId" to messageId))
                 }
@@ -292,6 +300,7 @@ internal class OmpSessionExplorer(
                 }
             }
             result.objects("events").forEach { event ->
+                rememberBridgePrompt(event)
                 if (event.string("type") == "extension_ui_request") {
                     if (event.string("method") == "cancel") uiRequests.remove(event.string("targetId"))
                     else uiRequests[event.string("id")] = event
@@ -305,7 +314,7 @@ internal class OmpSessionExplorer(
             }
             result.objects("requests").forEach { event -> uiRequests[event.string("id")] = event; reducer.reduce(event) }
             queueMetadata = result.objects("queue").associateBy { it.string("id") }
-            if (queuedInputs.isNotEmpty()) queuedInputs.keys.retainAll(queueMetadata.values.mapTo(mutableSetOf()) { it.string("text") })
+            if (queuedInputs.isNotEmpty()) queuedInputs.keys.retainAll(queueMetadata.values.mapTo(mutableSetOf()) { it.string("wireText", it.string("text")) })
             reducer.update { current -> current.copy(workspace = result.optional("workspace") ?: current.workspace,
                 providerId = result.optional("providerId") ?: current.providerId, modelId = result.optional("modelId") ?: current.modelId,
                 thinkingLevel = parseThinking(result.optional("thinking"), current.thinkingLevel), modelLoading = false,
@@ -323,13 +332,25 @@ internal class OmpSessionExplorer(
                     else -> current.status
                 }, error = result.optional("error") ?: current.error,
                 queuedPrompts = if (result["queue"] is JsonArray) result.objects("queue").map { queued ->
-                    QueuedPrompt(queued.string("id"), queued.string("text"),
-                        queuedInputs[queued.string("text")]?.attachments ?: nativeImageAttachments(queued),
+                    val wire = queued.string("wireText", queued.string("text"))
+                    val prompt = queuedInputs[wire]?.let { AttachmentPrompt(it.text, it.attachments) } ?: restoredPrompt(queued)
+                    attachmentInputs[wire] = prompt
+                    reducer.rememberAttachmentPrompt(queued.string("id"), prompt.text, prompt.attachments, wire)
+                    QueuedPrompt(queued.string("id"), prompt.text, prompt.attachments,
                         if (queued.string("queue") == PromptQueue.STEERING.wireName) PromptQueue.STEERING else PromptQueue.FOLLOW_UP)
                 } else current.queuedPrompts) }
             cursor = result["cursor"] ?: cursor
             entryFeedIds = reducer.nativeEntryFeedIds(nativeEntries.values.toList())
             mutable.value = reducer.state
+        }
+        private fun rememberBridgePrompt(value: JsonObject) {
+            val message = value.obj("message") ?: return
+            if (message.string("role") != "user") return
+            val wire = messageText(message)
+            val prompt = attachmentInputs[wire] ?: parseAttachmentPrompt(wire, bridgeAttachmentFiles(value)).let { parsed ->
+                parsed.copy(text = value.optional("userText") ?: parsed.text)
+            }
+            reducer.rememberAttachmentPrompt(value.string("messageId", value.string("id")), prompt.text, prompt.attachments, wire)
         }
         private fun launchOperation(block: suspend () -> Unit) {
             scope.launch {
@@ -354,6 +375,10 @@ internal class OmpSessionExplorer(
                 }
                 try {
                     val prepared = prepareAttachments(text, attachments, state.value.workspace)
+                    mutex.withLock {
+                        attachmentInputs[prepared.first] = AttachmentPrompt(text, prepared.second)
+                        reducer.rememberAttachmentPrompt(pendingId, text, prepared.second, prepared.first)
+                    }
                     val response = childCall("explorer_agent_prompt", buildJsonObject {
                         put("text", prepared.first); if (prepared.third.isNotEmpty()) put("images", prepared.third)
                         put("behavior", when (behavior) { RuntimeAgentPromptBehavior.PROMPT -> "prompt"; RuntimeAgentPromptBehavior.STEER -> "steer"; RuntimeAgentPromptBehavior.FOLLOW_UP -> "followUp" })
@@ -368,10 +393,11 @@ internal class OmpSessionExplorer(
                         reducer.update { it.copy(feed = it.feed.withoutFeed(pendingId), error = null) }
                         if (response["queued"]?.jsonPrimitive?.booleanOrNull == true) {
                             queuedInputs[prepared.first] = RestoredSessionPrompt(text, prepared.second)
-                            reducer.update { it.copy(queuedPrompts = it.queuedPrompts + QueuedPrompt(acceptedId, prepared.first, prepared.second,
+                            reducer.update { it.copy(queuedPrompts = it.queuedPrompts + QueuedPrompt(acceptedId, text, prepared.second,
                                 if (behavior == RuntimeAgentPromptBehavior.FOLLOW_UP) PromptQueue.FOLLOW_UP else PromptQueue.STEERING)) }
                         }
-                        else if (existingId == null) reducer.addUserMessage(UserMessageItem(acceptedId, prepared.first, prepared.second, System.currentTimeMillis(), accepted = true))
+                        else if (existingId == null || existingId == pendingId) reducer.addUserMessage(UserMessageItem(acceptedId, text, prepared.second, System.currentTimeMillis(), accepted = true))
+                        reducer.rememberAttachmentPrompt(acceptedId, text, prepared.second, prepared.first)
                         mutable.value = reducer.state
                     }
                     refresh()
@@ -388,27 +414,37 @@ internal class OmpSessionExplorer(
                 (queueMetadata[queueId] ?: error("排队消息已失效，请刷新后重试")) to
                     (reducer.state.queuedPrompts.firstOrNull { it.id == queueId } ?: error("排队消息已开始执行"))
             }
+            check(text == null || text.isNotBlank() || item.attachments.isNotEmpty()) { "排队消息不能为空" }
+            // Native inline images have no guest-file suffix. Keep their existing
+            // image payload instead of advertising a host preview-cache path.
+            val references = parseAttachmentPrompt(queued.string("wireText", queued.string("text"))).attachments
+            val wire = text?.let { attachmentWireMessage(it, references) }
             childCall("explorer_agent_control", buildJsonObject {
                 put("operation", if (text == null) "remove_queue" else "update_queue"); put("queueId", queueId)
-                put("queue", queued.string("queue")); put("originalText", queued.string("text")); text?.let { put("text", it) }
+                put("queue", queued.string("queue")); put("originalText", queued.string("wireText", queued.string("text"))); wire?.let { put("text", it) }
             })
-            if (text != null) mutex.withLock { queuedInputs[text] = RestoredSessionPrompt(text, item.attachments) }
+            if (text != null && wire != null) mutex.withLock {
+                queuedInputs[wire] = RestoredSessionPrompt(text, item.attachments)
+                attachmentInputs[wire] = AttachmentPrompt(text, item.attachments)
+                reducer.rememberAttachmentPrompt(queueId, text, item.attachments, wire)
+            }
             refresh()
         }
-        override fun updateQueuedPrompt(id: String, newText: String) { if (newText.isNotBlank()) queueOperation(id, newText) }
+        override fun updateQueuedPrompt(id: String, newText: String) { queueOperation(id, newText) }
         override fun removeQueuedPrompt(id: String) { queueOperation(id, null) }
         override suspend fun takeQueuedPrompt(id: String): RestoredSessionPrompt = withContext(NonCancellable) {
             mutex.withLock {
                 val item = reducer.state.queuedPrompts.firstOrNull { it.id == id } ?: error("排队消息已开始执行，无法撤回")
                 val queued = queueMetadata[id] ?: error("排队消息已变化，请稍后重试")
-                val input = queuedInputs[item.text] ?: RestoredSessionPrompt(item.text, item.attachments)
+                val wire = queued.string("wireText", queued.string("text"))
+                val input = queuedInputs[wire] ?: RestoredSessionPrompt(item.text, item.attachments)
                 childCall("explorer_agent_control", buildJsonObject {
                     put("operation", "remove_queue"); put("queueId", id)
-                    put("queue", queued.string("queue")); put("originalText", queued.string("text"))
+                    put("queue", queued.string("queue")); put("originalText", wire)
                 })
                 reducer.update { it.copy(queuedPrompts = it.queuedPrompts.filterNot { prompt -> prompt.id == id }) }
                 queueMetadata = queueMetadata - id
-                if (reducer.state.queuedPrompts.none { it.text == item.text }) queuedInputs.remove(item.text)
+                if (queueMetadata.values.none { it.string("wireText", it.string("text")) == wire }) queuedInputs.remove(wire)
                 mutable.value = reducer.state
                 input
             }
@@ -486,7 +522,7 @@ internal class OmpSessionExplorer(
         override fun listWorkspaceFiles(relativePath: String) = files(state.value.workspace, relativePath)
     }
 
-    private fun renderEntry(entry: JsonObject, calls: Map<String, JsonObject>): List<FeedItem> {
+    private fun renderEntry(entry: JsonObject, calls: Map<String, JsonObject>, prompt: AttachmentPrompt): List<FeedItem> {
         val renderer = OmpEventReducer(ChatSessionUiState(id = "history:${entry.string("id")}", workspace = workspace))
         val message = entry.obj("message")
         val renderEntries = mutableListOf<JsonObject>()
@@ -503,7 +539,8 @@ internal class OmpSessionExplorer(
         }
         renderEntries += rendered
         renderer.restoreNativeBranch(renderEntries, entry.optional("id"))
-        return renderer.state.feed
+        return renderer.state.feed.mapFeed { item -> if (item is UserMessageItem) item.copy(text = prompt.text,
+            attachments = prompt.attachments.ifEmpty { item.attachments }) else item }
     }
 
 
@@ -536,7 +573,10 @@ internal class OmpSessionExplorer(
         }.distinct().forEach { add(SessionCopyBlock("链接", it, "link")) }
     }
 
-    private fun restoredImages(prompt: JsonObject): List<AttachmentFile> = nativeImageAttachments(prompt)
+    private fun restoredPrompt(prompt: JsonObject): AttachmentPrompt {
+        val parsed = parseAttachmentPrompt(prompt.string("wireText", prompt.string("text")), bridgeAttachmentFiles(prompt))
+        return if (parsed.attachments.isNotEmpty()) parsed else parsed.copy(attachments = nativeImageAttachments(prompt))
+    }
 
     private fun runtimeAgent(value: JsonObject): RuntimeAgent {
         val stats = value.obj("stats") ?: buildJsonObject {}
@@ -563,6 +603,15 @@ private fun JsonObject.obj(key: String) = this[key] as? JsonObject
 private fun JsonObject.objects(key: String) = (this[key] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
 private fun JsonObject.long(key: String) = (this[key] as? JsonPrimitive)?.longOrNull
 private fun JsonObject.bool(key: String) = (this[key] as? JsonPrimitive)?.booleanOrNull
+private fun bridgeAttachmentFiles(value: JsonObject): List<AttachmentFile> = value.objects("attachments").mapNotNull { file ->
+    val path = file.optional("path") ?: return@mapNotNull null
+    val name = file.optional("name") ?: return@mapNotNull null
+    val restored = parseAttachmentPrompt("\n\n附件（容器内真实文件）：\n- $name: $path").attachments.singleOrNull() ?: return@mapNotNull null
+    restored.copy(id = file.optional("id") ?: restored.id,
+        mimeType = file.optional("mimeType") ?: restored.mimeType,
+        sizeBytes = file.long("sizeBytes") ?: restored.sizeBytes,
+        source = enumValue<AttachmentSource>(file.string("source")) ?: restored.source)
+}
 private val historyCodeFences = Regex("(?m)^ {0,3}(`{3,}|~{3,})[^\\r\\n]*\\r?\\n([\\s\\S]*?)^ {0,3}\\1[ \\t]*(?:\\r?\\n|$)")
 private val historyQuotePrefix = Regex("^[ \\t]*(?:>[ \\t]?)+")
 private val historyHttpTarget = Regex("https?://[^\\s<>\\\"\\]`]+")

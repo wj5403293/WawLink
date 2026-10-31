@@ -207,10 +207,203 @@ class OmpSessionExplorerHistoryTest {
         } finally { owner.cancel() }
     }
 
+    @Test fun legacyAttachmentOnlyHistoryRestoresPreviewCopyAndNavigationWithoutCache() = runBlocking {
+        val file = AttachmentFile("original", "图像.svg", "/workspace/图像.svg", "image/svg+xml", source = AttachmentSource.CONTAINER)
+        val wire = attachmentWireMessage("", listOf(file))
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val explorer = explorer(owner) { op, _ ->
+                when (op) {
+                    "explorer_history" -> page("r1", "attachment", listOf(node("attachment")))
+                    "explorer_history_detail" -> buildJsonObject {
+                        put("sessionId", "native-main"); put("entryId", "attachment"); put("version", "v1")
+                        put("entry", entry("attachment", "user", JsonPrimitive(wire)))
+                    }
+                    "explorer_navigate" -> buildJsonObject { put("prompt", buildJsonObject { put("text", wire) }) }
+                    "explorer_history_branch" -> buildJsonObject {}
+                    else -> error("Unexpected native operation: $op")
+                }
+            }
+            explorer.refreshHistory()
+            val preview = explorer.loadHistoryDetail("attachment", HistoryDetailKind.PREVIEW)
+            val user = preview.feed.filterIsInstance<UserMessageItem>().single()
+            assertEquals("", preview.text)
+            assertEquals("", user.text)
+            assertEquals(file.path, user.attachments.single().path)
+            assertEquals(AttachmentSource.CONTAINER, user.attachments.single().source)
+            assertEquals("image/svg+xml", user.attachments.single().mimeType)
+            val copy = explorer.loadHistoryDetail("attachment", HistoryDetailKind.COPY)
+            assertEquals("", copy.text)
+            assertTrue(copy.copyBlocks.isEmpty())
+            val restored = explorer.navigate("attachment", HistorySummary())!!
+            assertEquals("", restored.text)
+            assertEquals(user.attachments, restored.attachments)
+        } finally { owner.cancel() }
+    }
+
+    @Test fun cleanBridgeTextAndMetadataDoNotReparseAnOriginalMarkerExample() = runBlocking {
+        val example = "  原始例子\n\n附件（容器内真实文件）：\n- example.txt: /examples/example.txt"
+        val file = AttachmentFile("stable-workspace-id", "real.kt", "/workspace/real.kt", "text/plain", 17, AttachmentSource.WORKSPACE)
+        val wire = attachmentWireMessage(example, listOf(file))
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val explorer = explorer(owner) { op, _ ->
+                when (op) {
+                    "explorer_history" -> page("r1", "user", listOf(node("user")))
+                    "explorer_history_detail" -> buildJsonObject {
+                        put("sessionId", "native-main"); put("entryId", "user"); put("version", "v1")
+                        put("entry", entry("user", "user", JsonPrimitive(wire))); put("userText", example)
+                        put("attachments", buildJsonArray { add(attachmentJson(file)) })
+                    }
+                    "explorer_navigate" -> buildJsonObject { put("prompt", buildJsonObject {
+                        put("text", example); put("wireText", wire); put("attachments", buildJsonArray { add(attachmentJson(file)) })
+                    }) }
+                    "explorer_history_branch" -> buildJsonObject {}
+                    else -> error("Unexpected native operation: $op")
+                }
+            }
+            explorer.refreshHistory()
+            val copy = explorer.loadHistoryDetail("user", HistoryDetailKind.COPY)
+            assertEquals(example, copy.text)
+            assertEquals(example, copy.copyBlocks.first().text)
+            val user = explorer.loadHistoryDetail("user", HistoryDetailKind.PREVIEW).feed.filterIsInstance<UserMessageItem>().single()
+            assertEquals(example, user.text)
+            assertEquals(listOf(file), user.attachments)
+            assertEquals(RestoredSessionPrompt(example, listOf(file)), explorer.navigate("user", HistorySummary()))
+        } finally { owner.cancel() }
+    }
+
+    @Test fun childAdmissionAndNativeResetKeepRawTextAndAttachmentIdentity() = runBlocking {
+        val raw = "  \n保留原始空白\n  "
+        val file = AttachmentFile("stable", "note.txt", "/workspace/note.txt", "text/plain", 7, AttachmentSource.WORKSPACE)
+        val wire = attachmentWireMessage(raw, listOf(file))
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val admitted = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var sent = false
+        try {
+            val explorer = explorer(owner) { op, body ->
+                when (op) {
+                    "explorer_hub" -> childHub()
+                    "explorer_agent_prompt" -> {
+                        assertEquals(wire, body["text"]!!.jsonPrimitive.content)
+                        admitted.complete(Unit); release.await(); sent = true
+                        buildJsonObject { put("accepted", true); put("entryId", "accepted") }
+                    }
+                    "explorer_agent_snapshot" -> buildJsonObject {
+                        put("reset", true); put("cursor", "generation:1"); put("queue", buildJsonArray {})
+                        put("entries", buildJsonArray { if (sent) add(entry("accepted", "user", JsonPrimitive(wire))) })
+                        put("leafId", if (sent) JsonPrimitive("accepted") else JsonNull)
+                    }
+                    else -> error("Unexpected child operation: $op")
+                }
+            }
+            explorer.refreshHub()
+            val child = explorer.openAgent("child-instance")
+            child.sendPrompt(raw, listOf(file))
+            withTimeout(5000) { admitted.await() }
+            val pending = child.state.value.feed.filterIsInstance<UserMessageItem>().single()
+            assertEquals(raw, pending.text)
+            assertEquals(listOf(file), pending.attachments)
+            assertFalse(pending.accepted)
+            release.complete(Unit)
+            withTimeout(5000) { child.state.first { it.feed.filterIsInstance<UserMessageItem>().singleOrNull()?.accepted == true } }
+            val accepted = child.state.value.feed.filterIsInstance<UserMessageItem>().single()
+            assertEquals(raw, accepted.text)
+            assertEquals(listOf(file), accepted.attachments)
+        } finally { release.complete(Unit); owner.cancel() }
+    }
+
+    @Test fun childQueueBlankEditAndTakeUseWireIdentityAndPreserveAttachments() = runBlocking {
+        val file = AttachmentFile("stable", "config.json", "/workspace/config.json", "application/json", 10, AttachmentSource.WORKSPACE)
+        var wire = attachmentWireMessage("same", listOf(file))
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        var removed = false
+        var removalFails = false
+        try {
+            val explorer = explorer(owner) { op, body ->
+                when (op) {
+                    "explorer_hub" -> childHub()
+                    "explorer_agent_snapshot" -> buildJsonObject {
+                        put("cursor", "generation:1"); put("queue", buildJsonArray { if (!removed) add(buildJsonObject {
+                            put("id", "queue-id"); put("queue", "steering"); put("wireText", wire)
+                            put("text", parseAttachmentPrompt(wire).text); put("attachments", buildJsonArray { add(attachmentJson(file)) })
+                        }) })
+                    }
+                    "explorer_agent_control" -> {
+                        assertEquals("queue-id", body["queueId"]!!.jsonPrimitive.content)
+                        assertEquals("steering", body["queue"]!!.jsonPrimitive.content)
+                        assertEquals(wire, body["originalText"]!!.jsonPrimitive.content)
+                        if (body["operation"]!!.jsonPrimitive.content == "update_queue") wire = body["text"]!!.jsonPrimitive.content
+                        else { check(!removalFails) { "native removal failed" }; removed = true }
+                        buildJsonObject {}
+                    }
+                    else -> error("Unexpected child operation: $op")
+                }
+            }
+            explorer.refreshHub()
+            val child = explorer.openAgent("child-instance")
+            assertEquals("same", child.state.value.queuedPrompts.single().text)
+            child.updateQueuedPrompt("queue-id", "")
+            withTimeout(5000) { child.state.first { it.queuedPrompts.singleOrNull()?.text == "" } }
+            assertEquals(attachmentWireMessage("", listOf(file)), wire)
+            assertEquals(QueuedPrompt("queue-id", "", listOf(file), PromptQueue.STEERING), child.state.value.queuedPrompts.single())
+            removalFails = true
+            assertFailsWith<IllegalStateException> { child.takeQueuedPrompt("queue-id") }
+            assertEquals(1, child.state.value.queuedPrompts.size)
+            removalFails = false
+            assertEquals(RestoredSessionPrompt("", listOf(file)), child.takeQueuedPrompt("queue-id"))
+            assertTrue(child.state.value.queuedPrompts.isEmpty())
+        } finally { owner.cancel() }
+    }
+
+    @Test fun nativeInlineImageQueueEditNeverAdvertisesHostPreviewCachePaths() = runBlocking {
+        val image = AttachmentFile("native-image", "历史图像.png", "/tmp/native-image.png", "image/png", 5, AttachmentSource.LOCAL)
+        var wire = "native image"
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val explorer = explorer(owner) { op, body ->
+                when (op) {
+                    "explorer_hub" -> childHub()
+                    "explorer_agent_snapshot" -> buildJsonObject {
+                        put("cursor", "native:1"); put("queue", buildJsonArray { add(buildJsonObject {
+                            put("id", "image-queue"); put("text", wire); put("wireText", wire); put("queue", "followUp")
+                            put("attachments", buildJsonArray { add(attachmentJson(image)) })
+                        }) })
+                    }
+                    "explorer_agent_control" -> {
+                        assertEquals(wire, body["originalText"]!!.jsonPrimitive.content)
+                        wire = body["text"]!!.jsonPrimitive.content
+                        buildJsonObject {}
+                    }
+                    else -> error("Unexpected native operation: $op")
+                }
+            }
+            explorer.refreshHub()
+            val child = explorer.openAgent("child-instance")
+            child.updateQueuedPrompt("image-queue", "\n  ")
+            withTimeout(5000) { child.state.first { it.queuedPrompts.singleOrNull()?.text == "\n  " } }
+            assertEquals("\n  ", wire)
+            assertEquals(listOf(image), child.state.value.queuedPrompts.single().attachments)
+            assertEquals("\n  ", child.state.value.queuedPrompts.single().text)
+        } finally { owner.cancel() }
+    }
+
+    private fun attachmentJson(file: AttachmentFile) = buildJsonObject {
+        put("id", file.id); put("name", file.name); put("path", file.path); put("mimeType", file.mimeType)
+        put("sizeBytes", file.sizeBytes); put("source", file.source.name)
+    }
+    private fun childHub() = buildJsonObject {
+        put("mainSessionId", "native-main"); put("connected", true)
+        put("agents", buildJsonArray { add(buildJsonObject {
+            put("instanceKey", "child-instance"); put("id", "child"); put("name", "child"); put("lifecycle", "idle")
+        }) })
+    }
+
     private fun explorer(owner: CoroutineScope, request: suspend (String, JsonObject) -> JsonObject) =
         OmpSessionExplorer("app", "container", "/workspace", owner, request = request, synchronize = {},
             identities = { emptyMap() }, originalTexts = { emptyMap() }, messageForChatItem = { null },
-            prepareAttachments = { text, attachments, _ -> Triple(text, attachments, JsonArray(emptyList())) },
+            prepareAttachments = { text, attachments, _ -> Triple(attachmentWireMessage(text, attachments), attachments, JsonArray(emptyList())) },
             files = { _, _ -> flowOf(emptyList()) })
 
     private fun entry(id: String, role: String, content: JsonElement) = buildJsonObject {

@@ -924,4 +924,131 @@ class OmpEventReducerTest {
         assertEquals(SessionStatus.WAITING, reducer.state.status)
         assertFalse(reducer.state.feed.filterIsInstance<AskCardItem>().single().isResolved)
     }
+    @Test fun legacyAttachmentOnlyNativeMessagesRestoreWithoutCacheAndKeepNativeIdentity() {
+        val reducer = reducer()
+        val file = AttachmentFile("original", "示意图.svg", "/workspace/示意图.svg", source = AttachmentSource.CONTAINER)
+        val wire = attachmentWireMessage("", listOf(file))
+        val message = buildJsonObject { put("role", "user"); put("content", wire); put("timestamp", 123) }
+        for (type in listOf("message_start", "message_end")) reducer.reduce(buildJsonObject {
+            put("type", type); put("messageId", "attachment-only"); put("message", message)
+        })
+        val user = allItems(reducer.state.feed).filterIsInstance<UserMessageItem>().single()
+        assertEquals("", user.text)
+        assertEquals("image/svg+xml", user.attachments.single().mimeType)
+        assertEquals(AttachmentSource.CONTAINER, user.attachments.single().source)
+        val entry = buildJsonObject {
+            put("id", "native-entry"); put("messageId", "attachment-only"); put("message", message)
+        }
+        reducer.restoreNativeBranch(listOf(entry), "native-entry")
+        assertEquals(listOf(user), allItems(reducer.state.feed).filterIsInstance<UserMessageItem>())
+        assertEquals(mapOf("native-entry" to user.id), reducer.nativeEntryFeedIds(listOf(entry)))
+        assertEquals(mapOf("native-entry" to ""), reducer.nativeUserText(listOf(entry)))
+        val fresh = OmpEventReducer(ChatSessionUiState("fresh-history"))
+        fresh.restoreNativeBranch(listOf(entry), "native-entry")
+        val historical = allItems(fresh.state.feed).filterIsInstance<UserMessageItem>().single()
+        assertEquals(user.text, historical.text)
+        assertEquals(user.attachments, historical.attachments)
+        fresh.restoreNativeBranch(listOf(entry), "native-entry")
+        assertEquals(listOf(historical), allItems(fresh.state.feed).filterIsInstance<UserMessageItem>())
+    }
+
+    @Test fun distinctAttachmentWireMessagesNeverCollideOnTheSameRawQueueText() {
+        val reducer = reducer()
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"in_progress"}]}""")
+        reducer.startTool("before-attachments", "read")
+        val first = AttachmentFile("first", "a.txt", "/workspace/a.txt", source = AttachmentSource.WORKSPACE)
+        val second = AttachmentFile("second", "b.txt", "/workspace/b.txt", source = AttachmentSource.CONTAINER)
+        val a = QueuedPrompt("a", " \n", listOf(first), PromptQueue.STEERING)
+        val b = QueuedPrompt("b", " \n", listOf(second), PromptQueue.FOLLOW_UP)
+        for (queued in listOf(a, b)) {
+            reducer.rememberAttachmentPrompt(queued.id, queued.text, queued.attachments)
+            reducer.reserveUserPosition(queued.id)
+        }
+        reducer.update { it.copy(queuedPrompts = listOf(a, b)) }
+        val wireA = attachmentWireMessage(a.text, a.attachments)
+        val wireB = attachmentWireMessage(b.text, b.attachments)
+        reducer.reduce(buildJsonObject {
+            put("type", "queue_update"); put("steering", buildJsonArray { add(wireA) }); put("followUp", buildJsonArray { add(wireB) })
+        })
+        assertEquals(listOf(a, b), reducer.state.queuedPrompts)
+        reducer.startTool("after-attachments", "read")
+        reducer.accept("""{"type":"todo_update","todos":[{"content":"Read","status":"completed"},{"content":"Edit","status":"in_progress"}]}""")
+        reducer.accept("""{"type":"queue_update","steering":[],"followUp":[]}""")
+        for ((id, wire) in listOf("b" to wireB, "a" to wireA)) {
+            for (type in listOf("message_start", "message_end")) reducer.reduce(buildJsonObject {
+                put("type", type); put("messageId", "native-$id")
+                put("message", buildJsonObject { put("role", "user"); put("content", wire) })
+            })
+        }
+        val group = reducer.state.feed.filterIsInstance<StepGroupNodeItem>().first()
+        assertEquals(listOf("omp:1:tool:before-attachments", a.id, b.id, "omp:1:tool:after-attachments"), group.children.map { it.id })
+        assertEquals(listOf(first, second), group.children.filterIsInstance<UserMessageItem>().map { it.attachments.single() })
+        assertEquals(listOf(a.text, b.text), group.children.filterIsInstance<UserMessageItem>().map { it.text })
+        reducer.reduce(buildJsonObject {
+            put("type", "response"); put("command", "abort_and_restore_queue"); put("success", true)
+            put("data", buildJsonObject {
+                put("steering", buildJsonArray { add(buildJsonObject { put("text", wireA) }) })
+                put("followUp", buildJsonArray { add(wireB) })
+            })
+        })
+        assertEquals(listOf(a, b), reducer.state.queuedPrompts)
+    }
+
+    @Test fun noCacheNativeQueueRestoresPureAttachmentsAcrossUpdatesAndConsumption() {
+        val reducer = reducer()
+        val wire = attachmentWireMessage("", listOf(AttachmentFile("selected", "settings.json", "/etc/settings.json")))
+        val update = buildJsonObject {
+            put("type", "queue_update"); put("steering", buildJsonArray { add(wire) }); put("followUp", JsonArray(emptyList()))
+        }
+        reducer.reduce(update)
+        val queued = reducer.state.queuedPrompts.single()
+        assertEquals("", queued.text)
+        assertEquals(AttachmentSource.CONTAINER, queued.attachments.single().source)
+        reducer.reduce(update)
+        assertEquals(listOf(queued), reducer.state.queuedPrompts)
+        reducer.reduce(buildJsonObject {
+            put("type", "message_start"); put("messageId", "consumed-before-queue-update")
+            put("message", buildJsonObject { put("role", "user"); put("content", wire) })
+        })
+        assertTrue(reducer.state.queuedPrompts.isEmpty())
+        val user = allItems(reducer.state.feed).filterIsInstance<UserMessageItem>().single()
+        assertEquals(queued.id, user.id)
+        assertEquals(queued.text, user.text)
+        assertEquals(queued.attachments, user.attachments)
+    }
+
+    @Test fun registeredRawMarkerExampleSurvivesNativeBranchReconstruction() {
+        val reducer = reducer()
+        val file = AttachmentFile("literal-example", "notes.txt", "/workspace/notes.txt")
+        val raw = attachmentWireMessage("示例原文", listOf(file))
+        reducer.rememberAttachmentPrompt("registered-before-reset", raw, emptyList(), raw)
+        val entry = buildJsonObject {
+            put("id", "entry"); put("message", buildJsonObject { put("role", "user"); put("content", raw) })
+        }
+        reducer.restoreNativeBranch(listOf(entry), "entry")
+        val user = allItems(reducer.state.feed).filterIsInstance<UserMessageItem>().single()
+        assertEquals(raw, user.text)
+        assertTrue(user.attachments.isEmpty())
+    }
+    @Test fun successfulQueueEditDiscardsOldConsumedSnapshotsBeforeReusingItsId() {
+        val reducer = reducer()
+        val attachment = AttachmentFile("file", "要求.txt", "/workspace/要求.txt", source = AttachmentSource.WORKSPACE)
+        val original = QueuedPrompt("same-id", "旧文本", listOf(attachment))
+        reducer.rememberAttachmentPrompt(original.id, original.text, original.attachments)
+        reducer.update { it.copy(queuedPrompts = listOf(original)) }
+        reducer.accept("""{"type":"queue_update","steering":[],"followUp":[]}""")
+        reducer.discardQueuedPrompt(original.id)
+        val edited = original.copy(text = "\n ")
+        reducer.rememberAttachmentPrompt(edited.id, edited.text, edited.attachments)
+        reducer.update { it.copy(queuedPrompts = listOf(edited)) }
+        reducer.accept("""{"type":"queue_update","steering":[],"followUp":[]}""")
+        reducer.reduce(buildJsonObject {
+            put("type", "message_start"); put("messageId", "edited")
+            put("message", buildJsonObject { put("role", "user"); put("content", attachmentWireMessage(edited.text, edited.attachments)) })
+        })
+        val user = allItems(reducer.state.feed).filterIsInstance<UserMessageItem>().single()
+        assertEquals(edited.id, user.id)
+        assertEquals(edited.text, user.text)
+        assertEquals(edited.attachments, user.attachments)
+    }
 }

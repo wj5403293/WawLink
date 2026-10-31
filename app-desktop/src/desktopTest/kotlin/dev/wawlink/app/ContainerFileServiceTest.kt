@@ -3,6 +3,8 @@ package dev.wawlink.app
 import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.ContainerFileService
+import dev.wawlink.protocol.AttachmentFile
+import dev.wawlink.protocol.AttachmentSource
 import dev.wawlink.runtime.RootfsExportSanitization
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -69,6 +71,49 @@ class ContainerFileServiceTest {
                 fixture.service.exportFile(fixture.path(name), output)
                 assertEquals("payload:$name", output.toString("UTF-8"))
             }
+        }
+    }
+
+    @Test fun readsOnlyBoundedAttachmentPrefixesAtEmptyExactAndOverflowBoundaries() = runBlocking {
+        Fixture().use { fixture ->
+            val reader = SessionAttachmentReader(fixture.runtime, "guest-id")
+            val limit = 64 * 1024
+            for (size in listOf(0, limit, limit + 1)) {
+                val bytes = ByteArray(size) { (it % 251).toByte() }
+                val file = File(fixture.root, "attachment-$size").apply { writeBytes(bytes) }
+                for (source in AttachmentSource.entries) {
+                    val content = reader.read(AttachmentFile("$source-$size", file.name, file.path, source = source), limit)
+                    assertContentEquals(bytes.copyOfRange(0, minOf(size, limit)), content.bytes)
+                    assertEquals(size.toLong(), content.sizeBytes)
+                    assertEquals(size > limit, content.truncated)
+                }
+                assertContentEquals(bytes, file.readBytes())
+            }
+        }
+    }
+
+    @Test fun previewRejectsLinksSpecialFilesAndNonNormalizedGuestPaths() = runBlocking {
+        Fixture().use { fixture ->
+            val reader = SessionAttachmentReader(fixture.runtime, "guest-id")
+            val file = File(fixture.root, "data").apply { writeText("private") }
+            val link = File(fixture.root, "link")
+            Files.createSymbolicLink(link.toPath(), file.toPath())
+            val pipe = File(fixture.root, "pipe")
+            assertEquals(0, ProcessBuilder("mkfifo", pipe.path).start().waitFor())
+            for (source in AttachmentSource.entries) {
+                for (invalid in listOf(link.path, pipe.path, fixture.root.path, fixture.path("missing"))) {
+                    assertFails { reader.read(AttachmentFile(invalid, "file", invalid, source = source), 1024) }
+                }
+            }
+            val ancestor = File(fixture.root, "ancestor")
+            Files.createSymbolicLink(ancestor.toPath(), fixture.root.toPath())
+            assertFails { fixture.service.readPrefix(File(ancestor, file.name).path, 1024) }
+            for (invalid in listOf(file.parent + "/./data", "/nul\u0000", "relative/data")) {
+                assertFailsWith<IllegalArgumentException> { reader.read(AttachmentFile(invalid, "data", invalid, source = AttachmentSource.CONTAINER), 1024) }
+            }
+            assertFailsWith<IllegalArgumentException> { fixture.service.readPrefix(file.path, 0) }
+            assertFailsWith<IllegalArgumentException> { fixture.service.readPrefix(file.path, 8 * 1024 * 1024 + 1) }
+            assertEquals("private", file.readText())
         }
     }
 

@@ -119,6 +119,18 @@ class ContainerFileTextTest {
         }
     }
 
+    @Test fun previewRejectsStoppedAndRestartedRunResultsWithoutReopening() = runBlocking {
+        Fixture().use { fixture ->
+            val file = fixture.file("preview.txt", "preview bytes")
+            fixture.afterProcess = {
+                fixture.containers.value = fixture.containers.value.map { it.copy(running = true, runGeneration = it.runGeneration + 1, stopGeneration = it.stopGeneration + 1) }
+            }
+            assertFailsWith<CancellationException> { fixture.service.readPrefix(file.path, 1024) }
+            assertEquals(1, fixture.processCount)
+            assertEquals("preview bytes", file.readText())
+        }
+    }
+
     @Test fun rejectsProtectedAndNonNormalizedSavePathsBeforeOpeningGuest() = runBlocking {
         Fixture().use { fixture ->
             val protected = listOf("/", "/workspace", "/proc/version", "/sys/kernel", "/dev/null", "/run/user", "/etc", "/etc/resolv.conf",

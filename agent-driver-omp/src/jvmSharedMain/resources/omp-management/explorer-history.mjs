@@ -2,7 +2,7 @@ import { AskTool, recoverAskQuestions } from '@oh-my-pi/pi-coding-agent/tools/as
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { sameMessageContent, sessionMessagePersistenceKey } from '@oh-my-pi/pi-coding-agent/session/turn-persistence';
 import { isUserRequestEntry, transcriptEntryMessage, userTurnDraft } from '@oh-my-pi/pi-tui/chat/transcript-entry';
@@ -12,6 +12,62 @@ const MAX_SNAPSHOTS = 4;
 const MAX_REVISIONS = 64;
 const MAX_RETAINED_CHANGES = 8192;
 const indexes = new WeakMap();
+
+const ATTACHMENT_MARKER = '\n\n附件（容器内真实文件）：\n';
+function attachmentMimeType(name) {
+  const dot = name.lastIndexOf('.'), extension = dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
+  if (['png', 'webp', 'gif'].includes(extension)) return `image/${extension}`;
+  if (['jpg', 'jpeg'].includes(extension)) return 'image/jpeg';
+  if (extension === 'svg') return 'image/svg+xml';
+  if (['json', 'map'].includes(extension)) return 'application/json';
+  if (['txt', 'log', 'conf', 'ini', 'toml', 'kt', 'kts', 'java', 'py', 'sh', 'rs', 'go', 'c', 'h', 'cpp', 'hpp'].includes(extension)) return 'text/plain';
+  if (['md', 'markdown'].includes(extension)) return 'text/markdown';
+  if (['yaml', 'yml'].includes(extension)) return 'application/yaml';
+  if (['html', 'htm'].includes(extension)) return 'text/html';
+  if (extension === 'css') return 'text/css';
+  if (['js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx'].includes(extension)) return 'text/javascript';
+  if (extension === 'xml') return 'application/xml';
+  if (extension === 'csv') return 'text/csv';
+  return 'application/octet-stream';
+}
+
+// Keep this grammar identical to AttachmentPrompts.kt. Native messages remain
+// untouched for persistence identity; only presentation fields lose transport text.
+export function parseAttachmentPrompt(message, attachments = []) {
+  const unchanged = () => ({ text: message, attachments });
+  const marker = message.lastIndexOf(ATTACHMENT_MARKER);
+  if (marker < 0) return unchanged();
+  const text = message.slice(0, marker);
+  const references = [];
+  for (const line of message.slice(marker + ATTACHMENT_MARKER.length).split('\n')) {
+    if (!line.startsWith('- ') || /[\u0000-\u001f\u007f]/u.test(line)) return unchanged();
+    const separator = line.indexOf(': /', 2);
+    if (separator < 0) return unchanged();
+    const name = line.slice(2, separator), path = line.slice(separator + 2);
+    if (!name.length || name.includes('/') || path === '/' ||
+      path.endsWith('/') || path.split('/').some(segment => segment === '.' || segment === '..')) return unchanged();
+    references.push({ name, path });
+  }
+  const remaining = [...attachments];
+  const restored = references.map(({ name, path }) => {
+    const index = remaining.findIndex(file => file.name === name && file.path === path);
+    return index >= 0 ? remaining.splice(index, 1)[0] : {
+      id: `legacy:${createHash('sha256').update(`${name}\n${path}`, 'utf8').digest('hex')}`,
+      name, path, mimeType: attachmentMimeType(name), sizeBytes: 0, source: 'CONTAINER',
+    };
+  });
+  return { text, attachments: [...restored, ...remaining] };
+}
+
+export function presentedUserPrompt(entry) {
+  if (!isUserRequestEntry(entry)) return null;
+  const text = userTurnDraft(entry);
+  return typeof text === 'string' ? parseAttachmentPrompt(text) : null;
+}
+export function presentedUserEntry(entry) {
+  const prompt = presentedUserPrompt(entry);
+  return prompt ? { ...entry, userText: prompt.text, attachments: prompt.attachments } : entry;
+}
 
 // Session entries are native references, not body clones. Native persistence
 // replaces message payloads; rollback may also reparent an existing entry.
@@ -39,14 +95,16 @@ function textPrefix(content, limit = 200) {
 function summary(entry) {
   const message = entry.type === 'message' ? entry.message : undefined;
   const content = message?.content ?? entry.content;
-  const userText = isUserRequestEntry(entry) ? userTurnDraft(entry) : undefined;
-  const searchText = textPrefix(userText ?? content ?? entry.text ?? entry.summary ?? entry.model ?? entry.title ?? entry.label ?? entry.name ?? '');
+  const prompt = presentedUserPrompt(entry);
+  const searchText = prompt ? textPrefix([prompt.text, ...prompt.attachments.map(file => file.name)].filter(Boolean).join('\n'))
+    : textPrefix(content ?? entry.text ?? entry.summary ?? entry.model ?? entry.title ?? entry.label ?? entry.name ?? '');
   const role = message?.role ?? (entry.type === 'custom_message' ? 'custom' : null);
   const type = role === 'toolResult' && message.toolName === 'ask' ? 'ask' : entry.type;
   const prefix = role === 'user' ? '用户' : role === 'assistant' ? '助手' : role === 'toolResult'
     ? message.toolName ?? '工具结果' : entry.type;
-  const title = `${prefix}${searchText ? ` · ${searchText.replace(/\s+/g, ' ').trim()}` : ''}`.slice(0, 120);
-  const hasText = typeof content === 'string' ? content.length > 0 : Array.isArray(content) && content.some(block => block.type === 'text' && block.text?.length > 0);
+  const titleText = prompt?.attachments.length && !prompt.text.trim() ? `${prompt.attachments.length}个附件` : searchText;
+  const title = `${prefix}${titleText ? ` · ${titleText.replace(/\s+/g, ' ').trim()}` : ''}`.slice(0, 120);
+  const hasText = prompt ? prompt.text.trim().length > 0 : typeof content === 'string' ? content.length > 0 : Array.isArray(content) && content.some(block => block.type === 'text' && block.text?.length > 0);
   const hasCommand = role === 'assistant' && Array.isArray(content) && content.some(block => block.type === 'toolCall' &&
     (typeof block.arguments?.command === 'string' || typeof block.arguments?.code === 'string'));
   return { id: entry.id, parentId: entry.parentId, type, role, title, searchText,
@@ -192,8 +250,9 @@ export function historyDetail(manager, request) {
   const message = record.entry.type === 'message' ? record.entry.message : undefined;
   const calls = message?.role === 'toolResult'
     ? (record.assistant?.calls ?? []).filter(call => call.id === message.toolCallId) : record.calls;
+  const prompt = record.userRequest ? presentedUserPrompt(record.entry) : null;
   return { ...result, entry: record.entry, calls,
-    ...(record.userRequest ? { userText: userTurnDraft(record.entry) } : {}) };
+    ...(prompt ? { userText: prompt.text, attachments: prompt.attachments } : {}) };
 }
 
 // RPC omits undefined object properties (native custom messages keep optional
@@ -259,7 +318,7 @@ export function requireIdle(session, action) {
 
 export function restoredNavigation(result) {
   return { cancelled: result.cancelled === true, aborted: result.aborted === true,
-    ...(result.editorText !== undefined ? { prompt: { text: result.editorText, images: result.editorImages ?? [] } } : {}),
+    ...(result.editorText !== undefined ? { prompt: { wireText: result.editorText, ...parseAttachmentPrompt(result.editorText), images: result.editorImages ?? [] } } : {}),
     ...(result.summaryEntry ? { summaryEntry: result.summaryEntry } : {}) };
 }
 

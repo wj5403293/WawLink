@@ -120,14 +120,15 @@ internal fun FeedNode(item: FeedItem, controller: AgentSessionController, expand
     if (LocalAgentAppearance.current.hideToolCalls && item is ToolNodeItem) return
     when (item) {
         is UserMessageItem -> Column {
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                 Surface(shape = RoundedCornerShape(24.dp, 24.dp, 6.dp, 24.dp), color = LocalAgentColors.current.surfaceContainerHigh,
-                    modifier = Modifier.fillMaxWidth(.84f)) {
-                    Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
-                        SelectionContainer { Text(item.text, fontSize = 18.sp) }
-                        item.attachments.forEach { file ->
-                            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Symbol("attach_file", size = 18.dp); Text(file.name, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    modifier = if (item.attachments.isEmpty()) Modifier.fillMaxWidth(.84f)
+                    else Modifier.widthIn(max = maxWidth * .84f).width(if (item.attachments.size == 1 && attachmentIsImage(item.attachments[0])) 292.dp else 308.dp)) {
+                    Column(if (item.attachments.isEmpty()) Modifier.padding(horizontal = 18.dp, vertical = 12.dp) else Modifier.padding(6.dp)) {
+                        if (item.attachments.isNotEmpty()) UserAttachments(item.attachments)
+                        if (item.attachments.isEmpty() || item.text.isNotBlank()) {
+                            SelectionContainer {
+                                Text(item.text, fontSize = 18.sp, modifier = if (item.attachments.isEmpty()) Modifier else Modifier.padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 8.dp))
                             }
                         }
                     }
