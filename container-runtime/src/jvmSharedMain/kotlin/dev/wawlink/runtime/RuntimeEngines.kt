@@ -1,38 +1,84 @@
 package dev.wawlink.runtime
 
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 internal fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
 internal object HostCommands {
     fun run(arguments: List<String>, timeout: Long = 45): String = run(ProcessBuilder(arguments), timeout)
     fun run(builder: ProcessBuilder, timeout: Long = 45): String {
+        val command = builder.command().firstOrNull().orEmpty()
         val process = try { builder.redirectErrorStream(true).start() }
-        catch (failure: java.io.IOException) { throw IllegalStateException("无法启动系统命令 ${builder.command().firstOrNull()}：${failure.message}", failure) }
-        process.outputStream.close()
-        val output = StringBuilder()
-        val reader = Thread {
-            process.inputStream.bufferedReader().use { input ->
-                val buffer = CharArray(4096)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    synchronized(output) { if (output.length < 4 * 1024 * 1024) output.append(buffer, 0, count) }
+        catch (failure: IOException) { throw IllegalStateException("无法启动系统命令 $command：${failure.message}", failure) }
+        return collect(process, command, timeout)
+    }
+
+    internal fun collect(process: Process, command: String, timeout: Long): String {
+        val output = ByteArrayOutputStream()
+        val stopping = AtomicBoolean()
+        val readFailure = AtomicReference<Throwable?>()
+        val reader = Thread({
+            try {
+                process.inputStream.use { input ->
+                    val buffer = ByteArray(4096)
+                    while (!stopping.get()) {
+                        // Do not block on a pipe inherited by a descendant after its parent exits.
+                        val available = input.available()
+                        if (available > 0) {
+                            val count = input.read(buffer, 0, minOf(buffer.size, available))
+                            if (count < 0) break
+                            val retained = minOf(count, 4 * 1024 * 1024 - output.size())
+                            if (retained > 0) output.write(buffer, 0, retained)
+                        } else if (!process.isAlive) break
+                        else Thread.sleep(5)
+                    }
+                }
+            } catch (failure: Throwable) {
+                val expected = stopping.get() || failure is IOException && runCatching { !process.isAlive }.getOrDefault(false)
+                if (!expected) {
+                    readFailure.set(failure)
+                    runCatching { process.destroyForcibly() }
                 }
             }
-        }.apply { isDaemon = true; start() }
-        if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
+        }, "wawlink-host-command-reader").apply { isDaemon = true }
+        try {
+            reader.start()
+            process.outputStream.close()
+            val exited = process.waitFor(timeout, TimeUnit.SECONDS)
+            if (!exited) {
+                stopping.set(true)
+                process.destroyForcibly()
+                error("系统命令超时：$command")
+            }
             reader.join(2000)
-            error("系统命令超时：${builder.command().firstOrNull()}")
+            check(!reader.isAlive) { "系统命令输出读取未结束：$command" }
+            readFailure.get()?.let { throw IllegalStateException("系统命令输出读取失败：$command：${it.message}", it) }
+            val text = output.toString(Charsets.UTF_8.name())
+            check(process.exitValue() == 0) { "系统命令失败（${process.exitValue()}）：${text.trim()}" }
+            return text
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IllegalStateException("系统命令已中断：$command", interrupted)
+        } finally {
+            stopping.set(true)
+            runCatching { if (process.isAlive) process.destroyForcibly() }
+            reader.interrupt()
+            try {
+                // destroyForcibly sends a signal; wait for the actual exit before returning.
+                if (process.isAlive) process.waitFor(2, TimeUnit.SECONDS)
+                reader.join(2000)
+            } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+            runCatching { process.outputStream.close() }
+            runCatching { process.inputStream.close() }
+            runCatching { process.errorStream.close() }
         }
-        reader.join(5000)
-        val text = synchronized(output) { output.toString() }
-        check(process.exitValue() == 0) { "系统命令失败（${process.exitValue()}）：${text.trim()}" }
-        return text
     }
 }
 

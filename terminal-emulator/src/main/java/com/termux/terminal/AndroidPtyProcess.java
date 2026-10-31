@@ -22,7 +22,7 @@ public final class AndroidPtyProcess extends Process implements AutoCloseable {
     private final OutputStream output;
     private final CountDownLatch exited = new CountDownLatch(1);
     private final AtomicBoolean closed = new AtomicBoolean();
-    private volatile int status;
+    private volatile int status = -1;
 
     public AndroidPtyProcess(ProcessBuilder builder) throws IOException {
         String[] command = builder.command().toArray(new String[0]);
@@ -43,8 +43,18 @@ public final class AndroidPtyProcess extends Process implements AutoCloseable {
             throw failure;
         }
         Thread waiter = new Thread(() -> {
-            status = JNI.waitFor(childPid);
-            exited.countDown();
+            try {
+                status = JNI.waitFor(childPid);
+            } catch (Throwable failure) {
+                // Never leave Process.waitFor callers blocked if JNI fails.
+                try { signal(OsConstants.SIGKILL); }
+                catch (Throwable cleanup) { if (cleanup != failure) failure.addSuppressed(cleanup); }
+                try { close(); }
+                catch (Throwable cleanup) { if (cleanup != failure) failure.addSuppressed(cleanup); }
+                Logger.logStackTraceWithMessage(null, "AndroidPtyProcess", "Failed waiting for PTY process " + childPid, failure);
+            } finally {
+                exited.countDown();
+            }
         }, "WawLinkPtyWait-" + childPid);
         waiter.setDaemon(true);
         waiter.start();

@@ -861,9 +861,19 @@ class LocalContainerRuntime internal constructor(
                     val buffer = ByteArray(4096)
                     while (input.read(buffer) >= 0) { /* Drain only; keeper has no terminal consumer. */ }
                 }
-            } catch (failure: java.io.IOException) {
-                coroutineContext.ensureActive()
-                throw failure
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                // A SupervisorJob does not consume launch failures: never rethrow pipe closure.
+                mutex.withLock {
+                    if (!closed && !tracked.stopping && process.isAlive && keepers[config.id] === tracked) {
+                        val reason = "容器引擎输出读取失败：${failure.message ?: failure.javaClass.simpleName}"
+                        try { stopLocked(config.id, intentional = false) }
+                        catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+                        errors[config.id] = reason
+                        publish()
+                    }
+                }
             }
         }
         scope.launch {

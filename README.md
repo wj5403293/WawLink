@@ -197,7 +197,7 @@ git push origin v1.0.0
 - 容器详情按原型重置操作按钮、工具链卡片、主题色分段控件和挂载 bottom sheet；保留原有功能。包括 Proroot 在内的普通登录身份可填写容器中已有的用户名或数字 UID，实际启动使用该账户的 UID/GID、HOME、USER 与 LOGNAME，不固定为 `user`，不自动创建账户。有效 HOME 使用与启动器共用的离线账户解析，并遵循容器配置中的 `HOME` 环境覆盖。
 - 容器详情 → 挂载目录支持主机目录选择，主机路径右侧的文件夹按钮在 Android 打开系统目录选择器，Desktop 打开原生目录选择器；也可手填 `/sdcard/项目` 等实际主机路径并指定容器内挂载点。Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，Android 10 使用传统共享储存访问；启动不自动申请。仅解析本机共享储存卷的目录，保存实际路径而非 `content://`，不复制或同步目录内容；取消选择、拒绝授权或保存失败保留草稿。云盘等文档提供方不能直接挂载；系统选择器不允许选择共享储存根目录或 Download 时，可在授权后手填路径。权限不绕过 Android 对其他应用私有目录的限制；只读保护仍仅由 chroot 提供。更新 APK 即可使用，无需重新导入 Rootfs。
 - 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，bind 和只读重挂载都显式传入源与目标，并校验内核报告的只读状态；挂载失败回滚并保留实际错误。Android 的 mount 不支持私有化标志时允许继续，不能保证挂载传播隔离；停止容器时回收所属进程、卸载挂载点。
-- chroot 启动在挂载验证后修复宿主离线解压、容器信息保存和会话启动前写入产生的真实所有权差异。当前有效 HOME、`.wawlink` 根、`.omp` 及未挂载的 `/workspace` 使用登录 UID / App 共享 GID，目录 2770、共享文件 660（保留可执行位）；非 root 登录账户补充该组并在实际 su 后核对，主 UID/GID 不改。宿主后续配置、会话、管理扩展、通道及 Rootfs 工作区附件写入也使用同一共享规则，避免首条消息启动后再次出现 EACCES。调试器自己的目录、程序及凭据使用当前 UID/GID 与 700/600，root 在确认真实 HOME、普通目录/文件和唯一 inode 后可修复异主所有权，非 root 不绕过 UID 检查。修复不遍历整个 Rootfs、不跟随软链、不修改硬链接别名或宿主挂载；特权目录修改固定 cwd 后操作 `.`，普通文件固定 stdin 后操作 `/proc/self/fd/0`，均按路径及设备/inode 复核，不依赖 Android mksh 的私有 fd 继承或 proc 链接文本。PRoot/Proroot 保持原有模式。更新后停止并重新启动已有 chroot 容器即可重新准备，不要求重新导入 Rootfs。
+- chroot 启动在挂载验证后修复宿主离线写入与客体登录身份的差异。HOME、`.wawlink` 根、`.omp` 及未挂载的 `/workspace` 使用登录 UID / App 共享 GID，目录 2770、共享文件 660（保留属主/组执行位）；非 root 登录账户补充该组并在实际 su 后核对，主 UID/GID 不改。权限准备只处理明确管理路径，不递归修复 HOME、工作区或依赖/插件树；普通文件固定父目录后操作 `./名字`，不依赖 proc fd。宿主后续配置、会话、管理扩展、通道及 Rootfs 工作区附件写入沿用共享规则；调试器私有目录/凭据保持当前 UID/GID 与 700/600，仅 root 可在真实 HOME 边界内接管异主所有权，非 root 不绕过 UID 检查。链接、硬链接别名和挂载不参与修复，PRoot/Proroot 保持原有模式。更新后停止并重启已有 chroot 容器即可重新准备，不要求重导入 Rootfs。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
 - 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 保留 Love2Droid 的黑色控制台、Maple Mono 字体及两行等宽快捷键栏，移植 Termux TerminalView/TerminalSession；挂载和窗口获焦后重建输入连接，点击终端唤出软键盘，快捷键不抢焦点。Desktop 使用 JediTerm 3.63 + pty4j 0.13.4。支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新；离开页面关闭其终端进程，退出后保留输出并提示重新打开，不关闭其他会话的进程。
 - 容器宿主进程的 `/proc/<pid>/stat` 不可读时，以仍存活的原进程句柄回退跟踪和终止；恢复可读后固定 starttime，避免将复用的 PID 当作原进程。Android Termux PTY 的已知会话进程组也会收到停止信号；若 `/proc` 持续不可读，无法保证发现所有后代，组长退出后不会再向未验证的进程组发信号，忽略停止信号或脱离进程组的后代可能残留。chroot 仍要求经过 Root 身份握手及特权快照。
@@ -833,9 +833,9 @@ node --experimental-vm-modules --test \
 
 针对真机启动报错 `chroot 权限路径在打开时已改变`，本机另行解包 mksh R59 和 Toybox 0.8.9，配合已安装的 BusyBox 1.36.1 验证宿主 shell 差异，不安装到系统、不使用 Android 模拟器。mksh 的 `exec 3<` 描述符不会传给外部命令；两套工具的 `readlink -f -- /proc/self/fd/3` 均不能取得该对象，而 fd 0 可以正常继承。当前验证版本都接受 `readlink -f --`，因此未将 `--` 错判为本次根因；权限脚本仍改用绝对路径及 `./` 参数，移除不必要的选项结束符依赖。
 
-`RuntimeChrootOwnership.kt` 的目录修复及父目录创建改为固定子 shell 的 cwd，`chown/chgrp/chmod` 操作 `.`，`mkdir` 使用单层 `./名字`；普通文件固定到 stdin，通过 `stat -L` 比较打开前后设备号/inode，并复核普通文件类型和单硬链接。原路径的 HOME/Rootfs、软链及挂载检查继续保留，不比较 `/proc` 链接返回的路径字符串，也不改用子 shell 中仍指向父进程的 `$$`。
+`RuntimeChrootOwnership.kt` 的目录修复及父目录创建使用固定子 shell 的 cwd，`chown/chgrp/chmod` 操作 `.`，`mkdir` 使用单层 `./名字`。当前普通文件固定父目录后直接操作 `./名字`，复核设备/inode、普通文件及单硬链接；不再采用上一轮的 stdin/proc fd 固定方式。原路径的 HOME/Rootfs、软链及挂载检查继续保留，也不改用子 shell 中仍指向父进程的 `$$`。最新范围收敛、线程修复及验证结果见下一节。
 
-另验证了两项权限细节：非递归且不带 `-h` 的 Toybox `chown/chgrp` 会修改 proc 链接指向的目标，而非链接本身（实现参见 [Toybox 0.8.9 chgrp.c](https://raw.githubusercontent.com/landley/toybox/0.8.9/toys/posix/chgrp.c)）；但其符号模式 `chmod` 会从 proc 链接模式计算，可能误加执行位。文件权限改为读取目标 `stat %f` 后生成数值模式，保留真实执行位及既有私有权限。算术采用显式十六进制常量，避免 mksh 默认把 `0NNN` 当作十进制。
+上一轮工具探针还发现：非递归且不带 `-h` 的 Toybox `chown/chgrp` 会修改 proc 链接指向的目标，而非链接本身（实现参见 [Toybox 0.8.9 chgrp.c](https://raw.githubusercontent.com/landley/toybox/0.8.9/toys/posix/chgrp.c)）；符号模式 `chmod` 则可能从 proc 链接模式计算并误加执行位。本轮取消文件 proc fd 访问后，不再使用该路径或其模式计算；文件命令操作真实父目录中的名字。
 
 同类排查：`RuntimeEngines.kt` 和宿主停止/快照脚本没有其他私有 fd 传给外部命令的依赖；`ContainerFeatureSkill.kt` 在客体 `/bin/sh` 中执行，已有真实 BusyBox 安装/升级回归；`ContainerFeatureDebugClient.kt` 在客体 Bun 中直接调用 fstat/fchown/fchmod，不经过 Toybox。功能服务及脚本动作的 fd 3 仅供 shell 内建 `read` 使用，并在外部服务启动时显式关闭，本机 mksh 的同类 watcher 探针也已通过，未盲目替换这些不同语义的描述符。
 
@@ -852,7 +852,7 @@ WAWLINK_TEST_HOST_TOOLS=/usr/bin/busybox \
   --tests 'dev.wawlink.runtime.RuntimeChrootMountTest'
 ```
 
-本轮最终定向验证结果：
+以下为上一轮验证记录；本轮最终结果及不打包约束见下一节：
 
 | 环境 | 通过 | 失败 / 错误 / 跳过 |
 |---|---:|---:|
@@ -860,7 +860,7 @@ WAWLINK_TEST_HOST_TOOLS=/usr/bin/busybox \
 | mksh R59 / Toybox 0.8.9：chroot 回归 | 14 | 0 |
 | mksh R59 / BusyBox 1.36.1：chroot 回归 | 14 | 0 |
 
-另从本次编译的生产类取得权限脚本，分别在 mksh / Toybox 与 mksh / BusyBox 下执行隔离烟测：真实目标 GID 从当前 1000 改为已有补充组 4，目录为 2770、普通配置为 660、0751 脚本变为 0770，私有目录/文件保持 700/600；内容、硬链接别名、软链接目标及排除子树均保留。该测试使用当前 UID 和已获准的补充组，不模拟这些文件的 GID 修改；特权挂载与跨 UID 接管仍仅由单元夹具模拟，不代表 Android Root、挂载命名空间、SELinux 或厂商 Toybox 的真机验收。
+上一轮烟测曾从生产类取得权限脚本，在 mksh / Toybox 与 mksh / BusyBox 下将真实 GID 从当前 1000 改为已有补充组 4，确认内容、私有权限、链接及挂载排除。该轮曾把工作区 0751 脚本改为 0770；此行为已由本轮“只准备工作区顶层”替代，项目文件不再参与修复。两轮开发机结果均不代表 Android Root、挂载命名空间、SELinux 或厂商工具的真机验收。
 
 最终完整回归通过 640 项 Kotlin 测试（容器 Desktop 161、容器 Android JVM 10、驱动 193、UI Desktop 116、UI Android JVM 102、应用 Desktop 58）及 9 项 Node 测试（模型参数 4、会话通道 2、历史附件 3），无失败、错误或跳过。两项命中 Gradle 缓存的 UI 测试任务另以 `--rerun` 实际执行。另以隔离的 mksh / Toybox 和 mksh / BusyBox 各重跑 14 项 chroot 回归，并执行上述生产权限脚本烟测。
 
@@ -892,3 +892,72 @@ node --experimental-vm-modules --test \
   --tests 'dev.wawlink.runtime.ContainerFeaturePreferencesTest' \
   --tests 'dev.wawlink.runtime.ContainerMetadataTest'
 ```
+
+### Android chroot 启动超时与后台线程隔离修复（2026-10-31）
+
+真机日志中的 `HostCommands.run` 读取线程在命令超时、进程被终止后收到 `InterruptedIOException`，未处理异常可触发 Android 全进程退出。此前权限脚本递归进入 HOME/工作区，对依赖树逐文件派生多条外部命令，放大了触及 45 秒命令期限的风险。该期限保留，没有用加长超时掩盖遍历问题。
+
+- `HostCommands` 的读取线程包含完整异常边界。关闭、超时及退出时的管道异常正常结束；真实活动读取失败回传调用方并终止命令。收尾有界等待实际进程退出、结束读取并关闭管道，避免仅发送 SIGKILL 就返回。正常 UTF-8 输出、真实非零退出诊断及父进程退出后仍被后代持有的 stdout 管道均经过生产类烟测。
+- 权限准备不递归 HOME 或工作区。`.wawlink` 只处理容器信息、布局、调试程序/凭据和明确目录；`.omp` 与 `agent` 只读取浅层配置文件，额外仅扫描 `wawlink`、原生 `sessions`、`rules`、`prompts`、`agents`、`advisors` 等共享数据及内置 Skill 文件。不遍历第三方插件/技能、Bun/npm/缓存、项目 `.git`/`node_modules`；必要管理目录内也剪枝依赖和挂载。原生 find 先筛出 UID/GID/模式确需修复的条目，再分批进行路径与身份复核；无任意历史深度截断。
+- 文件固定父目录后直接执行 `chown -h`/`chmod ./名字`，保留普通文件、单硬链接、设备/inode 和路径边界检查，不再读取或操作 `/proc/self/fd/0`。私有调试文件保持 700/600，共享文件保留原有属主/组执行位，工作区项目文件保持原权限。路径式 chmod 不是 fd 原子操作，不能把身份复核宣称为可抵御最后一次系统调用前的任意恶意并发置换。
+- 同类线程边界一并处理：终端输入/输出/等待线程、JNI PTY 等待线程、调试服务和网关的 accept/提交/worker/tunnel、Lua 桥提交失败，以及 keeper 输出协程。关闭/拒绝提交回收真实 socket/任务；活动请求与终端仍报告实际失败，JNI 等待失败返回 -1 并释放等待者，正常 PTY EIO/EOF 不覆盖真实退出码。不安装全局吞异常处理器。原生 Lua 执行器已有 FutureTask 和提交/关闭锁，未增加重复包装。
+- `LocalContainerRuntime` 的 start/openProcess/update 路径已有 IO 调度边界，prepare/validate 未改到主线程。现有证据不足以把日志中的掉帧归因为某个主线程调用，未据此声称真机掉帧已消除。
+
+mksh / BusyBox 验证还暴露并修正两项工具差异：BusyBox 的括号内 `-exec … +` 未执行积累的任务，因此批处理保留在表达式顶层；裸 `sh` 会被当作 BusyBox 内置 ash 执行，因此先解析宿主 sh 的绝对路径再交给 find，保证使用所选解释器。
+
+最终定向结果均无失败、错误或跳过：
+
+| 环境 / 范围 | 通过 |
+|---|---:|
+| 默认宿主：chroot、引擎、身份、功能运行时/网关、调试器、Skill、偏好与 LocalContainerRuntime | 90 |
+| mksh R59 / Toybox 0.8.9：chroot 与命令故障回归 | 18 |
+| mksh R59 / BusyBox 1.36.1：同组回归 | 18 |
+
+新增回归覆盖真实 sleep 命令超时、超时关闭引发 InterruptedIOException、活动读取错误的原始 cause、5,400 项依赖/项目文件不被改权，以及等待上游响应头时停服和执行器拒绝后的真实连接关闭。定向阶段 Android `compileDebugKotlin` 与终端 `compileDebugJavaWithJavac` 通过；最终 APK 构建结果见下文。
+
+另直接调用编译后的生产权限脚本，在每套宿主工具下放置 6,000 个依赖/项目文件：Toybox 首次/再次为 0.138/0.075 秒，BusyBox 为 0.087/0.050 秒，仅为本开发机测量。真实 GID 从 1000 改为已有补充组 4；确认 HOME/工作区顶层 2770、配置 660、受管可执行文件 770、私有目录/文件 700/600，项目 0751、软/硬链接目标及排除挂载保持不变。必要管理数据首次修复仍与待修复条目数量有关，不承诺任意历史规模固定时长。
+
+终端生产类的独立 JVM 故障注入通过：reader/writer/waiter 失败均回收进程与流、返回 -1 且只通知一次；正常管道中断保留退出码 9；JNI 等待失败释放两种 waitFor；EIO 早于 native waiter 的竞态分别保留退出码 0 与 7。该烟测只替代 Android/JNI/渲染依赖，使用真实修改后的 TerminalSession、AndroidPtyProcess 和队列，不代表真实 Android PTY 或界面验证。
+
+最终完整回归通过 646 项 Kotlin 测试（容器 Desktop 167、容器 Android JVM 10、驱动 193、UI Desktop 116、UI Android JVM 102、应用 Desktop 58）及 9 项 Node 测试（模型参数 4、会话通道 2、历史附件 3），无失败、错误或跳过。两项命中 Gradle 缓存的 UI 测试任务另以 `--rerun` 实际执行。
+
+最终隔离烟测直接运行生产 `HostCommands`：UTF-8 输出、非零退出诊断、1 秒超时与真实进程回收均通过，读取线程没有未捕获异常。另在 mksh / Toybox 和 mksh / BusyBox 下各执行两次生产权限脚本，实际切换到已有补充 GID 4，确认受管权限和私有权限、1,200 个依赖文件、项目文件、链接及排除挂载边界；不以本机耗时保证设备性能。
+
+Debug APK 构建成功，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 57,212,973 bytes，SHA-256：`8adfc951e3a526829f40d2cd747df0803c5d5db9fd3da8aac129d0da48a5bb44`。
+
+本轮未获得真实特权 chroot/跨 UID 接管验证；相关单元夹具明确模拟特权挂载及跨 UID 元数据。未运行 Android 模拟器、真机界面验收或模型请求；JVM/Linux 烟测及 APK 构建不代表 Android 真机 chroot、PTY、SELinux 或性能验收。
+
+定向命令：
+
+```bash
+./gradlew :container-runtime:desktopTest --rerun \
+  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
+  --tests 'dev.wawlink.runtime.RuntimeEnginesTest' \
+  --tests 'dev.wawlink.runtime.RuntimeIdentityTest' \
+  --tests 'dev.wawlink.runtime.ContainerFeatureRuntimeTest' \
+  --tests 'dev.wawlink.runtime.ContainerFeatureDebugTest' \
+  --tests 'dev.wawlink.runtime.ContainerFeatureSkillTest' \
+  --tests 'dev.wawlink.runtime.ContainerFeaturePreferencesTest' \
+  --tests 'dev.wawlink.runtime.LocalContainerRuntimeTest' \
+  :terminal-emulator:compileDebugJavaWithJavac :app-android:compileDebugKotlin
+# 更换为本机解包工具的实际绝对路径，两套工具分别运行：
+WAWLINK_TEST_HOST_SHELL=/path/to/mksh WAWLINK_TEST_HOST_TOOLS=/path/to/toybox \
+  ./gradlew :container-runtime:desktopTest --rerun --tests 'dev.wawlink.runtime.RuntimeChrootMountTest'
+WAWLINK_TEST_HOST_SHELL=/path/to/mksh WAWLINK_TEST_HOST_TOOLS=/path/to/busybox \
+  ./gradlew :container-runtime:desktopTest --rerun --tests 'dev.wawlink.runtime.RuntimeChrootMountTest'
+```
+
+最终完整回归与打包命令：
+
+```bash
+./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
+  :agent-driver-omp:desktopTest :agent-ui:desktopTest :agent-ui:testDebugUnitTest \
+  :app-desktop:desktopTest
+./gradlew :agent-ui:desktopTest --rerun :agent-ui:testDebugUnitTest --rerun
+node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
+node --experimental-vm-modules --test \
+  agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs \
+  agent-driver-omp/src/jvmSharedTest/resources/explorer-attachments.test.mjs
+./gradlew :app-android:assembleDebug
+```
+

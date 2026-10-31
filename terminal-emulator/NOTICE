@@ -5,6 +5,9 @@ These terminal modules are the Apache-2.0 exceptions identified by Termux.
 See licenses/TERMUX-TERMINAL-LICENSE.txt and the bundled assets/licenses copy.
 WawLink changes: Android SDK/arm64 build settings, runtime-owned Process transport,
 public Android PTY Process adapter, native fd/JNI correctness fixes, Chinese exit text.
+Terminal reader/writer/waiter failures are contained with process/stream cleanup;
+JNI wait failures release callers with status -1, while normal PTY EIO/EOF keeps
+the actual shell exit status and session completion is delivered only once.
 
 The Android host and two-row key layout in TerminalSurface.android.kt are adapted
 from Love2Droid EditorActivity.kt (setupTerminal/setupTerminalKeys/createTerminalKeyRow)

@@ -247,18 +247,32 @@ internal class FeatureDebugEndpoint(
         Thread(task, "wawlink-feature-debug-client").apply { isDaemon = true }
     }
     private val acceptor = Thread({
-        while (!closed.get()) {
-            val socket = try { server.accept() } catch (_: java.io.IOException) { break }
-            sockets.add(socket)
-            try {
-                pool.execute {
-                    try { serve(socket) }
-                    catch (_: Exception) { runCatching { respond(socket, 400, errorJson("Invalid debugger request")) } }
-                    finally { sockets.remove(socket); runCatching { socket.close() } }
+        try {
+            while (!closed.get()) {
+                val socket = server.accept()
+                sockets.add(socket)
+                try {
+                    if (closed.get()) {
+                        sockets.remove(socket)
+                        runCatching { socket.close() }
+                        break
+                    }
+                    pool.execute {
+                        try { if (!closed.get()) serve(socket) }
+                        catch (_: Throwable) {
+                            if (!closed.get()) runCatching { respond(socket, 400, errorJson("Invalid debugger request")) }
+                        } finally { sockets.remove(socket); runCatching { socket.close() } }
+                    }
+                } catch (_: Throwable) {
+                    if (!closed.get()) runCatching { respond(socket, 503, errorJson("Debugger is unavailable")) }
+                    sockets.remove(socket)
+                    runCatching { socket.close() }
                 }
-            } catch (_: java.util.concurrent.RejectedExecutionException) {
-                sockets.remove(socket); runCatching { socket.close() }
             }
+        } catch (failure: Throwable) {
+            if (!closed.get()) runCatching { failure.printStackTrace() }
+        } finally {
+            close()
         }
     }, "wawlink-feature-debug").apply { isDaemon = true; start() }
 
@@ -305,7 +319,7 @@ internal class FeatureDebugEndpoint(
         val expression = string("expression")
         val result = try {
             runBlocking(job) { withTimeout(30_000) { request(containerId, generation, operation, featureId, surface, expression) } }
-        } catch (failure: Exception) {
+        } catch (failure: Throwable) {
             val message = if (failure is TimeoutCancellationException) "Debugger operation timed out" else failure.message ?: "Debugger operation failed"
             respond(socket, 409, errorJson(message.replace(token, "[redacted]").take(8192))); return
         }
@@ -330,7 +344,7 @@ internal class FeatureDebugEndpoint(
         job.cancel(CancellationException("Container debugger endpoint was revoked"))
         runCatching { server.close() }
         sockets.forEach { runCatching { it.close() } }
-        pool.shutdownNow()
+        runCatching { pool.shutdownNow() }
     }
 
     private fun errorJson(message: String) = buildJsonObject { put("ok", false); put("error", message) }

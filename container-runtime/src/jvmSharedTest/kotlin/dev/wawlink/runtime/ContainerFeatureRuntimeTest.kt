@@ -6,9 +6,12 @@ import java.io.OutputStream
 import java.lang.reflect.Proxy
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.Socket
+import java.net.URI
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -35,6 +38,47 @@ import kotlin.test.assertIs
 class ContainerFeatureRuntimeTest {
     private fun feature(url: String? = null) = ContainerFeature("demo", "Demo", "Description", "terminal", "/home/test/.wawlink/features/demo", cardUrl = url)
     private fun manifest(json: String) = Json.parseToJsonElement(json).jsonObject
+
+    @Test fun closingGatewayClosesUpstreamWhileAwaitingResponseHeaders() {
+        ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { server ->
+            server.soTimeout = 5000
+            ContainerFeatureGateway(server.localPort, "token", "", { null }).use { gateway ->
+                val url = URI(gateway.url)
+                Socket("127.0.0.1", url.port).use { client ->
+                    client.soTimeout = 5000
+                    client.getOutputStream().apply {
+                        write("GET ${url.rawPath}?${url.rawQuery} HTTP/1.1\r\nHost: 127.0.0.1:${url.port}\r\n\r\n".toByteArray())
+                        flush()
+                    }
+                    server.accept().use { upstream ->
+                        upstream.soTimeout = 5000
+                        val request = upstream.getInputStream().bufferedReader()
+                        while (true) {
+                            val line = request.readLine() ?: error("Gateway closed before sending the request")
+                            if (line.isEmpty()) break
+                        }
+                        gateway.close()
+                        assertEquals(-1, request.read(), "Shutdown must close upstream I/O before response headers arrive")
+                        assertEquals(-1, client.getInputStream().read(), "Shutdown must also close the client")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test fun gatewayRejectsUnscheduledClientsWithFailureAndClosesTheirSockets() {
+        ContainerFeatureGateway(1, "token", "", { null }).use { gateway ->
+            val pool = ContainerFeatureGateway::class.java.getDeclaredField("pool").apply { isAccessible = true }.get(gateway) as ExecutorService
+            pool.shutdown() // Keep the acceptor running while deterministically rejecting its next client task.
+            val url = URI(gateway.url)
+            Socket("127.0.0.1", url.port).use { client ->
+                client.soTimeout = 5000
+                val response = featureReadBounded(client.getInputStream(), 4096).toString(Charsets.UTF_8)
+                assertTrue(response.startsWith("HTTP/1.1 502 "), response)
+                assertTrue(response.contains("功能服务连接失败"), response)
+            }
+        }
+    }
 
     @Test fun lifecycleAndDynamicCardSchemaRemainExplicit() {
         assertEquals(ContainerFeatureLifecycle.PAGE, parseFeatureLifecycle(manifest("{}")))

@@ -25,14 +25,31 @@ internal class ContainerFeatureGateway(val upstreamPort: Int, private val token:
 
     init {
         pool.execute {
-            while (!closed.get()) {
-                val socket = try { server.accept() } catch (_: java.io.IOException) { break }
-                sockets.add(socket)
-                pool.execute {
-                    try { serve(socket) } catch (_: Exception) {
-                        runCatching { respond(socket, 502, "功能服务连接失败".toByteArray(), "text/plain; charset=utf-8") }
-                    } finally { sockets.remove(socket); runCatching { socket.close() } }
+            try {
+                while (!closed.get()) {
+                    val socket = server.accept()
+                    sockets.add(socket)
+                    try {
+                        if (closed.get()) {
+                            sockets.remove(socket)
+                            runCatching { socket.close() }
+                            break
+                        }
+                        pool.execute {
+                            try { if (!closed.get()) serve(socket) } catch (_: Throwable) {
+                                if (!closed.get()) runCatching { respond(socket, 502, "功能服务连接失败".toByteArray(), "text/plain; charset=utf-8") }
+                            } finally { sockets.remove(socket); runCatching { socket.close() } }
+                        }
+                    } catch (_: Throwable) {
+                        if (!closed.get()) runCatching { respond(socket, 502, "功能服务连接失败".toByteArray(), "text/plain; charset=utf-8") }
+                        sockets.remove(socket)
+                        runCatching { socket.close() }
+                    }
                 }
+            } catch (failure: Throwable) {
+                if (!closed.get()) runCatching { failure.printStackTrace() }
+            } finally {
+                close()
             }
         }
     }
@@ -85,9 +102,11 @@ internal class ContainerFeatureGateway(val upstreamPort: Int, private val token:
         forwarded["Authorization"] = "Bearer $token"
         if (headers["origin"] != null) forwarded["Origin"] = "http://127.0.0.1:$upstreamPort"
         backendCookies(headers["cookie"])?.let { forwarded["Cookie"] = it }
-        val connection = ContainerFeatureHttpConnection(upstreamPort, method, path, forwarded, input, size)
-        sockets.add(connection.socket)
+        val upstream = Socket()
+        sockets.add(upstream)
         try {
+            if (closed.get()) return
+            val connection = ContainerFeatureHttpConnection(upstreamPort, method, path, forwarded, input, size, upstream)
             val status = connection.status
             val type = connection.header("content-type") ?: "application/octet-stream"
             val extra = linkedMapOf<String, String>()
@@ -120,14 +139,16 @@ internal class ContainerFeatureGateway(val upstreamPort: Int, private val token:
                 body = (html.substring(0, gap) + style + html.substring(gap)).toByteArray()
             }
             respond(socket, status, body, if (type.startsWith("text/html", true)) "text/html; charset=utf-8" else type, extra, authenticated = true, cookies = cookies)
-        } finally { sockets.remove(connection.socket); connection.close() }
+        } finally { sockets.remove(upstream); runCatching { upstream.close() } }
     }
 
     private fun tunnel(client: Socket, input: InputStream, method: String, path: String, headers: Map<String, String>) {
         require(method == "GET")
-        val upstream = Socket(InetAddress.getByName("127.0.0.1"), upstreamPort)
+        val upstream = Socket()
         sockets.add(upstream)
         try {
+            if (closed.get()) return
+            upstream.connect(java.net.InetSocketAddress("127.0.0.1", upstreamPort), 5000)
             upstream.soTimeout = 30_000
             val out = upstream.getOutputStream()
             val request = buildString {
@@ -144,9 +165,13 @@ internal class ContainerFeatureGateway(val upstreamPort: Int, private val token:
             while (true) { val row = line(response); if (row.isEmpty()) break; responseHeaders.append(row).append("\r\n"); require(responseHeaders.length < 65_536) }
             client.getOutputStream().apply { write(("$status\r\n$responseHeaders\r\n").toByteArray(Charsets.ISO_8859_1)); flush() }
             client.soTimeout = 0; upstream.soTimeout = 0
-            pool.execute { try { input.copyTo(out); out.flush() } catch (_: Exception) { } finally { runCatching { upstream.close() } } }
+            pool.execute {
+                try { input.copyTo(out); out.flush() }
+                catch (_: Throwable) { /* Closing the tunnel reports copy failure to the peer. */ }
+                finally { runCatching { upstream.close() }; runCatching { client.close() } }
+            }
             response.copyTo(client.getOutputStream())
-        } finally { sockets.remove(upstream); upstream.close() }
+        } finally { sockets.remove(upstream); runCatching { upstream.close() } }
     }
 
     private fun backendCookies(raw: String?): String? = raw?.split(';')?.map { it.trim() }
@@ -174,9 +199,9 @@ internal class ContainerFeatureGateway(val upstreamPort: Int, private val token:
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        server.close()
+        runCatching { server.close() }
         sockets.forEach { runCatching { it.close() } }
-        pool.shutdownNow()
+        runCatching { pool.shutdownNow() }
     }
 
     private companion object {

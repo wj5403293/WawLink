@@ -15,8 +15,8 @@ internal class ContainerFeatureHttpConnection(
     headers: Map<String, String>,
     input: InputStream,
     length: Long,
+    val socket: Socket,
 ) : AutoCloseable {
-    val socket = Socket()
     val status: Int
     val responseHeaders = linkedMapOf<String, MutableList<String>>()
     val body: InputStream
@@ -60,10 +60,13 @@ internal class ContainerFeatureHttpConnection(
                 "gzip" -> GZIPInputStream(framed)
                 else -> error("功能服务返回不支持的 Content-Encoding")
             }
-        } catch (failure: Throwable) { socket.close(); throw failure }
+        } catch (failure: Throwable) {
+            runCatching { socket.close() }.exceptionOrNull()?.let { failure.addSuppressed(it) }
+            throw failure
+        }
     }
     fun header(name: String): String? = responseHeaders[name]?.firstOrNull()
-    override fun close() { socket.close() }
+    override fun close() { runCatching { socket.close() } }
 }
 
 private class LimitedFeatureInput(private val input: InputStream, private var remaining: Long) : InputStream() {

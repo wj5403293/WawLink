@@ -104,114 +104,141 @@ internal fun prepareChrootOwnership(
         config.mounts.map { File(root, it.target.trimStart('/')).canonicalFile }))
 }
 
-/** Operates only on HOME/workspace, never the rootfs tree, links, hardlink aliases or mounted data. */
+/** Only managed roots and files: never walk HOME or project/dependency trees on startup. */
 internal fun chrootOwnershipScript(
     root: File, home: File, workspace: File?, uid: String, gid: String,
     exclusions: List<File>, hostUid: Int = ChrootHostIdentity.uid, hostGid: Int = ChrootHostIdentity.gid,
 ): String {
     val boundaries = exclusions.distinct().joinToString("|") { shellQuote(it.path.trimEnd('/') + "/") + "*" }
-    return """
+    val mountPrunes = exclusions.distinct().joinToString("") { file ->
+        val literal = file.path.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?").replace("[", "\\[")
+        " -o -path " + shellQuote(literal)
+    }
+    val worker = """
         set -eu
         root=${shellQuote(root.path)}
         home=${shellQuote(home.path)}
         workspace=${shellQuote(workspace?.path.orEmpty())}
-        fail() { printf '%s\n' "${'$'}*" >&2; exit 1; }
+        fail() { echo "${'$'}*" >&2; exit 1; }
         excluded() { ${if (boundaries.isEmpty()) "return 1" else "case \"\$1/\" in $boundaries) return 0;; *) return 1;; esac"}; }
         checked() {
-            [ ! -L "${'$'}1" ] || fail "chroot 权限路径不能是符号链接：${'$'}1"
-            actual=${'$'}(readlink -f "${'$'}1")
-            [ "${'$'}actual" = "${'$'}1" ] || fail "chroot 权限路径已改变：${'$'}1"
             case "${'$'}1/" in "${'$'}root/"*) ;; *) fail 'chroot 权限路径越出 Rootfs';; esac
             excluded "${'$'}1" && fail "chroot 权限路径位于挂载内：${'$'}1"
-            return 0
+            [ ! -L "${'$'}1" ] && [ "${'$'}(readlink -f "${'$'}1")" = "${'$'}1" ] || fail "chroot 权限路径已改变：${'$'}1"
         }
-        pin() {
+        pin_directory() {
             checked "${'$'}1"
             identity=${'$'}(stat -c '%d:%i' "${'$'}1")
-            if [ "${'$'}2" = directory ]; then
-                # cwd survives exec even when Android mksh closes its private descriptors.
-                cd -P "${'$'}1"
-                pinned=.
-            else
-                # Only stdin is guaranteed to survive exec/command substitution in mksh.
-                exec 0< "${'$'}1"
-                pinned=/proc/self/fd/0
-                [ -f "${'$'}pinned" ] || fail 'chroot 权限文件类型在打开时已改变'
-            fi
+            cd -P "${'$'}1"
+            [ "${'$'}(stat -c '%d:%i' .)" = "${'$'}identity" ] || fail 'chroot 权限目录身份已改变'
             checked "${'$'}1"
-            [ "${'$'}(stat -c '%d:%i' "${'$'}1")" = "${'$'}identity" ] &&
-                [ "${'$'}(stat -Lc '%d:%i' "${'$'}pinned")" = "${'$'}identity" ] || fail 'chroot 权限文件身份已改变'
+        }
+        verify_file() {
+            [ ! -L "${'$'}entry" ] && [ -f "${'$'}entry" ] &&
+                [ "${'$'}(stat -c '%d:%i:%h' "${'$'}entry")" = "${'$'}identity:1" ] || fail 'chroot 权限文件身份已改变'
         }
         repair() (
-            location=${'$'}1
+            location=${'$'}1; policy=${'$'}2
             [ ! -L "${'$'}location" ] || exit 0
             excluded "${'$'}location" && exit 0
-            checked "${'$'}location"
-            # Skip special files before opening; mutate only the pinned, rechecked inode.
             if [ -d "${'$'}location" ]; then
-                kind=directory
+                pin_directory "${'$'}location"
+                entry=.; kind=directory
             elif [ -f "${'$'}location" ]; then
-                [ "${'$'}(stat -c %h "${'$'}location")" = 1 ] || exit 0
-                kind=file
+                pin_directory "${'$'}{location%/*}"
+                entry="./${'$'}{location##*/}"; kind=file
             else
                 exit 0
             fi
-            pin "${'$'}location" "${'$'}kind"
-            [ "${'$'}kind" != file ] || [ "${'$'}(stat -Lc %h "${'$'}pinned")" = 1 ] || exit 0
-            owner=${'$'}(stat -Lc %u "${'$'}pinned")
-            # Do not take another account's private files. The selected roots are intentional.
-            if [ "${'$'}owner" = '$hostUid' ] || [ "${'$'}owner" = '$uid' ] || [ "${'$'}location" = "${'$'}home" ] || [ "${'$'}location" = "${'$'}workspace" ]; then
-                case "${'$'}location" in
-                    "${'$'}home"|"${'$'}home/.wawlink"|"${'$'}home/.wawlink/container.json"|"${'$'}home/.omp"|"${'$'}home/.omp/"*) shared=1;;
-                    *) shared=0;;
-                esac
-                if [ -n "${'$'}workspace" ]; then
-                    case "${'$'}location/" in "${'$'}workspace/"*) shared=1;; esac
-                fi
-                if [ "${'$'}shared" = 1 ]; then
-                    chown '$uid:$hostGid' "${'$'}pinned"
-                    directory_mode=2770
-                else
-                    chown '$uid:$gid' "${'$'}pinned"
-                    directory_mode=u+rwx
-                fi
-                if [ "${'$'}kind" = directory ]; then
-                    chmod "${'$'}directory_mode" .
-                else
-                    # Toybox symbolic chmod uses proc-link bits; mksh parses 0NNN as decimal.
-                    # stat %f plus explicit hex preserves the actual inode's permission bits.
-                    mode=${'$'}(stat -Lc %f "${'$'}pinned")
-                    mode=${'$'}(((0x${'$'}mode & 0xfff) | 0x180))
-                    [ "${'$'}shared" != 1 ] || mode=${'$'}(((mode | 0x30) & ~0x7))
-                    chmod "${'$'}(printf '%o' "${'$'}mode")" "${'$'}pinned"
-                fi
+            [ ! -L "${'$'}entry" ] || fail 'chroot 权限条目已变为链接'
+            set -- ${'$'}(stat -c '%d %i %h %u %g %a' "${'$'}entry")
+            identity="${'$'}1:${'$'}2"; links=${'$'}3; owner=${'$'}4; group=${'$'}5; mode=${'$'}6
+            [ "${'$'}kind" != file ] || [ "${'$'}links" = 1 ] || exit 0
+            if [ "${'$'}owner" != '$hostUid' ] && [ "${'$'}owner" != '$uid' ] && [ "${'$'}location" != "${'$'}home" ] && [ "${'$'}location" != "${'$'}workspace" ]; then exit 0; fi
+            target_group='$gid'
+            [ "${'$'}policy" != shared ] || target_group='$hostGid'
+            if [ "${'$'}kind" = file ]; then verify_file; fi
+            if [ "${'$'}owner" != '$uid' ] || [ "${'$'}group" != "${'$'}target_group" ]; then
+                # Never dereference a file swapped to a symlink during ownership correction.
+                chown -h "$uid:${'$'}target_group" "${'$'}entry"
             fi
             if [ "${'$'}kind" = directory ]; then
-                for child in "${'$'}location"/* "${'$'}location"/.[!.]* "${'$'}location"/..?*; do
-                    [ -e "${'$'}child" ] || [ -L "${'$'}child" ] || continue
-                    repair "${'$'}child"
-                done
+                if [ "${'$'}policy" = shared ]; then
+                    [ "${'$'}mode" = 2770 ] || chmod 2770 .
+                else
+                    [ "${'$'}mode" = 700 ] || chmod 700 .
+                fi
+                checked "${'$'}location"
+            else
+                verify_file
+                case "${'$'}policy:${'$'}mode" in
+                    shared:660|shared:670|shared:760|shared:770|private:600|executable:700) ;;
+                    shared:*) chmod ug+rw,o-rwx "${'$'}entry";;
+                    executable:*) chmod 700 "${'$'}entry";;
+                    *) chmod 600 "${'$'}entry";;
+                esac
+                verify_file
             fi
         )
         ensure_root() (
+            if [ -d "${'$'}1" ] && [ ! -L "${'$'}1" ]; then checked "${'$'}1"; exit 0; fi
             parent=${'$'}{1%/*}
-            if [ "${'$'}parent" != "${'$'}root" ]; then
-                [ -d "${'$'}parent" ] || ensure_root "${'$'}parent"
-            fi
-            pin "${'$'}parent" directory
-            if [ "${'$'}parent" != "${'$'}root" ]; then
-                # Preserve system ownership; add traversal only to the common private App group.
-                chgrp '$hostGid' .
-                chmod g+rx .
-            fi
+            [ "${'$'}parent" = "${'$'}root" ] || ensure_root "${'$'}parent"
+            pin_directory "${'$'}parent"
             [ -e "./${'$'}{1##*/}" ] || mkdir "./${'$'}{1##*/}"
             checked "${'$'}1"
             [ -d "${'$'}1" ] || fail 'chroot HOME/工作区不是目录'
         )
+    """.trimIndent()
+    return worker + "\n" + """
+        worker=${shellQuote(worker + "\nfor location do repair \"\$location\" shared; done")}
+        # BusyBox find can run an unqualified sh as its own ash applet, ignoring PATH.
+        worker_shell=${'$'}(command -v sh)
+        scan_shared() {
+            [ -d "${'$'}1" ] && [ ! -L "${'$'}1" ] || return 0
+            checked "${'$'}1"
+            scan_root=${'$'}1; file_filter=
+            if [ "${'$'}2" = files ]; then
+                file_filter='-type f'; set -- -maxdepth 1
+            else
+                set --
+            fi
+            # Native find tests metadata once, batching only entries requiring actual changes.
+            find "${'$'}scan_root" -xdev "${'$'}@" \
+                \( -name node_modules -o -name .git -o -name .bun -o -name .cache -o -name .venv$mountPrunes \) -prune -o \
+                \( ${'$'}file_filter \( -user '$hostUid' -o -user '$uid' \) \
+                    \( -type d \( ! -user '$uid' -o ! -group '$hostGid' -o ! -perm -2770 -o -perm -0001 -o -perm -0002 -o -perm -0004 \) \
+                    -o -type f -links 1 \( ! -user '$uid' -o ! -group '$hostGid' -o ! -perm -0660 -o -perm -0001 -o -perm -0002 -o -perm -0004 \) \) \) \
+                -exec "${'$'}worker_shell" -c "${'$'}worker" wawlink-chroot-permissions {} +
+        }
         ensure_root "${'$'}home"
-        ensure_root "${'$'}home/.wawlink"
-        ensure_root "${'$'}home/.omp"
-        repair "${'$'}home"
-        if [ -n "${'$'}workspace" ]; then ensure_root "${'$'}workspace"; repair "${'$'}workspace"; fi
+        # Only ancestors need traversal; do not change their owner or walk their children.
+        parent=${'$'}{home%/*}
+        while [ "${'$'}parent" != "${'$'}root" ]; do
+            (pin_directory "${'$'}parent"; chgrp '$hostGid' .; chmod g+rx .)
+            parent=${'$'}{parent%/*}
+        done
+        repair "${'$'}home" shared
+        for dir in .wawlink .omp .omp/agent; do
+            ensure_root "${'$'}home/${'$'}dir"
+            repair "${'$'}home/${'$'}dir" shared
+        done
+        repair "${'$'}home/.wawlink/container.json" shared
+        repair "${'$'}home/.wawlink/feature-cards.json" shared
+        for dir in bin feature-debug; do repair "${'$'}home/.wawlink/${'$'}dir" private; done
+        repair "${'$'}home/.wawlink/bin/wawlink-feature" executable
+        for file in owner installation.json endpoint.json; do repair "${'$'}home/.wawlink/feature-debug/${'$'}file" private; done
+        repair "${'$'}home/.wawlink/features" shared
+        scan_shared "${'$'}home/.omp" files
+        scan_shared "${'$'}home/.omp/agent" files
+        # These are host/native management data, not arbitrary skills/plugins/dependencies.
+        for dir in wawlink sessions rules prompts agents advisors; do scan_shared "${'$'}home/.omp/agent/${'$'}dir" tree; done
+        repair "${'$'}home/.omp/agent/skills" shared
+        repair "${'$'}home/.omp/agent/skills/wawlink-functions" shared
+        scan_shared "${'$'}home/.omp/agent/skills/wawlink-functions" files
+        if [ -n "${'$'}workspace" ]; then
+            ensure_root "${'$'}workspace"
+            repair "${'$'}workspace" shared
+        fi
     """.trimIndent()
 }

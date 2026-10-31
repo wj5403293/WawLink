@@ -11,6 +11,7 @@ import kotlinx.serialization.json.*
 import java.util.Collections
 import java.util.concurrent.FutureTask
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -67,7 +68,12 @@ internal class FeatureAndroidLuaBridge(
                 override fun done() { tasks.remove(this) }
             }
             tasks.add(task)
-            worker.execute(task)
+            try {
+                worker.execute(task)
+            } catch (failure: RejectedExecutionException) {
+                task.cancel(false)
+                respond(reply, token, id, epoch, null, failure.message ?: "Native Lua execution is unavailable")
+            }
         }
         listenerInstalled = true
         script = WebViewCompat.addDocumentStartJavaScript(webView,

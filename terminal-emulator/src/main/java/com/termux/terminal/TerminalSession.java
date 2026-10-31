@@ -4,10 +4,13 @@ package com.termux.terminal;
 import android.annotation.SuppressLint;
 import android.os.Handler;
 import android.os.Message;
+import android.system.ErrnoException;
+import android.system.OsConstants;
 
 import java.io.File;
 import java.io.InputStream;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -65,6 +68,9 @@ public final class TerminalSession extends TerminalOutput {
     /** Set by the application for user identification of session, not by terminal. */
     public String mSessionName;
     private final AtomicBoolean mInputUpdateScheduled = new AtomicBoolean();
+    private final AtomicBoolean mWorkerShutdown = new AtomicBoolean();
+    private volatile boolean mClosing;
+    private volatile Throwable mThreadFailure;
 
     final Handler mMainThreadHandler = new MainThreadHandler();
 
@@ -132,8 +138,8 @@ public final class TerminalSession extends TerminalOutput {
                             mMainThreadHandler.sendEmptyMessageDelayed(MSG_NEW_INPUT, OUTPUT_UPDATE_DELAY_MS);
                         }
                     }
-                } catch (Exception e) {
-                    // Ignore, just shutting down.
+                } catch (Throwable failure) {
+                    if (!isExpectedIoFailure(failure)) shutdownFromWorker(failure);
                 }
             }
         }.start();
@@ -141,15 +147,15 @@ public final class TerminalSession extends TerminalOutput {
         new Thread("TermSessionOutputWriter[pid=" + mShellPid + "]") {
             @Override
             public void run() {
-                final byte[] buffer = new byte[4096];
                 try (java.io.OutputStream termOut = mProcess.getOutputStream()) {
+                    final byte[] buffer = new byte[4096];
                     while (true) {
                         int bytesToWrite = mTerminalToProcessIOQueue.read(buffer, true);
                         if (bytesToWrite == -1) return;
                         termOut.write(buffer, 0, bytesToWrite);
                     }
-                } catch (IOException e) {
-                    // Ignore.
+                } catch (Throwable failure) {
+                    if (!isExpectedIoFailure(failure)) shutdownFromWorker(failure);
                 }
             }
         }.start();
@@ -162,11 +168,56 @@ public final class TerminalSession extends TerminalOutput {
                     mMainThreadHandler.sendMessage(mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, processExitCode));
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
+                } catch (Throwable failure) {
+                    shutdownFromWorker(failure);
                 }
             }
         }.start();
 
     }
+
+    private boolean isExpectedIoFailure(Throwable failure) {
+        // Android interrupts closed descriptors; a PTY also reports EIO at slave EOF.
+        if (failure instanceof InterruptedIOException) return true;
+        if (!(failure instanceof IOException)) return false;
+        Throwable cause = failure.getCause();
+        if (mProcess instanceof AndroidPtyProcess && cause instanceof ErrnoException
+            && ((ErrnoException) cause).errno == OsConstants.EIO) return true;
+        if (mClosing || !isRunning()) return true;
+        try {
+            return !mProcess.isAlive();
+        } catch (Throwable statusFailure) {
+            if (statusFailure != failure) failure.addSuppressed(statusFailure);
+            return false;
+        }
+    }
+
+    private void shutdownFromWorker(Throwable failure) {
+        if (!mWorkerShutdown.compareAndSet(false, true)) return;
+        mClosing = true;
+        mThreadFailure = failure;
+        mTerminalToProcessIOQueue.close();
+        mProcessToTerminalIOQueue.close();
+        try {
+            mProcess.destroyForcibly();
+        } catch (Throwable cleanup) {
+            if (cleanup != failure) failure.addSuppressed(cleanup);
+        }
+        try {
+            if (mProcess instanceof AutoCloseable) {
+                ((AutoCloseable) mProcess).close();
+            } else {
+                try { mProcess.getInputStream().close(); }
+                finally { mProcess.getOutputStream().close(); }
+            }
+        } catch (Throwable cleanup) {
+            if (cleanup != failure) failure.addSuppressed(cleanup);
+        } finally {
+            // Also finish the UI if the process waiter itself failed.
+            mMainThreadHandler.sendMessage(mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, -1));
+        }
+    }
+
 
     /** Write data to the shell process. */
     @Override
@@ -228,11 +279,15 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Request process termination; the runtime owns descendant cleanup. */
     public void finishIfRunning() {
-        if (isRunning()) mProcess.destroy();
+        if (isRunning()) {
+            mClosing = true;
+            mProcess.destroy();
+        }
     }
 
     /** Cleanup resources when the process exits. */
     void cleanupResources(int exitStatus) {
+        mClosing = true;
         synchronized (this) {
             mShellPid = -1;
             mShellExitStatus = exitStatus;
@@ -326,12 +381,18 @@ public final class TerminalSession extends TerminalOutput {
                 return;
             }
             if (msg.what != MSG_PROCESS_EXITED) return;
+            Throwable failure = mThreadFailure;
+            if (failure != null) Logger.logStackTraceWithMessage(mClient, LOG_TAG, "Terminal worker failed", failure);
+            if (!isRunning()) return;
 
             while (processPendingOutput()) { }
-            int exitCode = (Integer) msg.obj;
+            int exitCode = failure == null ? (Integer) msg.obj : -1;
             cleanupResources(exitCode);
 
             String exitDescription = "\r\n[终端进程已退出：" + exitCode + "]";
+            if (failure != null) {
+                exitDescription += "\r\n[终端错误：" + failure + "]";
+            }
 
             byte[] bytesToWrite = exitDescription.getBytes(StandardCharsets.UTF_8);
             mEmulator.append(bytesToWrite, bytesToWrite.length);
