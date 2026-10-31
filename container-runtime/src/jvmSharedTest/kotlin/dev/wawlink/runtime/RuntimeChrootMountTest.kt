@@ -8,7 +8,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Runs production prepare in an ordinary shell; every privileged command is a shell function. */
+/** Runs production prepare with real host shell/tools; only privileged mount/UID operations are simulated. */
 class RuntimeChrootMountTest {
     private class Fixture(val directory: File, android: Boolean) {
         val data = File(directory, "app data").apply { mkdirs() }
@@ -16,6 +16,17 @@ class RuntimeChrootMountTest {
         val source = File(directory, "host ' files \\ literal \$HOME").apply { mkdirs() }
         val target = File(root, "mnt/shared ' files \\ literal \$HOME")
         val state = File(directory, "mount state").apply { mkdirs() }
+        private val shell = System.getenv("WAWLINK_TEST_HOST_SHELL") ?: "/bin/sh"
+        private val tools = System.getenv("WAWLINK_TEST_HOST_TOOLS")?.let { executable ->
+            val binary = File(executable).canonicalFile
+            require(binary.canExecute()) { "WAWLINK_TEST_HOST_TOOLS must name an executable Toybox/BusyBox binary" }
+            File(directory, "host tools").apply {
+                mkdir()
+                for (applet in listOf("readlink", "stat", "chown", "chgrp", "chmod", "mkdir", "mv", "ln", "id", "printf")) {
+                    Files.createSymbolicLink(File(this, applet).toPath(), binary.toPath())
+                }
+            }
+        }
         private val log = File(directory, "arguments")
         var failure = ""
         var confirmReadOnly = true
@@ -26,7 +37,7 @@ class RuntimeChrootMountTest {
             mounts = listOf(ContainerMount(source.path, "/mnt/${target.name}", readWrite = false)),
         )
         val engines = RuntimeEngines(RuntimePaths(data, isAndroid = android)) { command ->
-            val builder = ProcessBuilder("/bin/sh", "-c", MOCK_COMMANDS + "\n" + command)
+            val builder = builder(MOCK_COMMANDS + "\n" + command)
             builder.environment().apply {
                 put("MOCK_STATE", state.path)
                 put("MOCK_LOG", log.path)
@@ -51,6 +62,11 @@ class RuntimeChrootMountTest {
             // A real /dev bind exposes pts. The fake bind must not touch the host /dev.
             File(root, "dev/pts").mkdirs()
         }
+
+        private fun builder(command: String) = ProcessBuilder(shell, "-c", command).apply {
+            tools?.let { environment()["PATH"] = it.path }
+        }
+        fun run(command: String): String = HostCommands.run(builder(command), 15)
 
         fun mounts(): List<File> = state.listFiles().orEmpty().filter { it.isDirectory }
         fun calls(name: String): List<List<String>> = if (!log.exists()) emptyList() else
@@ -201,18 +217,21 @@ class RuntimeChrootMountTest {
             Files.createLink(File(home, ".omp/agent/hardlink").toPath(), outside.toPath())
             Files.createSymbolicLink(File(home, ".omp/agent/link").toPath(), outside.toPath())
             Files.setAttribute(configFile.toPath(), "unix:mode", 0x100)
+            Files.setAttribute(script.toPath(), "unix:mode", 0x1E9) // 0751
             Files.setAttribute(privateFile.toPath(), "unix:mode", 0x180)
             Files.setAttribute(privateFile.parentFile.toPath(), "unix:mode", 0x1C0)
             val protectedMode = Files.getAttribute(protected.toPath(), "unix:mode")
             val uid = ChrootHostIdentity.uid.toString()
             val gid = ChrootHostIdentity.gid.toString()
             val command = chrootOwnershipScript(root, home, workspace, uid, gid, listOf(mounted))
-            HostCommands.run(listOf("/bin/sh", "-c", command), 15)
+            run(command)
             assertEquals(0x5F8, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
             assertEquals(0x1B0, (Files.getAttribute(configFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals("settings", configFile.readText())
             assertEquals(0x180, (Files.getAttribute(privateFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals(0x1C0, (Files.getAttribute(privateFile.parentFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
-            assertTrue(script.canExecute())
+            assertEquals(0x1F8, (Files.getAttribute(script.toPath(), "unix:mode") as Number).toInt() and 0x1FF) // 0770
+            assertEquals("printf ready", script.readText())
             assertEquals(outsideMode, Files.getAttribute(outside.toPath(), "unix:mode"))
             assertEquals(protectedMode, Files.getAttribute(protected.toPath(), "unix:mode"))
             assertEquals("untouched", outside.readText())
@@ -225,6 +244,35 @@ class RuntimeChrootMountTest {
             assertEquals("request", request.readText())
             assertEquals(ChrootHostIdentity.gid, (Files.getAttribute(request.toPath(), "unix:gid") as Number).toInt())
             assertEquals(0x1B0, (Files.getAttribute(request.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+        }
+    }
+
+    @Test fun replacingFileAfterIdentityCaptureCannotRepairAnotherInode() = fixture { fixture ->
+        with(fixture) {
+            val home = File(root, "home/alice").apply { mkdirs() }
+            val configFile = File(home, ".omp/config.yml").apply { parentFile.mkdirs(); writeText("original") }
+            val original = File(directory, "original")
+            val replacement = File(directory, "replacement").apply { writeText("replacement") }
+            Files.setAttribute(configFile.toPath(), "unix:mode", 0x100)
+            Files.setAttribute(replacement.toPath(), "unix:mode", 0x100)
+            val prefix = """
+                stat() {
+                    if [ "${'$'}1" = -c ] && [ "${'$'}2" = '%d:%i' ] && [ "${'$'}3" = ${shellQuote(configFile.path)} ] && [ ! -e ${shellQuote(original.path)} ]; then
+                        command stat "${'$'}@"
+                        mv ${shellQuote(configFile.path)} ${shellQuote(original.path)}
+                        mv ${shellQuote(replacement.path)} ${shellQuote(configFile.path)}
+                    else
+                        command stat "${'$'}@"
+                    fi
+                }
+            """.trimIndent()
+            val command = prefix + "\n" + chrootOwnershipScript(root, home, null,
+                ChrootHostIdentity.uid.toString(), ChrootHostIdentity.gid.toString(), emptyList())
+            assertFailsWith<IllegalStateException> { run(command) }
+            assertEquals("original", original.readText())
+            assertEquals("replacement", configFile.readText())
+            assertEquals(0x100, (Files.getAttribute(configFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals(0x100, (Files.getAttribute(original.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
         }
     }
 
@@ -248,7 +296,7 @@ class RuntimeChrootMountTest {
             """.trimIndent()
             val command = prefix + "\n" + chrootOwnershipScript(root, home, null,
                 ChrootHostIdentity.uid.toString(), ChrootHostIdentity.gid.toString(), emptyList())
-            assertFailsWith<IllegalStateException> { HostCommands.run(listOf("/bin/sh", "-c", command), 15) }
+            assertFailsWith<IllegalStateException> { run(command) }
             assertEquals(0x1C0, (Files.getAttribute(outside.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals("untouched", File(outside, "keep").readText())
             assertEquals(0x5F8, (Files.getAttribute(moved.toPath(), "unix:mode") as Number).toInt() and 0xFFF)

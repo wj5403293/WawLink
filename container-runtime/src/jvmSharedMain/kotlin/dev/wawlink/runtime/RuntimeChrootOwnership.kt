@@ -119,7 +119,7 @@ internal fun chrootOwnershipScript(
         excluded() { ${if (boundaries.isEmpty()) "return 1" else "case \"\$1/\" in $boundaries) return 0;; *) return 1;; esac"}; }
         checked() {
             [ ! -L "${'$'}1" ] || fail "chroot 权限路径不能是符号链接：${'$'}1"
-            actual=${'$'}(readlink -f -- "${'$'}1")
+            actual=${'$'}(readlink -f "${'$'}1")
             [ "${'$'}actual" = "${'$'}1" ] || fail "chroot 权限路径已改变：${'$'}1"
             case "${'$'}1/" in "${'$'}root/"*) ;; *) fail 'chroot 权限路径越出 Rootfs';; esac
             excluded "${'$'}1" && fail "chroot 权限路径位于挂载内：${'$'}1"
@@ -127,9 +127,20 @@ internal fun chrootOwnershipScript(
         }
         pin() {
             checked "${'$'}1"
-            exec 3< "${'$'}1"
-            [ "${'$'}(readlink -f -- /proc/self/fd/3)" = "${'$'}1" ] || fail 'chroot 权限路径在打开时已改变'
-            [ "${'$'}(stat -c '%d:%i' -- "${'$'}1")" = "${'$'}(stat -Lc '%d:%i' -- /proc/self/fd/3)" ] || fail 'chroot 权限文件身份已改变'
+            identity=${'$'}(stat -c '%d:%i' "${'$'}1")
+            if [ "${'$'}2" = directory ]; then
+                # cwd survives exec even when Android mksh closes its private descriptors.
+                cd -P "${'$'}1"
+                pinned=.
+            else
+                # Only stdin is guaranteed to survive exec/command substitution in mksh.
+                exec 0< "${'$'}1"
+                pinned=/proc/self/fd/0
+                [ -f "${'$'}pinned" ] || fail 'chroot 权限文件类型在打开时已改变'
+            fi
+            checked "${'$'}1"
+            [ "${'$'}(stat -c '%d:%i' "${'$'}1")" = "${'$'}identity" ] &&
+                [ "${'$'}(stat -Lc '%d:%i' "${'$'}pinned")" = "${'$'}identity" ] || fail 'chroot 权限文件身份已改变'
         }
         repair() (
             location=${'$'}1
@@ -140,14 +151,14 @@ internal fun chrootOwnershipScript(
             if [ -d "${'$'}location" ]; then
                 kind=directory
             elif [ -f "${'$'}location" ]; then
-                [ "${'$'}(stat -c %h -- "${'$'}location")" = 1 ] || exit 0
+                [ "${'$'}(stat -c %h "${'$'}location")" = 1 ] || exit 0
                 kind=file
             else
                 exit 0
             fi
-            pin "${'$'}location"
-            [ "${'$'}kind" != file ] || [ "${'$'}(stat -Lc %h -- /proc/self/fd/3)" = 1 ] || exit 0
-            owner=${'$'}(stat -Lc %u -- /proc/self/fd/3)
+            pin "${'$'}location" "${'$'}kind"
+            [ "${'$'}kind" != file ] || [ "${'$'}(stat -Lc %h "${'$'}pinned")" = 1 ] || exit 0
+            owner=${'$'}(stat -Lc %u "${'$'}pinned")
             # Do not take another account's private files. The selected roots are intentional.
             if [ "${'$'}owner" = '$hostUid' ] || [ "${'$'}owner" = '$uid' ] || [ "${'$'}location" = "${'$'}home" ] || [ "${'$'}location" = "${'$'}workspace" ]; then
                 case "${'$'}location" in
@@ -158,14 +169,23 @@ internal fun chrootOwnershipScript(
                     case "${'$'}location/" in "${'$'}workspace/"*) shared=1;; esac
                 fi
                 if [ "${'$'}shared" = 1 ]; then
-                    chown '$uid:$hostGid' -- /proc/self/fd/3
-                    if [ "${'$'}kind" = directory ]; then chmod 2770 -- /proc/self/fd/3; else chmod ug+rw,o-rwx -- /proc/self/fd/3; fi
+                    chown '$uid:$hostGid' "${'$'}pinned"
+                    directory_mode=2770
                 else
-                    chown '$uid:$gid' -- /proc/self/fd/3
-                    if [ "${'$'}kind" = directory ]; then chmod u+rwx -- /proc/self/fd/3; else chmod u+rw -- /proc/self/fd/3; fi
+                    chown '$uid:$gid' "${'$'}pinned"
+                    directory_mode=u+rwx
+                fi
+                if [ "${'$'}kind" = directory ]; then
+                    chmod "${'$'}directory_mode" .
+                else
+                    # Toybox symbolic chmod uses proc-link bits; mksh parses 0NNN as decimal.
+                    # stat %f plus explicit hex preserves the actual inode's permission bits.
+                    mode=${'$'}(stat -Lc %f "${'$'}pinned")
+                    mode=${'$'}(((0x${'$'}mode & 0xfff) | 0x180))
+                    [ "${'$'}shared" != 1 ] || mode=${'$'}(((mode | 0x30) & ~0x7))
+                    chmod "${'$'}(printf '%o' "${'$'}mode")" "${'$'}pinned"
                 fi
             fi
-            exec 3<&-
             if [ "${'$'}kind" = directory ]; then
                 for child in "${'$'}location"/* "${'$'}location"/.[!.]* "${'$'}location"/..?*; do
                     [ -e "${'$'}child" ] || [ -L "${'$'}child" ] || continue
@@ -178,14 +198,13 @@ internal fun chrootOwnershipScript(
             if [ "${'$'}parent" != "${'$'}root" ]; then
                 [ -d "${'$'}parent" ] || ensure_root "${'$'}parent"
             fi
-            pin "${'$'}parent"
+            pin "${'$'}parent" directory
             if [ "${'$'}parent" != "${'$'}root" ]; then
                 # Preserve system ownership; add traversal only to the common private App group.
-                chgrp '$hostGid' -- /proc/self/fd/3
-                chmod g+rx -- /proc/self/fd/3
+                chgrp '$hostGid' .
+                chmod g+rx .
             fi
-            [ -e "${'$'}1" ] || mkdir -- "/proc/self/fd/3/${'$'}{1##*/}"
-            exec 3<&-
+            [ -e "./${'$'}{1##*/}" ] || mkdir "./${'$'}{1##*/}"
             checked "${'$'}1"
             [ -d "${'$'}1" ] || fail 'chroot HOME/工作区不是目录'
         )
