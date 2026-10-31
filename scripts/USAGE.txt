@@ -11,8 +11,9 @@ fonts. It never executes downloaded Android executables. Python3, flock and
 dpkg-deb are required. Fonts are committed; generated native binaries are excluded
 from source control. The command recreates missing inputs and rejects wrong
 SHA256 values.
-The locked PRoot package uses the Termux-listed Librehat mirror because the
-primary repository no longer retains that version; its original SHA256 is kept.
+The locked PRoot package uses a community Internet Archive snapshot because
+current Termux mirrors no longer retain that version. Its original SHA256 remains
+mandatory; the archive is not an independent upstream signature.
 
 The second command requires Linux x86_64 or arm64, Bash, Python3, curl, GNU tar,
 sha256sum, sha512sum, dpkg-deb, flock and normal GNU coreutils. Static QEMU and zstd
