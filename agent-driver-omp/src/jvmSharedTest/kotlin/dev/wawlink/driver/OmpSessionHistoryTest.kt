@@ -1,6 +1,7 @@
 package dev.wawlink.driver
 
 import dev.wawlink.runtime.ContainerConfig
+import dev.wawlink.runtime.ContainerEngineType
 import dev.wawlink.runtime.ContainerMount
 import dev.wawlink.runtime.LocalContainerRuntime
 import dev.wawlink.runtime.ContainerRuntime
@@ -67,6 +68,27 @@ class OmpSessionHistoryTest {
                 assertTrue(File(historyDirectory(root, "adopted", home), source.name).isFile)
                 assertContentEquals(original, source.readBytes())
                 assertTrue(!File(root, "root/.omp/agent/wawlink/sessions").exists())
+            }
+        }
+    }
+
+    @Test fun chrootForkAdoptionAndRelocationKeepCopiedHistoryAndArtifactsShared() = runBlocking {
+        withHistory(includeSlot = true, user = "operator", guestHome = "/home/operator", engine = ContainerEngineType.CHROOT) { pool, root, source, body ->
+            val artifact = File(source.parentFile, "${source.nameWithoutExtension}/nested/result.txt").apply { parentFile.mkdirs(); writeText("原生附件") }
+            pool.fork("source", "branch", "fixture", "/branch", "分支")
+            val branch = historyDirectory(root, "branch", "/home/operator")
+            val copied = File(branch, artifact.relativeTo(source.parentFile).path)
+            assertEquals("原生附件", copied.readText())
+            pool.adoptFork("source", "adopted", "/home/operator/.omp/agent/wawlink/sessions/${hash("branch")}/${source.name}", "接管")
+            pool.relocateSession("branch", "fixture", "/moved", "迁移")
+            for (id in listOf("branch", "adopted")) {
+                val directory = historyDirectory(root, id, "/home/operator")
+                inspect(File(directory, source.name), body)
+                directory.walkTopDown().forEach { file ->
+                    val expected = if (file.isDirectory) "2770" else "660"
+                    assertEquals(expected.toInt(8), (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0xfff)
+                    assertTrue(file.canRead() && file.canWrite())
+                }
             }
         }
     }
@@ -160,7 +182,7 @@ class OmpSessionHistoryTest {
         return slot to header
     }
 
-    private suspend fun withHistory(includeSlot: Boolean, user: String = "root", homeOverride: String? = null, guestHome: String = "/root", mountTarget: String? = null, test: suspend (OmpProcessPool, File, File, ByteArray) -> Unit) {
+    private suspend fun withHistory(includeSlot: Boolean, user: String = "root", homeOverride: String? = null, guestHome: String = "/root", mountTarget: String? = null, engine: ContainerEngineType = ContainerEngineType.PROROOT, test: suspend (OmpProcessPool, File, File, ByteArray) -> Unit) {
         val directory = Files.createTempDirectory("wawlink-history-").toFile()
         val runtime = LocalContainerRuntime(RuntimePaths(File(directory, "runtime")))
         var pool: OmpProcessPool? = null
@@ -199,6 +221,7 @@ class OmpSessionHistoryTest {
                 }.toString())
             }
             pool = OmpProcessPool(object : ContainerRuntime by runtime {
+                override val containers = if (engine == ContainerEngineType.CHROOT) kotlinx.coroutines.flow.MutableStateFlow(runtime.containers.value.map { it.copy(config = it.config.copy(engine = engine)) }) else runtime.containers
                 override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = error("History operations must not start a container process")
             }, data)
             pool.session("source", "fixture", "/workspace", "原始会话")

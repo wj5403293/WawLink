@@ -3,6 +3,8 @@ package dev.wawlink.driver
 import dev.wawlink.protocol.ProviderConfig
 import dev.wawlink.protocol.ProviderApiType
 import dev.wawlink.protocol.ThinkingLevel
+import dev.wawlink.runtime.ContainerConfig
+import dev.wawlink.runtime.prepareContainerHostFile
 import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
@@ -18,12 +20,12 @@ internal object ModelPayloadExtension {
     private const val SCRIPT_NAME = "wawlink-model-payload.mjs"
     private const val BUDGET_NAME = "wawlink-model-budgets.json"
 
-    fun install(agentDir: File, guestAgentDir: String): String {
+    fun install(agentDir: File, guestAgentDir: String, configuration: ContainerConfig? = null): String {
         require(guestAgentDir.startsWith('/') && !guestAgentDir.split('/').contains("..")) { "Agent 配置目录必须是容器内绝对路径" }
         val source = checkNotNull(javaClass.getResourceAsStream("/$SCRIPT_NAME")) { "缺少模型预算扩展资源" }
             .use { it.readBytes() }
         val target = File(agentDir, SCRIPT_NAME)
-        if (!target.isFile || !target.readBytes().contentEquals(source)) atomicWrite(target, source)
+        if (!target.isFile || !target.readBytes().contentEquals(source)) atomicWrite(target, source, configuration)
         return "${guestAgentDir.trimEnd('/')}/$SCRIPT_NAME"
     }
 
@@ -39,7 +41,7 @@ internal object ModelPayloadExtension {
         }
     }
 
-    fun writeBudgets(agentDir: File, providers: List<ProviderConfig>) {
+    fun writeBudgets(agentDir: File, providers: List<ProviderConfig>, configuration: ContainerConfig? = null) {
         val budgets = buildMap<String, JsonPrimitive> {
             providers.forEach { provider ->
                 provider.models.forEach { model ->
@@ -51,14 +53,15 @@ internal object ModelPayloadExtension {
                 }
             }
         }
-        atomicWrite(File(agentDir, BUDGET_NAME), JsonObject(budgets).toString().toByteArray(Charsets.UTF_8))
+        atomicWrite(File(agentDir, BUDGET_NAME), JsonObject(budgets).toString().toByteArray(Charsets.UTF_8), configuration)
     }
 
-    private fun atomicWrite(file: File, bytes: ByteArray) {
-        check(file.parentFile.isDirectory || file.parentFile.mkdirs()) { "无法创建 Agent 配置目录" }
+    private fun atomicWrite(file: File, bytes: ByteArray, configuration: ContainerConfig?) {
+        prepareOmpHostDirectory(file.parentFile, configuration)
         require(!Files.isSymbolicLink(file.toPath())) { "拒绝覆盖符号链接配置文件" }
         val temporary = File.createTempFile(".${file.name}.", ".tmp", file.parentFile)
         try {
+            if (configuration != null) prepareContainerHostFile(configuration, temporary)
             temporary.outputStream().use { stream ->
                 stream.write(bytes)
                 stream.fd.sync()

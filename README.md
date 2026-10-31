@@ -197,6 +197,7 @@ git push origin v1.0.0
 - 容器详情按原型重置操作按钮、工具链卡片、主题色分段控件和挂载 bottom sheet；保留原有功能。包括 Proroot 在内的普通登录身份可填写容器中已有的用户名或数字 UID，实际启动使用该账户的 UID/GID、HOME、USER 与 LOGNAME，不固定为 `user`，不自动创建账户。有效 HOME 使用与启动器共用的离线账户解析，并遵循容器配置中的 `HOME` 环境覆盖。
 - 容器详情 → 挂载目录支持主机目录选择，主机路径右侧的文件夹按钮在 Android 打开系统目录选择器，Desktop 打开原生目录选择器；也可手填 `/sdcard/项目` 等实际主机路径并指定容器内挂载点。Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，Android 10 使用传统共享储存访问；启动不自动申请。仅解析本机共享储存卷的目录，保存实际路径而非 `content://`，不复制或同步目录内容；取消选择、拒绝授权或保存失败保留草稿。云盘等文档提供方不能直接挂载；系统选择器不允许选择共享储存根目录或 Download 时，可在授权后手填路径。权限不绕过 Android 对其他应用私有目录的限制；只读保护仍仅由 chroot 提供。更新 APK 即可使用，无需重新导入 Rootfs。
 - 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，bind 和只读重挂载都显式传入源与目标，并校验内核报告的只读状态；挂载失败回滚并保留实际错误。Android 的 mount 不支持私有化标志时允许继续，不能保证挂载传播隔离；停止容器时回收所属进程、卸载挂载点。
+- chroot 启动在挂载验证后修复宿主离线解压、容器信息保存和会话启动前写入产生的真实所有权差异。当前有效 HOME、`.wawlink` 根、`.omp` 及未挂载的 `/workspace` 使用登录 UID / App 共享 GID，目录 2770、共享文件 660（保留可执行位）；非 root 登录账户补充该组并在实际 su 后核对，主 UID/GID 不改。宿主后续配置、会话、管理扩展、通道及 Rootfs 工作区附件写入也使用同一共享规则，避免首条消息启动后再次出现 EACCES。调试器自己的目录、程序及凭据使用当前 UID/GID 与 700/600，root 在确认真实 HOME、普通目录/文件和唯一 inode 后可修复异主所有权，非 root 不绕过 UID 检查。修复不遍历整个 Rootfs、不跟随软链、不修改硬链接别名或宿主挂载；特权 chmod/chown 绑定打开并复核的文件描述符。PRoot/Proroot 保持原有模式。更新后停止并重新启动已有 chroot 容器即可重新准备，不要求重新导入 Rootfs。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
 - 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 保留 Love2Droid 的黑色控制台、Maple Mono 字体及两行等宽快捷键栏，移植 Termux TerminalView/TerminalSession；挂载和窗口获焦后重建输入连接，点击终端唤出软键盘，快捷键不抢焦点。Desktop 使用 JediTerm 3.63 + pty4j 0.13.4。支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新；离开页面关闭其终端进程，退出后保留输出并提示重新打开，不关闭其他会话的进程。
 - 容器宿主进程的 `/proc/<pid>/stat` 不可读时，以仍存活的原进程句柄回退跟踪和终止；恢复可读后固定 starttime，避免将复用的 PID 当作原进程。Android Termux PTY 的已知会话进程组也会收到停止信号；若 `/proc` 持续不可读，无法保证发现所有后代，组长退出后不会再向未验证的进程组发信号，忽略停止信号或脱离进程组的后代可能残留。chroot 仍要求经过 Root 身份握手及特权快照。
@@ -799,3 +800,31 @@ Debug APK 构建成功，默认产物 `app-android/build/outputs/apk/debug/app-a
 ```
 
 本轮未使用 Android 模拟器或真机。桌面/JVM 与编译结果不替代 Android 系统剪贴板、触摸、返回及真实容器恢复的设备端验证。
+
+### chroot 宿主与客体所有权修复（2026-10-31）
+
+修复 `Feature debugger installation failed: Debugger directory has a different owner`，同时覆盖发送消息的 `OmpProcessPool.ensureStarted()` 路径：宿主创建会话和工作区、注入 Skill/调试器、发布配置与管理扩展、再启动 OMP。共享权限同时作用于宿主请求和客体响应/通道文件，不把 `.omp` 整体交给客体后丢失宿主访问，也不以 777 或关闭所有权校验处理问题。内置 Skill 的未修改正文在 chroot 下通过暂存替换取得共享读写权限；用户修改仍保留。偏好文件仍完全经客体进程读取和保存，历史探索的本机图片缓存不参与客体所有权修复。
+
+定向 Kotlin 回归通过 192 项（运行时 93、OMP 驱动 99），生产 `session.mjs` 的私有/共享组两种通道场景通过 2 项，无失败、错误或跳过。覆盖 root/非 root 模拟身份、HOME 覆盖与系统目录根拒绝、启动前后新建目录、配置与扩展、发送/会话历史、Skill、调试器真实 CLI/HTTP、私有模式、软/硬链接、挂载保留、目录替换竞态及权限失败回滚。首次运行修正了一处新增测试对调试列表返回身份字段的误用，使用现有 `featureId` 契约后重跑通过。
+
+隔离烟测从已编译生产代码取得所有权脚本和调试器安装/客户端，实际执行 Shell、Node 和生产 Kotlin loopback 认证端点；观察到共享目录 2770、配置 660、调试程序 700、凭据 600，宿主离线元数据仍可写，软链、硬链接别名及排除的挂载数据未被修改。临时端点与烟测文件均已清理。
+
+验证边界：开发机未获得可用的免交互 Root，user namespace 的 UID 映射也被系统拒绝；跨 UID/GID 接管由测试夹具模拟，真实权限烟测使用当前 `1000:1000`。另从本次编译的生产类取得权限脚本，在隔离目录执行，确认 HOME 2770、配置 660、调试器私有目录/文件 700/600，链接目标及排除子树未改变。Node 仅替代 Bun 执行相同生产 JavaScript；没有 Android 真机、模拟器、真实特权 chroot、WebView 或模型推理验收。
+
+最终完整回归通过 639 项 Kotlin 测试（容器 Desktop 160、容器 Android JVM 10、驱动 193、UI Desktop 116、UI Android JVM 102、应用 Desktop 58）及 9 项 Node 测试（模型参数 4、会话通道 2、历史附件 3），无失败、错误或跳过。两项命中 Gradle 缓存的 UI 测试任务另以 `--rerun` 实际执行。
+
+Debug APK 构建成功，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 57,212,686 bytes，SHA-256：`66c920df66a31b345fe41e7aefc684d783345c037294b8617089aea9bcd7b606`。构建及 JVM/Linux 烟测不替代 Android 真机 chroot 验证。
+
+最终回归与打包命令：
+
+```bash
+./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
+  :agent-driver-omp:desktopTest :agent-ui:desktopTest :agent-ui:testDebugUnitTest \
+  :app-desktop:desktopTest
+./gradlew :agent-ui:desktopTest --rerun :agent-ui:testDebugUnitTest --rerun
+node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
+node --experimental-vm-modules --test \
+  agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs \
+  agent-driver-omp/src/jvmSharedTest/resources/explorer-attachments.test.mjs
+./gradlew :app-android:assembleDebug
+```

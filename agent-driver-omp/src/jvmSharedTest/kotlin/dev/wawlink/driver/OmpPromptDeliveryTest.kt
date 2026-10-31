@@ -983,6 +983,38 @@ class OmpPromptDeliveryTest {
         }
     }
 
+    @Test fun chrootMessageStartupCreatesSharedSessionAndExtensionsWithoutLosingOfflineAccess() = runBlocking {
+        fixture(withManagement = true, engine = ContainerEngineType.CHROOT, user = "operator") {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            gate.complete(transport)
+            controller.sendPrompt("真实启动链")
+            transport.request()
+            assertEquals("1", chatEnvironment["WAWLINK_MANAGEMENT_SHARED_GROUP"])
+            val sessionPath = chatArguments[chatArguments.indexOf("--session-dir") + 1]
+            val session = File(root, sessionPath.trimStart('/'))
+            for (directory in listOf(session, File(session, "management"))) {
+                assertEquals("2770".toInt(8), (Files.getAttribute(directory.toPath(), "unix:mode") as Number).toInt() and 0xfff)
+            }
+            for (extension in chatArguments.zipWithNext().filter { it.first == "--extension" }.map { File(root, it.second.trimStart('/')) }) {
+                assertTrue(extension.canRead())
+                assertTrue(extension.canWrite())
+                assertEquals("660".toInt(8), (Files.getAttribute(extension.toPath(), "unix:mode") as Number).toInt() and 0x1ff)
+            }
+            val before = session.listFiles().orEmpty().map { it.name }.toSet()
+            val request = async { runCatching { pool.explorer("session").refreshHistory() } }
+            val managed = File(session, "management")
+            val receipt = withTimeout(5_000) {
+                var candidate: File?
+                do { candidate = managed.listFiles()?.firstOrNull { it.name.startsWith("request-") }; if (candidate == null) delay(10) } while (candidate == null)
+                requireNotNull(candidate)
+            }
+            assertEquals("660".toInt(8), (Files.getAttribute(receipt.toPath(), "unix:mode") as Number).toInt() and 0x1ff)
+            request.cancelAndJoin()
+            assertEquals(before, session.listFiles().orEmpty().map { it.name }.toSet())
+        }
+    }
+
     @Test fun startupAndResumeUseCurrentUsersEffectiveHomeForEveryExtensionAndSessionPath() = runBlocking {
         for ((user, homeOverride, home) in listOf(
             Triple("root", null, "/root"),
@@ -1012,6 +1044,7 @@ class OmpPromptDeliveryTest {
                 assertTrue("$guestAgent/wawlink-model-payload.mjs" in extensions)
                 assertTrue("$guestAgent/wawlink/management/session.mjs" in extensions)
                 assertEquals("$guestSessions/management", chatEnvironment["WAWLINK_MANAGEMENT_DIRECTORY"])
+                assertEquals("0", chatEnvironment["WAWLINK_MANAGEMENT_SHARED_GROUP"])
                 assertTrue(File(root, "${guestAgent.trimStart('/')}/wawlink-model-payload.mjs").isFile)
                 assertContentEquals(original, history.readBytes())
             }
@@ -1147,12 +1180,12 @@ class OmpPromptDeliveryTest {
 
     private val nativeDefault = Json.parseToJsonElement("""{"models":[{"provider":"local","id":"resolved","available":true}],"roles":[{"id":"default","model":"local/resolved","providerId":"local","modelId":"resolved","thinking":"max"}]}""")
 
-    private suspend fun fixture(autoApprove: Boolean = true, withManagement: Boolean = false, initiallyRunning: Boolean = true, user: String = "root", homeOverride: String? = null, block: suspend Fixture.() -> Unit) {
-        val fixture = Fixture(autoApprove, withManagement, initiallyRunning, user, homeOverride)
+    private suspend fun fixture(autoApprove: Boolean = true, withManagement: Boolean = false, initiallyRunning: Boolean = true, user: String = "root", homeOverride: String? = null, engine: ContainerEngineType = ContainerEngineType.PROROOT, block: suspend Fixture.() -> Unit) {
+        val fixture = Fixture(autoApprove, withManagement, initiallyRunning, user, homeOverride, engine)
         try { block(fixture) } finally { fixture.close() }
     }
 
-    private class Fixture(autoApprove: Boolean, withManagement: Boolean, initiallyRunning: Boolean, user: String, homeOverride: String?) : AutoCloseable {
+    private class Fixture(autoApprove: Boolean, withManagement: Boolean, initiallyRunning: Boolean, user: String, homeOverride: String?, engine: ContainerEngineType) : AutoCloseable {
         val directory = Files.createTempDirectory("wawlink-delivery-").toFile()
         val data = File(directory, "gui")
         val root = File(directory, "root").apply { mkdirs() }
@@ -1224,7 +1257,7 @@ class OmpPromptDeliveryTest {
             Files.copy(File("/bin/sh").canonicalFile.toPath(), shell.toPath())
             check(shell.setExecutable(true))
             runBlocking { local.register(ContainerConfig("fixture", "发送验证", root.canonicalPath, arch = "amd64", user = user, environment = homeOverride?.let { mapOf("HOME" to it) }.orEmpty(), link2symlink = false)) }
-            containerState.value = local.containers.value.map { it.copy(running = initiallyRunning) }
+            containerState.value = local.containers.value.map { it.copy(config = it.config.copy(engine = engine), running = initiallyRunning) }
             pool = OmpProcessPool(runtime, data)
             controller = pool.session("session", "fixture", "/workspace", autoApprove = autoApprove)
         }

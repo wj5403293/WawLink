@@ -18,8 +18,9 @@ internal object RuntimeIdentity {
         ?.toSortedSet()
         .orEmpty()
 
-    fun update(root: File, requiredGroupIds: Set<Int>) {
+    fun update(root: File, requiredGroupIds: Set<Int>, member: String? = null) {
         if (requiredGroupIds.isEmpty()) return
+        require(member == null || (member.isNotBlank() && member.none { it in ":,\r\n" })) { "容器组成员名称无效" }
         val rootPath = root.canonicalFile.toPath()
         val etc = File(root, "etc").canonicalFile.toPath()
         require(etc.startsWith(rootPath) && etc != rootPath && Files.isDirectory(etc)) { "用户组配置目录越界或不存在" }
@@ -29,17 +30,27 @@ internal object RuntimeIdentity {
         val entries = existing.lineSequence().map { it.split(':', limit = 4) }.toList()
         val configured = entries.mapNotNull { it.getOrNull(2)?.toIntOrNull() }.toSet()
         val missing = requiredGroupIds.filter { it >= 0 && it !in configured }.sorted()
-        if (missing.isEmpty()) return
+        val needsMember = member != null && entries.any { entry ->
+            entry.getOrNull(2)?.toIntOrNull() in requiredGroupIds && member !in entry.getOrNull(3).orEmpty().split(',')
+        }
+        if (missing.isEmpty() && !needsMember) return
         val names = entries.mapNotNull { it.firstOrNull() }.toMutableSet()
         val content = buildString {
-            append(existing)
+            if (needsMember) {
+                append(existing.lineSequence().joinToString("\n") { line ->
+                    val fields = line.split(':', limit = 4)
+                    if (fields.size == 4 && fields[2].toIntOrNull() in requiredGroupIds && member !in fields[3].split(',')) {
+                        fields.take(3).joinToString(":") + ":" + (fields[3].split(',').filter(String::isNotEmpty) + member!!).joinToString(",")
+                    } else line
+                })
+            } else append(existing)
             if (isNotEmpty() && last() != '\n') append('\n')
             missing.forEach { gid ->
                 val base = "host_gid_$gid"
                 var name = base
                 var suffix = 1
                 while (!names.add(name)) name = "${base}_${suffix++}"
-                append("$name:x:$gid:\n")
+                append("$name:x:$gid:${member.orEmpty()}\n")
             }
         }
         val temporary = Files.createTempFile(file.parent, ".group.", ".tmp")

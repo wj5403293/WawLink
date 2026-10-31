@@ -122,8 +122,9 @@ private val LEGACY_FEATURE_SKILL_HASHES = listOf(
 )
 
 internal val FEATURE_SKILL_INSTALL = featureSkillInstallScript(FEATURE_SKILL)
+internal val FEATURE_SKILL_SHARED_INSTALL = featureSkillInstallScript(FEATURE_SKILL, sharedGroup = true)
 
-internal fun featureSkillInstallScript(content: String): String {
+internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = false): String {
     val bytes = content.toByteArray(Charsets.UTF_8)
     val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     return """
@@ -152,6 +153,7 @@ internal fun featureSkillInstallScript(content: String): String {
         file="${'$'}dir/SKILL.md"
         record="${'$'}dir/.wawlink-builtin.sha256"
         target=$hash
+        repair_mode=0
         is_hash() { [ "${'$'}{#1}" = 64 ] && case "${'$'}1" in *[!0-9a-f]*) return 1;; *) return 0;; esac; }
         recorded=''
         prior=''
@@ -170,6 +172,7 @@ internal fun featureSkillInstallScript(content: String): String {
         if [ -e "${'$'}file" ]; then
             [ -f "${'$'}file" ] || exit 0
             digest=${'$'}(sha256sum -- "${'$'}file"); digest=${'$'}{digest%% *}
+            ${if (sharedGroup) "mode=\$(stat -c %a -- \"\$file\"); [ \"\$((0\$mode & 067))\" = 48 ] || repair_mode=1" else ":"}
             if [ "${'$'}digest" != "${'$'}target" ]; then
                 if [ -n "${'$'}recorded" ]; then
                     [ "${'$'}digest" = "${'$'}recorded" ] || [ "${'$'}digest" = "${'$'}prior" ] || exit 0
@@ -177,7 +180,7 @@ internal fun featureSkillInstallScript(content: String): String {
                     case "${'$'}digest" in ${LEGACY_FEATURE_SKILL_HASHES.joinToString("|")}) ;; *) exit 0;; esac
                 fi
             elif [ "${'$'}recorded" = "${'$'}target" ] && [ -z "${'$'}prior" ]; then
-                exit 0
+                [ "${'$'}repair_mode" = 1 ] || exit 0
             fi
         fi
         stage=${'$'}(mktemp -d "${'$'}dir/.wawlink-skill.XXXXXX")
@@ -192,6 +195,7 @@ internal fun featureSkillInstallScript(content: String): String {
         else
             [ ! -e "${'$'}file" ] && [ ! -L "${'$'}file" ] || exit 0
         fi
+        ${if (sharedGroup) "chmod g+rw,o-rwx -- \"\$stage/content\"" else ":"}
         [ ! -L "${'$'}record" ] || exit 0
         # Retain both sides until content replacement completes, so interruption is recoverable.
         printf '%s\n' "${'$'}target" > "${'$'}stage/record"
@@ -199,7 +203,7 @@ internal fun featureSkillInstallScript(content: String): String {
             printf '%s\n' "${'$'}digest" >> "${'$'}stage/record"
         fi
         mv -fT -- "${'$'}stage/record" "${'$'}record"
-        if [ "${'$'}digest" != "${'$'}target" ]; then
+        if [ "${'$'}digest" != "${'$'}target" ] || [ "${'$'}repair_mode" = 1 ]; then
             if [ -n "${'$'}digest" ]; then
                 [ ! -L "${'$'}file" ] && [ -f "${'$'}file" ] || exit 0
                 latest=${'$'}(sha256sum -- "${'$'}file"); [ "${'$'}{latest%% *}" = "${'$'}digest" ] || exit 0

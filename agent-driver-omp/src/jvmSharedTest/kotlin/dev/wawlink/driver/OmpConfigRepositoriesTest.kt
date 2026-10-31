@@ -8,6 +8,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import dev.wawlink.protocol.ProviderApiType
 import dev.wawlink.protocol.ProviderConfig
 import dev.wawlink.protocol.ThinkingLevel
+import dev.wawlink.runtime.ContainerConfig
+import dev.wawlink.runtime.ContainerEngineType
 import java.io.File
 import java.nio.file.Files
 import java.util.Collections
@@ -445,6 +447,30 @@ class OmpConfigRepositoriesTest {
                 repo.deleteProvider("vendor")
                 assertFalse((load(file)["providers"] as Map<*, *>).containsKey("vendor"))
             } finally { repo.close() }
+        }
+    }
+
+    @Test fun chrootOfflineSettingsProvidersAndBootstrapKeepSharedModesAcrossReplacement() = runBlocking {
+        for (engine in listOf(ContainerEngineType.CHROOT, ContainerEngineType.PROROOT, ContainerEngineType.PROOT)) {
+            withContainer("/srv/custom-home") { rootfs, dir, scope ->
+                val configuration = ContainerConfig("offline", "离线权限", rootfs.path, engine = engine)
+                val settings = OmpSettingsRepository({ rootfs }, { dir }, scope, configuration = { configuration }) { _, _ -> }
+                val providers = OmpProviderRepository({ rootfs }, { dir }, scope, configuration = { configuration }) { _, _ -> }
+                try {
+                    repeat(2) { revision ->
+                        settings.updateSetting("temperature", 0.2 + revision * 0.1)
+                        providers.saveProvider(ProviderConfig("vendor", "服务", baseUrl = "https://example.invalid/v1", apiKey = "private-key", models = listOf(ModelConfig("chat"))))
+                        prepareOmpConfiguration({ rootfs }, configuration) { dir }
+                        for (name in listOf("config.yml", "models.yml", "wawlink-provider-ui.json", "wawlink-model-budgets.json")) {
+                            val file = File(dir, name)
+                            assertTrue(file.canRead() && file.canWrite())
+                            val mode = (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1ff
+                            assertEquals(if (engine == ContainerEngineType.CHROOT) "660".toInt(8) else "600".toInt(8), mode)
+                        }
+                    }
+                    assertEquals("private-key", ((load(File(dir, "models.yml"))["providers"] as Map<*, *>)["vendor"] as Map<*, *>)["apiKey"])
+                } finally { settings.close(); providers.close() }
+            }
         }
     }
 

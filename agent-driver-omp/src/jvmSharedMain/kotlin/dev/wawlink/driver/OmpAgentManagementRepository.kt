@@ -1,6 +1,7 @@
 package dev.wawlink.driver
 
 import dev.wawlink.protocol.*
+import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.wasInterrupted
 import java.io.File
@@ -128,7 +129,7 @@ internal class OmpAgentManagementRepository(
             val source = requireNotNull(javaClass.getResourceAsStream("/omp-management/$name")) { "Missing bundled native management bridge" }.bufferedReader().use { it.readText() }
             val file = File(destination, name)
             require(file.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Management bridge path escapes container" }
-            if (!file.exists() || file.readText() != source) repoAtomicWrite(file, source)
+            if (!file.exists() || file.readText() != source) repoAtomicWrite(file, source, hostConfiguration(file))
         }
         if (runtime.wasInterrupted(context.containerId, stopGeneration) || generation != parkGeneration.get()) throw OmpProcessStoppedException()
         val child = try {
@@ -298,7 +299,7 @@ internal class OmpAgentManagementRepository(
                     val expected = args.optional("expectedVersion")
                     if (expected != null) require(version(file) == expected) { "Configuration changed on disk; reload before saving" }
                     when (frame.text("op")) {
-                        "atomicWrite" -> repoAtomicWrite(file, args.text("content"))
+                        "atomicWrite" -> repoAtomicWrite(file, args.text("content"), hostConfiguration(file))
                         "atomicDelete" -> check(!file.exists() || file.delete()) { "Cannot delete definition" }
                         else -> {
                             val body = args.optional("body")
@@ -306,7 +307,7 @@ internal class OmpAgentManagementRepository(
                             val yamlText = if (body != null && current.removePrefix("\uFEFF").startsWith("---")) current.lineSequence().drop(1).takeWhile { it.trim() != "---" }.joinToString("\n") else if (body != null) "" else current
                             val yaml = safeYaml(yamlText)
                             args["changes"].configMap().forEach { (key, value) -> yaml.set(if (body != null) listOf(key) else key.split('.'), value) }
-                            repoAtomicWrite(file, if (body == null) yaml.render() else "---\n${yaml.render()}---\n$body")
+                            repoAtomicWrite(file, if (body == null) yaml.render() else "---\n${yaml.render()}---\n$body", hostConfiguration(file))
                         }
                     }
                 }
@@ -321,6 +322,17 @@ internal class OmpAgentManagementRepository(
             }
         }
         send(child, buildJsonObject { put("id", frame.text("id")); put("hostResponse", true); if (failureMessage != null) put("error", failureMessage) else put("result", result.element()) })
+    }
+
+    private fun hostConfiguration(file: File): ContainerConfig? {
+        val configuration = runtime.containers.value.firstOrNull { it.config.id == context.containerId }?.config
+            ?: throw OmpProcessStoppedException()
+        if (file.toPath().startsWith(directory().toPath())) return configuration
+        val project = requireNotNull(context.projectPath).trimEnd('/')
+        return configuration.takeUnless { candidate -> candidate.mounts.any { mount ->
+            val target = mount.target.trimEnd('/')
+            project == target || project.startsWith("$target/") || target.startsWith("$project/")
+        } }
     }
 
     private fun writable(guest: String): File {
@@ -355,7 +367,7 @@ internal class OmpAgentManagementRepository(
         if (checkVersion) versions[file.path]?.let { require(version(file) == it) { "Configuration changed on disk; reload before saving" } }
         val yaml = safeYaml(if (file.exists()) file.readText() else "")
         changes.forEach { (key, value) -> require(key.split('.').none { it in setOf("__proto__", "prototype", "constructor") }); yaml.set(key.split('.'), value) }
-        yaml.write(file)
+        yaml.write(file, hostConfiguration(file))
         versions[file.path] = version(file)
         changed(scope, changes.keys)
     }
@@ -382,7 +394,7 @@ internal class OmpAgentManagementRepository(
         // complete normalized candidate before migration so a rejected document
         // remains byte-for-byte intact and can still be repaired in the editor.
         request("validateDocument", mapOf("id" to id, "path" to guest, "content" to normalized), stopGeneration = stopGeneration)
-        repoAtomicWrite(file, normalized)
+        repoAtomicWrite(file, normalized, hostConfiguration(file))
     }
     private suspend fun reloadLocked(online: Boolean = false, stopGeneration: Long = currentStopGeneration()) {
         if (runtime.wasInterrupted(context.containerId, stopGeneration)) throw OmpProcessStoppedException()

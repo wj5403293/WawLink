@@ -24,8 +24,8 @@ class ContainerFeatureSkillTest {
             }
             listOf(binary.path, "sh")
         }
-        fun install(content: String = FEATURE_SKILL, succeeds: Boolean = true) {
-            val process = ProcessBuilder(shell + listOf("-c", featureSkillInstallScript(content))).apply {
+        fun install(content: String = FEATURE_SKILL, succeeds: Boolean = true, sharedGroup: Boolean = false) {
+            val process = ProcessBuilder(shell + listOf("-c", featureSkillInstallScript(content, sharedGroup))).apply {
                 environment()["HOME"] = home.path
                 if (shell.size > 1) environment()["PATH"] = File(home, ".busybox-bin").path
                 redirectErrorStream(true)
@@ -60,6 +60,38 @@ class ContainerFeatureSkillTest {
             f.install()
             assertEquals(FEATURE_SKILL, f.file.readText())
             assertEquals(hash(FEATURE_SKILL) + "\n", f.record.readText())
+        }
+    }
+
+    @Test fun chrootPristineSkillIsSharedButRecordAndUserEditsStayPrivate() {
+        Fixture().use { f ->
+            f.install()
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
+            f.install(sharedGroup = true)
+            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.record.toPath()))
+            f.install("升级的内置内容\n", sharedGroup = true)
+            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
+            f.file.appendText("用户修改\n")
+            Files.setPosixFilePermissions(f.file.toPath(), PosixFilePermissions.fromString("rw-------"))
+            val edited = f.file.readText()
+            f.install(sharedGroup = true)
+            assertEquals(edited, f.file.readText())
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
+        }
+        Fixture().use { f ->
+            f.install(sharedGroup = true)
+            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.record.toPath()))
+        }
+        Fixture().use { f ->
+            f.install()
+            val privateAlias = File(f.home, "private-copy")
+            Files.createLink(privateAlias.toPath(), f.file.toPath())
+            f.install(sharedGroup = true)
+            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(privateAlias.toPath()))
+            assertEquals(FEATURE_SKILL, privateAlias.readText())
         }
     }
 

@@ -671,7 +671,8 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
 
 /** Synchronize pristine bundled content before discovery or native Agent startup. */
 suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId: String) = withFeatureOperation(runtime, containerId) {
-    featureCommand(runtime, containerId, FEATURE_SKILL_INSTALL)
+    val shared = runtime.containers.value.firstOrNull { it.config.id == containerId }?.config?.engine == ContainerEngineType.CHROOT
+    featureCommand(runtime, containerId, if (shared) FEATURE_SKILL_SHARED_INSTALL else FEATURE_SKILL_INSTALL)
     ensureCurrent(runtime)
     FeatureDebugServices.install(runtime, containerId)
 }

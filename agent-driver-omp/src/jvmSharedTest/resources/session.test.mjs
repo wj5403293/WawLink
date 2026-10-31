@@ -6,18 +6,19 @@ import { join } from 'node:path';
 import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 
 // Run with node --experimental-vm-modules --test session.test.mjs.
 // Only the native explorer dependency is replaced; the production poller,
 // filesystem transport, account operations, and instance admission all execute.
-test('session admits only its own instance, including requests arriving after startup', async () => {
+for (const shared of [false, true]) test(`session admits its own instance and preserves ${shared ? 'shared-group' : 'private'} receipts`, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'wawlink-session-instance-'));
   const instance = 'new-instance';
   const handlers = new Map();
   const effects = [];
   // The environment is local to the production module, not the test process.
   const vmContext = createContext({
-    process: { env: { WAWLINK_MANAGEMENT_DIRECTORY: directory, WAWLINK_MANAGEMENT_INSTANCE: instance }, stderr: process.stderr },
+    process: { env: { WAWLINK_MANAGEMENT_DIRECTORY: directory, WAWLINK_MANAGEMENT_INSTANCE: instance, WAWLINK_MANAGEMENT_SHARED_GROUP: shared ? '1' : '0' }, stderr: process.stderr },
     setTimeout, clearTimeout,
   });
   const explorer = new SyntheticModule(['createSessionExplorer', 'explorerError'], function () {
@@ -35,8 +36,10 @@ test('session admits only its own instance, including requests arriving after st
     context: vmContext,
   });
   await module.link(specifier => {
-    if (specifier === 'node:fs/promises') return namespaceModule(fs);
+    // Simulate umask077 at creation only; production fchmod must restore shared access.
+    if (specifier === 'node:fs/promises') return namespaceModule({ ...fs, open: (file, flags, mode) => fs.open(file, flags, mode & 0o700) });
     if (specifier === 'node:path') return namespaceModule(path);
+    if (specifier === 'node:crypto') return namespaceModule(crypto);
     if (specifier === './explorer.mjs') return explorer;
     throw Error(`Unexpected import: ${specifier}`);
   });
@@ -70,6 +73,8 @@ test('session admits only its own instance, including requests arriving after st
       await request(op, undefined);
     }
     await handlers.get('session_start')({}, context);
+    assert.equal((await fs.stat(join(directory, 'channel.json'))).mode & 0o777, shared ? 0o660 : 0o600);
+    assert.equal((await fs.stat(directory)).mode & 0o2777, shared ? 0o2770 : 0o700);
     assert.deepEqual(effects, []);
     assert.deepEqual((await readdir(directory)).filter(name => name.startsWith('request-')), []);
     for (const op of ['pin', 'explorer_label']) {
@@ -84,8 +89,11 @@ test('session admits only its own instance, including requests arriving after st
       const response = join(directory, `response-${id}.json`);
       await waitFor(async () => (await readdir(directory)).includes(`response-${id}.json`));
       assert.deepEqual(JSON.parse(await readFile(response, 'utf8')), { success: true, instance });
+      assert.equal((await fs.stat(response)).mode & 0o777, shared ? 0o660 : 0o600);
+      assert.equal((await fs.stat(response)).gid, (await fs.stat(directory)).gid);
     }
     assert.deepEqual(effects.map(effect => effect[0]), ['reload', 'pin', 'explorer']);
+    assert.deepEqual((await readdir(directory)).filter(name => name.endsWith('.tmp')), []);
   } finally {
     handlers.get('session_shutdown')();
     await rm(directory, { recursive: true, force: true });

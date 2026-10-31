@@ -9,6 +9,10 @@ import dev.wawlink.protocol.ProviderConfig
 import dev.wawlink.protocol.ProviderConfigRepository
 import dev.wawlink.protocol.SettingCategory
 import dev.wawlink.protocol.ThinkingLevel
+import dev.wawlink.runtime.ContainerConfig
+import dev.wawlink.runtime.ContainerEngineType
+import dev.wawlink.runtime.prepareContainerHostDirectory
+import dev.wawlink.runtime.prepareContainerHostFile
 import java.io.File
 import java.io.StringWriter
 import java.net.HttpURLConnection
@@ -93,8 +97,13 @@ private fun modelsConfigFile(directory: File): File {
     return if (yml.exists() || !yaml.exists()) yml else yaml
 }
 
-internal fun repoAtomicWrite(file: File, content: String) {
-    Files.createDirectories(file.parentFile.toPath())
+internal fun prepareOmpHostDirectory(directory: File, configuration: ContainerConfig?) {
+    if (configuration?.engine == ContainerEngineType.CHROOT) prepareContainerHostDirectory(configuration, directory)
+    else Files.createDirectories(directory.toPath())
+}
+
+internal fun repoAtomicWrite(file: File, content: String, configuration: ContainerConfig? = null) {
+    prepareOmpHostDirectory(file.parentFile, configuration)
     val temporary = Files.createTempFile(file.parentFile.toPath(), ".${file.name}.", ".tmp")
     try {
         try {
@@ -102,6 +111,7 @@ internal fun repoAtomicWrite(file: File, content: String) {
         } catch (_: UnsupportedOperationException) {
             // Android filesystems need not implement POSIX permission attributes.
         }
+        if (configuration != null) prepareContainerHostFile(configuration, temporary.toFile())
         java.io.FileOutputStream(temporary.toFile()).use { stream ->
             stream.write(content.toByteArray(Charsets.UTF_8))
             stream.fd.sync()
@@ -117,15 +127,15 @@ internal fun repoAtomicWrite(file: File, content: String) {
 }
 
 /** Render every candidate before committing; restore originals if a later replacement fails. */
-private fun repoAtomicWriteBatch(documents: Map<File, String>) {
+private fun repoAtomicWriteBatch(documents: Map<File, String>, configuration: ContainerConfig?) {
     val previous = documents.keys.associateWith { if (it.exists()) it.readText(Charsets.UTF_8) else null }
     val committed = ArrayList<File>(documents.size)
     try {
-        for ((file, content) in documents) { repoAtomicWrite(file, content); committed.add(file) }
+        for ((file, content) in documents) { repoAtomicWrite(file, content, configuration); committed.add(file) }
     } catch (failure: Exception) {
         for (file in committed.asReversed()) {
             try {
-                previous[file]?.let { repoAtomicWrite(file, it) } ?: check(!file.exists() || file.delete()) { "Cannot restore newly created configuration file" }
+                previous[file]?.let { repoAtomicWrite(file, it, configuration) } ?: check(!file.exists() || file.delete()) { "Cannot restore newly created configuration file" }
             } catch (restore: Exception) { failure.addSuppressed(restore) }
         }
         throw failure
@@ -133,13 +143,13 @@ private fun repoAtomicWriteBatch(documents: Map<File, String>) {
 }
 
 /** Re-emit legacy pretty-flow documents before Bun reads them; credentials and YAML nodes stay intact. */
-internal suspend fun prepareOmpConfiguration(rootfs: () -> File, directory: () -> File) = ompConfigMutex.withLock {
+internal suspend fun prepareOmpConfiguration(rootfs: () -> File, configuration: ContainerConfig? = null, directory: () -> File) = ompConfigMutex.withLock {
     val dir = ompAgentDirectory(rootfs(), directory())
-    for (file in listOf(modelsConfigFile(dir), mainConfigFile(dir))) normalizeOmpConfigurationFile(file)
+    for (file in listOf(modelsConfigFile(dir), mainConfigFile(dir))) normalizeOmpConfigurationFile(file, configuration)
 }
 
-internal fun normalizeOmpConfigurationFile(file: File) {
-    try { if (file.exists()) OmpYaml(file).write(file) }
+internal fun normalizeOmpConfigurationFile(file: File, configuration: ContainerConfig? = null) {
+    try { if (file.exists()) OmpYaml(file).write(file, configuration) }
     catch (_: Exception) { throw IllegalArgumentException("配置文件格式无效，请修复原始配置") }
 }
 
@@ -215,9 +225,9 @@ internal class OmpYaml private constructor(private val yaml: Yaml, val root: Map
         val parent = if (path.size == 1) root else node(*path.dropLast(1).toTypedArray()) as? MappingNode ?: return
         set(parent, path.last(), null)
     }
-    fun write(file: File) {
+    fun write(file: File, configuration: ContainerConfig? = null) {
         val content = StringWriter().also { yaml.serialize(root, it) }.toString()
-        if (!file.exists() || file.readText(Charsets.UTF_8) != content) repoAtomicWrite(file, content)
+        if (!file.exists() || file.readText(Charsets.UTF_8) != content) repoAtomicWrite(file, content, configuration)
     }
     fun represent(value: Any): Node = yaml.represent(value)
     fun render(): String = StringWriter().also { yaml.serialize(root, it) }.toString()
@@ -274,6 +284,7 @@ internal class OmpProviderRepository(
     private val directory: () -> File,
     scope: CoroutineScope,
     private val catalog: KnownModelCatalog = KnownModelCatalog.shared,
+    private val configuration: () -> ContainerConfig? = { null },
     private val onChanged: suspend (String?, Any?) -> Unit,
 ) : ProviderConfigRepository, AutoCloseable {
     private val job = SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])
@@ -448,7 +459,7 @@ internal class OmpProviderRepository(
             metadata[provider.id] = JsonObject(oldMetadata + mapOf("name" to JsonPrimitive(provider.name), "modelDefaults" to modelDefaults))
             val budgetsFile = configFile(dir, "wawlink-model-budgets.json")
             val budgetsContent = renderProviderBudgets(dir, provider.id, provider.models)
-            repoAtomicWriteBatch(linkedMapOf(file to yaml.render(), settingsFile to config.render(), metadataFile to (JsonObject(metadata).toString() + "\n"), budgetsFile to budgetsContent))
+            repoAtomicWriteBatch(linkedMapOf(file to yaml.render(), settingsFile to config.render(), metadataFile to (JsonObject(metadata).toString() + "\n"), budgetsFile to budgetsContent), configuration())
             refresh()
         }
         onChanged(null, null)
@@ -473,7 +484,7 @@ internal class OmpProviderRepository(
             }
             // Deliberately leave upstream-managed OAuth/account credentials intact.
             documents[configFile(dir, "wawlink-model-budgets.json")] = renderProviderBudgets(dir, providerId, emptyList())
-            repoAtomicWriteBatch(documents)
+            repoAtomicWriteBatch(documents, configuration())
             refresh()
         }
         onChanged(null, null)
@@ -598,6 +609,7 @@ internal class OmpSettingsRepository(
     private val rootfs: () -> File,
     private val directory: () -> File,
     scope: CoroutineScope,
+    private val configuration: () -> ContainerConfig? = { null },
     private val onChanged: suspend (String?, Any?) -> Unit,
 ) : AgentSettingsRepository, AutoCloseable {
     private val job = SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])
@@ -661,7 +673,7 @@ internal class OmpSettingsRepository(
             val file = mainConfigFile(ompAgentDirectory(rootfs(), directory()))
             val yaml = OmpYaml(file)
             edit(yaml)
-            yaml.write(file)
+            yaml.write(file, configuration())
             refresh()
             val values = mutableCategories.value.flatMap { it.groups }.flatMap { it.items }.associate { it.id to it.value }
             ids.map { it to values[it] }

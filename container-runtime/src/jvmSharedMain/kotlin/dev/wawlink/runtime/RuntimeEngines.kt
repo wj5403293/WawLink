@@ -214,6 +214,8 @@ internal class RuntimeEngines(
                 mount(target, "mount -o bind ${shellQuote(source.path)} ${shellQuote(target.path)}", source.takeUnless { binding.readWrite })
             }
             rootCommand(owned.joinToString(" && ") { "mountpoint -q ${shellQuote(it.path)}" } + " || { echo 'su 挂载命名空间不共享，无法安全运行 chroot' >&2; exit 1; }")
+            val user = loginIdentity(config)
+            prepareChrootOwnership(config, root, user.uid, user.gid, user.name, loginHome(config, user), ::rootCommand)
         } catch (failure: Throwable) {
             try { unmount(config.id) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
             throw failure
@@ -262,7 +264,9 @@ internal class RuntimeEngines(
                 addAll(guest)
             }
             ContainerEngineType.CHROOT -> {
-                val inner = if (user.uid == "0") guest else listOf("/bin/su", "-s", "/bin/sh", user.name, "-c", "exec " + guest.joinToString(" ", transform = ::shellQuote))
+                val sharedGroupCheck = if (user.uid == "0") "" else "case \" \$(id -G) \" in *\" ${ChrootHostIdentity.gid} \"*) ;; *) echo 'chroot 登录身份缺少宿主共享组' >&2; exit 125;; esac; "
+                val identityGuest = listOf("/bin/sh", "-c", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; umask 0007; " + sharedGroupCheck + "exec \"\$@\"", "wawlink") + guest
+                val inner = if (user.uid == "0") identityGuest else listOf("/bin/su", "-s", "/bin/sh", user.name, "-c", "exec " + identityGuest.joinToString(" ", transform = ::shellQuote))
                 val identityFile = requireNotNull(rootPidFile) { "chroot 启动缺少安全 PID 握手文件" }
                 val acknowledgement = shellQuote(identityFile.path + ".ack")
                 val handshake = """

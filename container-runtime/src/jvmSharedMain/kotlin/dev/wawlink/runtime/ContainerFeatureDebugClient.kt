@@ -2,7 +2,7 @@ package dev.wawlink.runtime
 
 import kotlinx.serialization.json.*
 
-/** Installed through the configured guest identity, never by writing into the host rootfs as root. */
+/** Installed by the configured guest identity; root may reclaim checked host-created managed paths. */
 internal suspend fun installFeatureDebugClient(runtime: ContainerRuntime, containerId: String, endpoint: JsonObject) {
     val payload = buildJsonObject {
         put("endpoint", endpoint)
@@ -22,13 +22,35 @@ try {
   const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
   const home = fs.realpathSync(process.env.HOME || '');
   if (!path.isAbsolute(home)) throw Error('Guest HOME must be absolute');
+  const uid = process.getuid(), gid = process.getgid();
+  function checkOwner(info, created = false) {
+    if (info.uid !== uid && uid !== 0 && !created) throw Error('Debugger path has a different owner');
+  }
+  function claim(fd, info, created = false) {
+    checkOwner(info, created);
+    if (info.uid !== uid || info.gid !== gid) fs.fchownSync(fd, uid, gid);
+  }
+  function checked(location, directory, action) {
+    const before = fs.lstatSync(location);
+    if (before.isSymbolicLink() || (directory ? !before.isDirectory() : !before.isFile() || before.nlink !== 1)) throw Error('Debugger managed path has an unsafe type or hard link');
+    if (fs.realpathSync(location) !== location || !location.startsWith(home.endsWith(path.sep) ? home : home + path.sep)) throw Error('Debugger path escapes HOME');
+    const fd = fs.openSync(location, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (directory ? fs.constants.O_DIRECTORY : 0));
+    try {
+      const info = fs.fstatSync(fd);
+      if (info.dev !== before.dev || info.ino !== before.ino || (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) throw Error('Debugger managed path changed');
+      return action(fd, info);
+    } finally { fs.closeSync(fd); }
+  }
   function directory(parent, name, privateMode) {
     const location = path.join(parent, name);
-    try { fs.mkdirSync(location, { mode: privateMode ? 0o700 : 0o755 }); }
+    let created = false;
+    try { fs.mkdirSync(location, { mode: privateMode ? 0o700 : 0o755 }); created = true; }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
-    const info = fs.lstatSync(location);
-    if (!info.isDirectory() || info.isSymbolicLink() || fs.realpathSync(location) !== location) throw Error('Debugger directory is not a real HOME directory');
-    if (typeof process.getuid === 'function' && info.uid !== process.getuid()) throw Error('Debugger directory has a different owner');
+    checked(location, true, (fd, info) => {
+      if (privateMode && !created) { checkOwner(info); return; }
+      // The engine may share .wawlink with the host App GID via setgid; retain that policy.
+      if (created || name !== '.wawlink' || info.uid !== uid) claim(fd, info, created);
+    });
     return location;
   }
   const root = directory(home, '.wawlink', false);
@@ -41,27 +63,37 @@ try {
     catch (error) { if (error.code === 'ENOENT') return false; throw error; }
   }
   function regular(location) {
-    const info = fs.lstatSync(location);
-    if (!info.isFile() || info.isSymbolicLink()) throw Error('Debugger managed path is not a regular file');
-    return info;
+    return checked(location, false, (_, info) => { checkOwner(info); return info; });
   }
   function readOwned(location) {
-    regular(location);
-    const fd = fs.openSync(location, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-    try { return fs.readFileSync(fd, 'utf8'); } finally { fs.closeSync(fd); }
+    return checked(location, false, (fd, info) => { checkOwner(info); return fs.readFileSync(fd, 'utf8'); });
+  }
+  function secure(location, mode, directory = false) {
+    checked(location, directory, (fd, info) => { claim(fd, info); fs.fchmodSync(fd, mode); });
+  }
+  function writeNew(location, content, mode) {
+    const fd = fs.openSync(location, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, mode);
+    try {
+      claim(fd, fs.fstatSync(fd), true);
+      fs.fchmodSync(fd, mode);
+      fs.writeFileSync(fd, content);
+    } finally { fs.closeSync(fd); }
   }
   if (!exists(marker)) {
     if (fs.readdirSync(privateDir).length !== 0) throw Error('Debugger directory contains user files; refusing to overwrite');
-    fs.writeFileSync(marker, owner, { flag: 'wx', mode: 0o600 });
+    writeNew(marker, owner, 0o600);
   }
   if (readOwned(marker) !== owner) throw Error('Debugger directory is not managed by WawLink');
-  fs.chmodSync(privateDir, 0o700);
+  secure(marker, 0o600);
+  secure(privateDir, 0o700, true);
   function publish(location, content, mode, replace = true) {
     if (!replace) {
       let fd, created;
       try {
         fd = fs.openSync(location, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, mode);
         created = fs.fstatSync(fd);
+        claim(fd, created, true);
+        fs.fchmodSync(fd, mode);
         fs.writeFileSync(fd, content);
         fs.closeSync(fd);
         fd = undefined;
@@ -79,7 +111,7 @@ try {
     }
     if (exists(location)) regular(location);
     temp = path.join(path.dirname(location), '.wawlink-feature-' + crypto.randomBytes(12).toString('hex'));
-    fs.writeFileSync(temp, content, { flag: 'wx', mode });
+    writeNew(temp, content, mode);
     fs.renameSync(temp, location);
     temp = undefined;
   }
@@ -92,7 +124,7 @@ try {
     const current = readOwned(executable);
     if (current !== payload.client && (!previous || digest(current) !== previous.sha256)) throw Error('wawlink-feature was created or modified by the user; refusing to overwrite');
     if (current !== payload.client) publish(executable, payload.client, 0o700);
-    else fs.chmodSync(executable, 0o700);
+    else secure(executable, 0o700);
   } else {
     publish(executable, payload.client, 0o700, false);
   }
@@ -112,15 +144,30 @@ const path = require('node:path');
 const MAX_RESPONSE = 32 * 1024 * 1024;
 let secret = '';
 function fail(message) { throw Error(message); }
-function readPrivate(location) {
-  const info = fs.lstatSync(location);
-  if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077) !== 0) fail('Debugger configuration is not a private regular file');
-  if (typeof process.getuid === 'function' && info.uid !== process.getuid()) fail('Debugger configuration has a different owner');
-  const fd = fs.openSync(location, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+const uid = process.getuid(), gid = process.getgid();
+function claim(fd, info, created = false, shared = false) {
+  if (info.uid === uid && (shared || info.gid === gid)) return;
+  if (uid !== 0 && info.uid !== uid && !created) fail('Debugger configuration has a different owner');
+  fs.fchownSync(fd, uid, gid);
+}
+function checked(location, directory, privateMode, action, shared = false) {
+  const before = fs.lstatSync(location);
+  if (before.isSymbolicLink() || (directory ? !before.isDirectory() : !before.isFile() || before.nlink !== 1)) fail('Debugger configuration has an unsafe type or hard link');
+  if (fs.realpathSync(location) !== location) fail('Debugger configuration escapes HOME');
+  const fd = fs.openSync(location, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (directory ? fs.constants.O_DIRECTORY : 0));
   try {
+    const info = fs.fstatSync(fd);
+    if (info.dev !== before.dev || info.ino !== before.ino || (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) fail('Debugger configuration changed');
+    if (privateMode && (info.mode & 0o077) !== 0) fail('Debugger configuration is not private');
+    claim(fd, info, false, shared);
+    return action ? action(fd, info) : undefined;
+  } finally { fs.closeSync(fd); }
+}
+function readPrivate(location) {
+  return checked(location, false, true, (fd, info) => {
     if (info.size > 16384) fail('Debugger configuration is too large');
     return fs.readFileSync(fd, 'utf8');
-  } finally { fs.closeSync(fd); }
+  });
 }
 async function main() {
   const args = process.argv.slice(2), positional = [];
@@ -152,8 +199,9 @@ async function main() {
   if (operation === 'eval' && Buffer.byteLength(expression, 'utf8') > 65536) fail('Eval expression exceeds 64 KiB');
   const home = fs.realpathSync(process.env.HOME || '');
   const privateDir = path.join(home, '.wawlink', 'feature-debug');
-  const directory = fs.lstatSync(privateDir);
-  if (!directory.isDirectory() || directory.isSymbolicLink() || fs.realpathSync(privateDir) !== privateDir || (directory.mode & 0o077) !== 0) fail('Debugger directory is not private');
+  checked(path.join(home, '.wawlink'), true, false, undefined, true);
+  checked(path.join(home, '.wawlink', 'bin'), true, false);
+  checked(privateDir, true, true);
   const config = JSON.parse(readPrivate(path.join(privateDir, 'endpoint.json')));
   if (config.version !== 1 || typeof config.token !== 'string' || !/^[a-f0-9]{64}$/.test(config.token)) fail('Invalid debugger configuration');
   secret = config.token;
@@ -191,6 +239,8 @@ async function main() {
     try {
       fd = fs.openSync(destination, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
       created = fs.fstatSync(fd);
+      claim(fd, created, true);
+      fs.fchmodSync(fd, 0o600);
       fs.writeFileSync(fd, png);
       fs.closeSync(fd);
       fd = undefined;

@@ -7,6 +7,8 @@ import dev.wawlink.runtime.ContainerFileService
 import dev.wawlink.runtime.installContainerFeatureSkill
 import dev.wawlink.runtime.wasInterrupted
 import dev.wawlink.runtime.containerHome
+import dev.wawlink.runtime.ContainerEngineType
+import dev.wawlink.runtime.prepareContainerHostFile
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -121,15 +123,15 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         require(native.isFile && native.extension == "jsonl") { "原生分支文件不存在" }
         val destination = ownedSessionDirectory(source.containerId, newId)
         require(!destination.exists()) { "分支目标目录已存在" }
-        destination.mkdirs()
+        prepareOmpHostDirectory(destination, config(source.containerId))
         try {
             val target = File(destination, native.name)
-            native.copyTo(target)
+            copyOwnedFile(native, target, config(source.containerId))
             // Native fork writes sibling artifact directories beside its transcript.
             val stem = native.nameWithoutExtension
             native.parentFile.listFiles().orEmpty().filter { it.isDirectory && it.name == stem }
-                .forEach { copyOwnedTree(it, File(destination, it.name)) }
-            rewriteSessionHeader(target, source.workspace, title)
+                .forEach { copyOwnedTree(it, File(destination, it.name), config(source.containerId)) }
+            rewriteSessionHeader(target, source.workspace, title, config(source.containerId))
             writeMetadata(newId, source.containerId, source.workspace, title, guestSessionDirectory(source.containerId, newId) + "/" + target.name)
             session(newId, source.containerId, source.workspace, title, source.state.value.autoApprove)
         } catch (failure: Throwable) {
@@ -149,9 +151,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val destination = ownedSessionDirectory(containerId, newId)
             require(!destination.exists()) { "分支目标目录已存在" }
             val sourceDirectory = ownedSessionDirectory(source.containerId, sourceId)
-            if (sourceDirectory.exists()) copyOwnedTree(sourceDirectory, destination)
+            if (sourceDirectory.exists()) copyOwnedTree(sourceDirectory, destination, config(containerId))
             val history = newestHistory(destination)
-            if (history != null) rewriteSessionHeader(history, destinationWorkspace, title, UUID.randomUUID().toString(), source.sessionFile)
+            if (history != null) rewriteSessionHeader(history, destinationWorkspace, title, config(containerId), UUID.randomUUID().toString(), source.sessionFile)
             val sourceJournal = journalFile(sourceId)
             if (sourceJournal.exists()) sourceJournal.copyTo(journalFile(newId).also { it.parentFile.mkdirs() }, overwrite = false)
             writeMetadata(newId, containerId, destinationWorkspace, title, history?.let { guestSessionDirectory(containerId, newId) + "/" + it.name })
@@ -173,9 +175,9 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         val newDirectory = ownedSessionDirectory(containerId, id)
         if (oldDirectory.canonicalFile != newDirectory.canonicalFile && oldDirectory.exists()) {
             require(!newDirectory.exists()) { "目标容器已有同名会话历史" }
-            copyOwnedTree(oldDirectory, newDirectory)
+            copyOwnedTree(oldDirectory, newDirectory, config(containerId))
         }
-        newestHistory(newDirectory)?.let { rewriteSessionHeader(it, nextWorkspace, title) }
+        newestHistory(newDirectory)?.let { rewriteSessionHeader(it, nextWorkspace, title, config(containerId)) }
         val newPath = newestHistory(newDirectory)?.let { guestSessionDirectory(containerId, id) + "/" + it.name }
         writeMetadata(id, containerId, nextWorkspace, title, newPath)
         synchronized(this@OmpProcessPool) { sessions.remove(id) }
@@ -216,7 +218,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     fun providers(containerId: String): ProviderConfigRepository {
         check(!closed)
         return providerRepositories.getOrPut(containerId) {
-            OmpProviderRepository({ File(config(containerId).rootfsPath) }, { agentDirectory(containerId) }, scope) { _, _ -> configurationChanged(containerId, null, null) }
+            OmpProviderRepository({ File(config(containerId).rootfsPath) }, { agentDirectory(containerId) }, scope, configuration = { config(containerId) }) { _, _ -> configurationChanged(containerId, null, null) }
         }
     }
 
@@ -224,7 +226,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
     fun settings(containerId: String): AgentSettingsRepository {
         check(!closed)
         return settingsRepositories.getOrPut(containerId) {
-            OmpSettingsRepository({ File(config(containerId).rootfsPath) }, { agentDirectory(containerId) }, scope) { key, value -> configurationChanged(containerId, key, value) }
+            OmpSettingsRepository({ File(config(containerId).rootfsPath) }, { agentDirectory(containerId) }, scope, configuration = { config(containerId) }) { key, value -> configurationChanged(containerId, key, value) }
         }
     }
 
@@ -329,6 +331,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
         }
         return confined(File(configuration.rootfsPath), guest.trimStart('/'))
     }
+    private fun workspaceHostConfiguration(containerId: String, guest: String): ContainerConfig? = config(containerId).takeUnless { configuration ->
+        configuration.mounts.any { mount ->
+            val target = normalizeGuest(mount.target).trimEnd('/')
+            guest == target || guest.startsWith("$target/") || target.startsWith(guest.trimEnd('/') + "/")
+        }
+    }
+
 
     override fun close() {
         val active = synchronized(this) {
@@ -1039,11 +1048,11 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             require(op == "pins" || (!state.value.isRunning && backendSettled)) { "Session is busy" }
             val requestId = UUID.randomUUID().toString()
             val directory = confined(ownedSessionDirectory(containerId, id), "management")
-            check(directory.isDirectory || directory.mkdirs())
+            prepareOmpHostDirectory(directory, config(containerId))
             val requestFile = File(directory, "request-$requestId.json")
             val responseFile = File(directory, "response-$requestId.json")
             try {
-                atomicWrite(requestFile, buildJsonObject { put("id", requestId); put("instance", attempt.managementInstance); put("op", op); provider?.let { put("provider", it) }; put("accountId", accountId?.let(::JsonPrimitive) ?: JsonNull) }.toString())
+                atomicWrite(requestFile, buildJsonObject { put("id", requestId); put("instance", attempt.managementInstance); put("op", op); provider?.let { put("provider", it) }; put("accountId", accountId?.let(::JsonPrimitive) ?: JsonNull) }.toString(), config(containerId))
                 awaitManagementResponse(attempt, directory, responseFile, 15_000)
                 val response = DriverJson.parseToJsonElement(responseFile.readText()).jsonObject
                 if (activeAttempt !== attempt || interrupted(attempt)) throw OmpProcessStoppedException()
@@ -1072,7 +1081,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             if (interrupted(attempt) || runtime.wasInterrupted(containerId, containerGeneration)) throw OmpProcessStoppedException()
             val requestId = UUID.randomUUID().toString()
             val directory = confined(ownedSessionDirectory(containerId, id), "management")
-            check(directory.isDirectory || directory.mkdirs())
+            prepareOmpHostDirectory(directory, config(containerId))
             val requestFile = File(directory, "request-$requestId.json")
             val responseFile = File(directory, "response-$requestId.json")
             try {
@@ -1082,7 +1091,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     put("instance", attempt.managementInstance)
                     put("sessionId", (explorer.history.value.sessionId.takeIf { it.isNotBlank() }
                         ?: explorer.hub.value.mainSessionId.takeIf { it.isNotBlank() })?.let(::JsonPrimitive) ?: JsonNull)
-                }.toString())
+                }.toString(), config(containerId))
                 awaitManagementResponse(attempt, directory, responseFile, if (op == "explorer_navigate") 600_000 else 180_000)
                 val response = DriverJson.parseToJsonElement(responseFile.readText()).jsonObject
                 if (activeAttempt !== attempt || interrupted(attempt)) throw OmpProcessStoppedException()
@@ -1137,9 +1146,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             activeAttempt = attempt
             if (parkRequested) { attempt.intentional = true; throw OmpProcessStoppedException() }
             val directory = ownedSessionDirectory(containerId, id)
-            directory.mkdirs()
+            prepareOmpHostDirectory(directory, config(containerId))
             val workspaceDirectory = resolveWorkspace(containerId, workspace)
-            if (!workspaceDirectory.exists()) check(resolveWorkspace(containerId, workspace, write = true).mkdirs()) { "无法创建工作区" }
+            val workspaceOwnership = workspaceHostConfiguration(containerId, workspace)
+            if (!workspaceDirectory.exists() || workspaceOwnership?.engine == ContainerEngineType.CHROOT) {
+                prepareOmpHostDirectory(resolveWorkspace(containerId, workspace, write = true), workspaceOwnership)
+            }
+            prepareOmpHostDirectory(confined(directory, "management"), config(containerId))
             installContainerFeatureSkill(runtime, containerId)
             val history = newestHistory(directory)
             sessionFile = history?.let { guestSessionDirectory(containerId, id) + "/" + it.name }
@@ -1147,13 +1160,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             sessionFile?.let { args += listOf("--resume", it) }
             // Display-only defaults are resolved again by native startup; only pin explicit selections.
             if (hasModelPreference && state.value.providerId.isNotBlank() && state.value.modelId.isNotBlank()) args += listOf("--provider", state.value.providerId, "--model", state.value.modelId)
-            prepareOmpConfiguration({ File(config(containerId).rootfsPath) }) { agentDirectory(containerId) }
+            prepareOmpConfiguration({ File(config(containerId).rootfsPath) }, config(containerId)) { agentDirectory(containerId) }
             confined(agentDirectory(containerId), "wawlink-model-payload.mjs")
-            args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId), guestAgentDirectory(containerId)))
+            args += listOf("--extension", ModelPayloadExtension.install(agentDirectory(containerId), guestAgentDirectory(containerId), config(containerId)))
             for (module in listOf("session.mjs", "diagnostics.mjs", "explorer.mjs", "explorer-runtime.mjs", "explorer-history.mjs")) {
                 val destination = confined(agentDirectory(containerId), "wawlink/management/$module")
                 val source = requireNotNull(javaClass.getResourceAsStream("/omp-management/$module")).bufferedReader().use { it.readText() }
-                if (!destination.exists() || destination.readText() != source) repoAtomicWrite(destination, source)
+                if (!destination.exists() || destination.readText() != source) repoAtomicWrite(destination, source, config(containerId))
             }
             args += listOf("--extension", "${guestAgentDirectory(containerId)}/wawlink/management/session.mjs")
             managementDefault?.let { role ->
@@ -1174,7 +1187,8 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
             val child = try {
                 runtime.openProcess(containerId, args, workspace, mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1",
                     "WAWLINK_MANAGEMENT_DIRECTORY" to "${guestSessionDirectory(containerId, id)}/management",
-                    "WAWLINK_MANAGEMENT_INSTANCE" to attempt.managementInstance))
+                    "WAWLINK_MANAGEMENT_INSTANCE" to attempt.managementInstance,
+                    "WAWLINK_MANAGEMENT_SHARED_GROUP" to if (config(containerId).engine == ContainerEngineType.CHROOT) "1" else "0"))
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 if (interrupted(attempt) || startupGeneration != stopGeneration.get()) throw OmpProcessStoppedException()
@@ -1766,7 +1780,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                     imageBytes = if (image) ByteArrayOutputStream().use { output -> files.exportFile(guestPath, output); output.toByteArray() } else null
                     source = AttachmentSource.CONTAINER
                 } else {
-                    val root = workspaceRoot ?: resolveWorkspace(containerId, workspace, write = true).also { it.mkdirs(); workspaceRoot = it }
+                    val root = workspaceRoot ?: resolveWorkspace(containerId, workspace, write = true).also { prepareOmpHostDirectory(it, workspaceHostConfiguration(containerId, workspace)); workspaceRoot = it }
                     val file: File
                     if (attachment.source == AttachmentSource.WORKSPACE) {
                         val relative = if (attachment.path.startsWith(workspace.trimEnd('/') + "/")) attachment.path.removePrefix(workspace.trimEnd('/') + "/") else attachment.path
@@ -1777,8 +1791,13 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                         require(local.isFile && local.canRead()) { "无法读取附件：${attachment.name}" }
                         val safeName = attachment.name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").ifBlank { "attachment" }
                         file = confined(root, ".wawlink/attachments/${safeId(attachment.id)}/$safeName")
-                        file.parentFile.mkdirs()
-                        if (local.canonicalFile != file.canonicalFile) local.inputStream().use { input -> file.outputStream().use { input.copyTo(it) } }
+                        val ownership = workspaceHostConfiguration(containerId, workspace)
+                        prepareOmpHostDirectory(file.parentFile, ownership)
+                        if (local.canonicalFile != file.canonicalFile) {
+                            if (!file.exists()) check(file.createNewFile()) { "无法创建附件" }
+                            if (ownership != null) prepareContainerHostFile(ownership, file)
+                            local.inputStream().use { input -> file.outputStream().use { input.copyTo(it) } }
+                        }
                     }
                     require(file.isFile && file.canRead()) { "无法读取附件：${attachment.name}" }
                     guestPath = workspace.trimEnd('/') + "/" + file.relativeTo(root.canonicalFile).invariantSeparatorsPath
@@ -1823,23 +1842,33 @@ private fun confined(root: File, relative: String): File {
     return target
 }
 private fun newestHistory(directory: File): File? = directory.listFiles()?.filter { it.isFile && it.extension == "jsonl" }?.maxByOrNull { it.lastModified() }
-internal fun atomicWrite(file: File, contents: String) {
-    file.parentFile.mkdirs()
-    val temporary = File(file.parentFile, ".${file.name}.${UUID.randomUUID()}.tmp")
+internal fun atomicWrite(file: File, contents: String, configuration: ContainerConfig? = null) {
+    prepareOmpHostDirectory(file.parentFile, configuration)
+    val temporary = Files.createTempFile(file.parentFile.toPath(), ".${file.name}.", ".tmp").toFile()
     try {
+        if (configuration != null) prepareContainerHostFile(configuration, temporary)
         temporary.outputStream().use { output -> output.write(contents.toByteArray(Charsets.UTF_8)); output.fd.sync() }
         try { Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
         catch (_: AtomicMoveNotSupportedException) { Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING) }
     } finally { temporary.delete() }
 }
-private fun copyOwnedTree(source: File, destination: File) {
+private fun copyOwnedFile(source: File, target: File, configuration: ContainerConfig) {
+    prepareOmpHostDirectory(target.parentFile, configuration)
+    check(target.createNewFile()) { "复制目标文件已存在" }
+    prepareContainerHostFile(configuration, target)
+    source.inputStream().use { input -> target.outputStream().use { input.copyTo(it) } }
+}
+
+private fun copyOwnedTree(source: File, destination: File, configuration: ContainerConfig) {
     val root = source.canonicalFile
     source.walkTopDown().forEach { file ->
         require(!Files.isSymbolicLink(file.toPath())) { "会话目录包含符号链接，拒绝跨目录复制" }
         val relative = file.relativeTo(source).path
         val canonical = confined(root, relative)
         val target = confined(destination, relative)
-        if (canonical.isDirectory) target.mkdirs() else canonical.copyTo(target.also { it.parentFile.mkdirs() }, overwrite = false)
+        if (canonical.isDirectory) prepareOmpHostDirectory(target, configuration) else {
+            copyOwnedFile(canonical, target, configuration)
+        }
     }
 }
 private fun deleteOwnedTree(directory: File) {
@@ -1898,9 +1927,11 @@ private fun nativeTitleSlot(title: String): ByteArray {
     }
 }
 
-private fun rewriteSessionHeader(file: File, workspace: String, title: String, newId: String? = null, parent: String? = null) {
-    val temporary = File(file.parentFile, ".${file.name}.relocate-${UUID.randomUUID()}")
+private fun rewriteSessionHeader(file: File, workspace: String, title: String, configuration: ContainerConfig, newId: String? = null, parent: String? = null) {
+    prepareOmpHostDirectory(file.parentFile, configuration)
+    val temporary = Files.createTempFile(file.parentFile.toPath(), ".${file.name}.relocate-", ".tmp").toFile()
     try {
+        prepareContainerHostFile(configuration, temporary)
         file.inputStream().buffered().use { input -> temporary.outputStream().buffered().use { output ->
             var header = historyRecord(input)
             if (header.string("type") == "title") {

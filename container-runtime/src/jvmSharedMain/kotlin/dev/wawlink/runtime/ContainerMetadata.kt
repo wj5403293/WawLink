@@ -52,6 +52,7 @@ internal class ContainerMetadataStore(private val engines: RuntimeEngines) {
         }
         val content = json.encodeToString(JsonObject(fields)).toByteArray(Charsets.UTF_8)
         require(content.size <= MAX_DOCUMENT_BYTES) { "容器信息文件过大" }
+        prepareContainerHostDirectory(config, file.parent.toFile())
         val destination = location(config, create = true)
         check(destination == file && document(destination).revision == expectedRevision) { CONFLICT }
         val temporary = Files.createTempFile(destination.parent, ".container.", ".tmp")
@@ -63,6 +64,7 @@ internal class ContainerMetadataStore(private val engines: RuntimeEngines) {
             } catch (_: UnsupportedOperationException) {
                 // Keep the same non-POSIX filesystem support as the other offline runtime writers.
             }
+            prepareContainerHostFile(config, temporary.toFile())
             FileOutputStream(temporary.toFile()).use { output -> output.write(content); output.fd.sync() }
             check(location(config) == destination && document(destination).revision == expectedRevision) { CONFLICT }
             // No non-atomic fallback: an unsupported filesystem must leave the old document intact.

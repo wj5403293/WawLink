@@ -73,6 +73,20 @@ class ContainerMetadataTest {
         assertEquals("旧名称", config.displayName)
     }
 
+    @Test fun chrootMetadataCanBeSavedOfflineBeforeAndAfterSharedHomePreparation() = fixture { _, _, base, store ->
+        val config = base.copy(engine = ContainerEngineType.CHROOT, user = "alice", environment = mapOf("HOME" to "/srv/alice"))
+        val first = store.save(config, ContainerMetadata("首次"), null)
+        val home = File(config.rootfsPath, "srv/alice")
+        val file = File(home, ".wawlink/container.json")
+        assertEquals(0x5F8, (Files.getAttribute(file.parentFile.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+        HostCommands.run(listOf("/bin/sh", "-c", chrootOwnershipScript(File(config.rootfsPath), home, null,
+            ChrootHostIdentity.uid.toString(), ChrootHostIdentity.gid.toString(), emptyList())), 15)
+        val second = store.save(config, ContainerMetadata("再次保存"), first.revision)
+        assertEquals(second, store.read(config))
+        assertEquals(0x1B0, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+        assertEquals(ChrootHostIdentity.gid, (Files.getAttribute(file.toPath(), "unix:gid") as Number).toInt())
+    }
+
     @Test fun staleRevisionAndInvalidSaveLeaveOriginalBytesUntouched() = fixture { _, _, config, store ->
         val first = store.save(config, ContainerMetadata("原始"), null)
         val file = document(config)
