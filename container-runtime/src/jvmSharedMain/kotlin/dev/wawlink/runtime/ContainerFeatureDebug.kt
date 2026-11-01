@@ -218,17 +218,22 @@ class ContainerFeatureDebugger internal constructor(
 
 /** The runtime service owns this binding, including when no Functions UI has been opened. */
 internal object FeatureDebugServices {
-    private val services = IdentityHashMap<ContainerRuntime, ContainerFeatureDebugger>()
-    @Synchronized fun attach(runtime: ContainerRuntime, debugger: ContainerFeatureDebugger) {
+    private class Binding(val debugger: ContainerFeatureDebugger, val reportErrors: suspend (String, List<String>, Boolean) -> Unit)
+    private val services = IdentityHashMap<ContainerRuntime, Binding>()
+    @Synchronized fun attach(runtime: ContainerRuntime, debugger: ContainerFeatureDebugger, reportErrors: suspend (String, List<String>, Boolean) -> Unit) {
         check(services[runtime] == null) { "A feature service is already attached to this runtime" }
-        services[runtime] = debugger
+        services[runtime] = Binding(debugger, reportErrors)
     }
     @Synchronized fun detach(runtime: ContainerRuntime, debugger: ContainerFeatureDebugger) {
-        if (services[runtime] === debugger) services.remove(runtime)
+        if (services[runtime]?.debugger === debugger) services.remove(runtime)
     }
     suspend fun install(runtime: ContainerRuntime, containerId: String) {
-        val debugger = synchronized(this) { services[runtime] } ?: return
+        val debugger = synchronized(this) { services[runtime]?.debugger } ?: return
         debugger.ensureInstalled(containerId)
+    }
+    suspend fun publishInstallationErrors(runtime: ContainerRuntime, containerId: String, errors: List<String>, publish: Boolean) {
+        val binding = synchronized(this) { services[runtime] } ?: return
+        binding.reportErrors(containerId, errors, publish)
     }
 }
 

@@ -129,8 +129,12 @@ internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = f
     val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     return """
         set -eu
+        umask 077
         case "${'$'}HOME" in /*) ;; *) echo '容器 HOME 无效' >&2; exit 1;; esac
         home=${'$'}(readlink -f -- "${'$'}HOME")
+        prepare_directory() {
+            ${if (sharedGroup) "chmod 2770 ." else "mode=\$(stat -c %a .); [ \"\$((0\$mode & 0700))\" = 448 ] || chmod u+rwx ."}
+        }
         # Resolve each existing ancestor before creating the next: BusyBox has no readlink -m,
         # and readlink -f cannot resolve an entire tree with missing intermediate directories.
         root="${'$'}home"
@@ -145,11 +149,17 @@ internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = f
                 actual=${'$'}(readlink -f -- "${'$'}next")
                 case "${'$'}actual/" in "${'$'}{home%/}/"*) ;; *) echo 'Skill 目录通过符号链接越出 HOME' >&2; exit 1;; esac
             fi
+            # Only the three management directories, never their third-party descendants.
+            (cd -P -- "${'$'}actual" && prepare_directory)
             root="${'$'}actual"
         done
         dir="${'$'}root/wawlink-functions"
         [ ! -L "${'$'}dir" ] || exit 0
-        mkdir -p -- "${'$'}dir"
+        if [ ! -e "${'$'}dir" ]; then mkdir -- "${'$'}dir"; fi
+        [ -d "${'$'}dir" ] || exit 0
+        cd -P -- "${'$'}dir"
+        dir=${'$'}PWD
+        prepare_directory
         file="${'$'}dir/SKILL.md"
         record="${'$'}dir/.wawlink-builtin.sha256"
         target=$hash
@@ -172,7 +182,8 @@ internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = f
         if [ -e "${'$'}file" ]; then
             [ -f "${'$'}file" ] || exit 0
             digest=${'$'}(sha256sum -- "${'$'}file"); digest=${'$'}{digest%% *}
-            ${if (sharedGroup) "mode=\$(stat -c %a -- \"\$file\"); [ \"\$((0\$mode & 067))\" = 48 ] || repair_mode=1" else ":"}
+            mode=${'$'}(stat -c %a -- "${'$'}file")
+            [ "${'$'}((0${'$'}mode & ${if (sharedGroup) "0667" else "0600"}))" = ${if (sharedGroup) "432" else "384"} ] || repair_mode=1
             if [ "${'$'}digest" != "${'$'}target" ]; then
                 if [ -n "${'$'}recorded" ]; then
                     [ "${'$'}digest" = "${'$'}recorded" ] || [ "${'$'}digest" = "${'$'}prior" ] || exit 0
@@ -185,8 +196,9 @@ internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = f
         fi
         stage=${'$'}(mktemp -d "${'$'}dir/.wawlink-skill.XXXXXX")
         trap 'rm -f -- "${'$'}stage/content" "${'$'}stage/record"; rmdir -- "${'$'}stage"' 0
-        umask 077
         printf '%s' ${shellQuote(Base64.getEncoder().encodeToString(bytes))} | base64 -d > "${'$'}stage/content"
+        # Change only the new inode: a hardlinked installed file must not change its aliases.
+        [ ! -L "${'$'}stage/content" ] && [ -f "${'$'}stage/content" ] && [ "${'$'}(stat -c %h -- "${'$'}stage/content")" = 1 ] || exit 0
         if [ -n "${'$'}digest" ]; then
             [ ! -L "${'$'}file" ] && [ -f "${'$'}file" ] || exit 0
             latest=${'$'}(sha256sum -- "${'$'}file"); [ "${'$'}{latest%% *}" = "${'$'}digest" ] || exit 0
@@ -195,7 +207,7 @@ internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = f
         else
             [ ! -e "${'$'}file" ] && [ ! -L "${'$'}file" ] || exit 0
         fi
-        ${if (sharedGroup) "chmod g+rw,o-rwx -- \"\$stage/content\"" else ":"}
+        chmod u+rw${if (sharedGroup) ",g+rw,o-rwx" else ""} -- "${'$'}stage/content"
         [ ! -L "${'$'}record" ] || exit 0
         # Retain both sides until content replacement completes, so interruption is recoverable.
         printf '%s\n' "${'$'}target" > "${'$'}stage/record"

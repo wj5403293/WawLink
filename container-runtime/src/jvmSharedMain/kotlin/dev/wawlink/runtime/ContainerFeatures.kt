@@ -61,6 +61,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     val states: StateFlow<Map<String, ContainerFeatureState>> = _states.asStateFlow()
     private val _errors = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     val errors: StateFlow<Map<String, List<String>>> = _errors.asStateFlow()
+    private val installationErrors = ConcurrentHashMap<String, List<String>>()
     val debugger = ContainerFeatureDebugger(runtime, { discover(it, runningOnly = true) }) { containerId, featureId ->
         states.value[stateKey(containerId, featureId)] ?: ContainerFeatureState()
     }
@@ -88,7 +89,9 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     }
 
     init {
-        FeatureDebugServices.attach(runtime, debugger)
+        FeatureDebugServices.attach(runtime, debugger) { containerId, errors, publish ->
+            publishErrors(containerId, errors, installation = true, publish = publish)
+        }
         scope.launch {
             runtime.containers.collect { containers ->
                 debugger.containersChanged()
@@ -97,7 +100,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
                     runs.filter { (id, run) -> running[id]?.runGeneration != run.generation || running[id]?.stopGeneration != run.stopGeneration }.keys.forEach { id ->
                         runs.remove(id)?.let { run ->
                             if (unexpectedStop(run)) _errors.update { it + (id to (it[id].orEmpty() + "容器运行进程已退出").distinct()) }
-                            else _errors.update { it - id }
+                            else { installationErrors.remove(id); _errors.update { it - id } }
                             run.job.cancel(CancellationException("容器已停止或重新启动"))
                         }
                     }
@@ -155,12 +158,15 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
         }
     }
 
-    private suspend fun publishErrors(containerId: String, errors: List<String>, run: ContainerRun? = null) {
+    private suspend fun publishErrors(containerId: String, errors: List<String>, run: ContainerRun? = null, installation: Boolean = false, publish: Boolean = true) {
         currentCoroutineContext().ensureActive()
         val operation = currentCoroutineContext()[FeatureOperation]
         synchronized(gate) {
             if (!closed && (operation == null || !runtime.wasInterrupted(containerId, operation.stopGeneration)) &&
-                (run == null || !interrupted(run))) _errors.update { it + (containerId to errors) }
+                (run == null || !interrupted(run))) {
+                if (installation) installationErrors[containerId] = errors
+                if (publish) _errors.update { it + (containerId to errors) }
+            }
         }
     }
 
@@ -175,9 +181,6 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     private fun append(instance: Instance, text: String) = synchronized(gate) {
         if (instances[instance.key] === instance && current(instance.run)) update(instance.key) { it.copy(output = (it.output + text).takeLast(32_768)) }
     }
-
-    /** Also called before agent startup, so the real native Skill is discoverable without opening Functions. */
-    suspend fun installSkill(containerId: String) = installContainerFeatureSkill(runtime, containerId)
 
     suspend fun catalog(containerId: String): ContainerFeatureCatalog = withFeatureOperation(runtime, containerId) {
         try { discover(containerId) }
@@ -194,10 +197,7 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
         if (closed) throw CancellationException("功能服务已关闭")
         if (run != null) synchronized(gate) { requireCurrent(run) }
         val errors = mutableListOf<String>()
-        if (!runningOnly) {
-            try { installSkill(containerId) } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { ensureCurrent(runtime); errors += "内置 Skill 注入失败：${failure.message}" }
-        }
+        errors += if (runningOnly) installationErrors[containerId].orEmpty() else prepareContainerFeatureSupport(runtime, containerId, reportErrors = false)
         val bytes = featureCommand(runtime, containerId, """
             set -eu
             case "${'$'}HOME" in /*) ;; *) echo '容器 HOME 无效' >&2; exit 1;; esac
@@ -669,12 +669,26 @@ class ContainerFeatureService(private val runtime: ContainerRuntime) : AutoClose
     }
 }
 
-/** Synchronize pristine bundled content before discovery or native Agent startup. */
-suspend fun installContainerFeatureSkill(runtime: ContainerRuntime, containerId: String) = withFeatureOperation(runtime, containerId) {
-    val shared = runtime.containers.value.firstOrNull { it.config.id == containerId }?.config?.engine == ContainerEngineType.CHROOT
-    featureCommand(runtime, containerId, if (shared) FEATURE_SKILL_SHARED_INSTALL else FEATURE_SKILL_INSTALL)
+/** Optional support is independent of native OMP/configuration startup and of each other. */
+suspend fun prepareContainerFeatureSupport(runtime: ContainerRuntime, containerId: String, reportErrors: Boolean = true): List<String> = withFeatureOperation(runtime, containerId) {
+    val errors = mutableListOf<String>()
+    suspend fun install(label: String, action: suspend () -> Unit) {
+        ensureCurrent(runtime)
+        try { action() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            ensureCurrent(runtime)
+            errors += "$label：${failure.message}"
+        }
+    }
+    install("内置 Skill 注入失败") {
+        val shared = runtime.containers.value.firstOrNull { it.config.id == containerId }?.config?.engine == ContainerEngineType.CHROOT
+        featureCommand(runtime, containerId, if (shared) FEATURE_SKILL_SHARED_INSTALL else FEATURE_SKILL_INSTALL)
+    }
+    install("功能调试器安装失败") { FeatureDebugServices.install(runtime, containerId) }
     ensureCurrent(runtime)
-    FeatureDebugServices.install(runtime, containerId)
+    FeatureDebugServices.publishInstallationErrors(runtime, containerId, errors, reportErrors)
+    errors
 }
 
 private object FeatureRunningOnly : AbstractCoroutineContextElement(Key) {

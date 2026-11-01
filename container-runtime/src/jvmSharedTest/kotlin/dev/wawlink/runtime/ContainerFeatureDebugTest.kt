@@ -131,7 +131,14 @@ class ContainerFeatureDebugTest {
     }
 
     /** Runs production installer/client JS under Node; only UID/GID syscalls are simulated. */
-    private class ClientFixture(uid: Int = 0, gid: Int = 0) : AutoCloseable {
+    private class ClientFixture(
+        uid: Int = 0,
+        gid: Int = 0,
+        hostUid: Int = uid,
+        hostGid: Int = gid,
+        mapped: Boolean = false,
+        chownError: String? = null,
+    ) : AutoCloseable {
         val root = Files.createTempDirectory("wawlink-debug-owner-").toFile()
         val home = File(root, "guest home '中文").apply { mkdir() }
         val directory = File(home, ".wawlink")
@@ -142,7 +149,11 @@ class ContainerFeatureDebugTest {
         val record = File(privateDir, "installation.json")
         val config = File(privateDir, "endpoint.json")
         private val identity = File(root, "identity.json").apply {
-            writeText(buildJsonObject { put("uid", uid); put("gid", gid); put("owners", buildJsonObject {}) }.toString())
+            writeText(buildJsonObject {
+                put("uid", uid); put("gid", gid); put("hostUid", hostUid); put("hostGid", hostGid)
+                if (chownError != null) put("chownError", chownError)
+                put("owners", buildJsonObject {})
+            }.toString())
         }
         private val preload = File(root, "ownership.cjs").apply { writeText(OWNERSHIP_PRELOAD) }
         private val containers = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("container", "Test", root.path), running = true, runGeneration = 4)))
@@ -159,6 +170,12 @@ class ContainerFeatureDebugTest {
                 environment().putAll(args[3] as Map<String, String>)
                 environment()["HOME"] = home.path
                 environment()["WAWLINK_TEST_IDENTITY"] = identity.path
+                environment().remove("WAWLINK_MAPPED_HOST_UID")
+                environment().remove("WAWLINK_MAPPED_HOST_GID")
+                if (mapped) {
+                    environment()["WAWLINK_MAPPED_HOST_UID"] = hostUid.toString()
+                    environment()["WAWLINK_MAPPED_HOST_GID"] = hostGid.toString()
+                }
             }.start()
         } as ContainerRuntime
         private val debugger = ContainerFeatureDebugger(runtime, {
@@ -179,14 +196,122 @@ class ContainerFeatureDebugTest {
             state["owners"] = JsonObject(owners)
             identity.writeText(JsonObject(state).toString())
         }
+        fun chownError(code: String?) {
+            val state = Json.parseToJsonElement(identity.readText()).jsonObject.toMutableMap()
+            if (code == null) state.remove("chownError") else state["chownError"] = JsonPrimitive(code)
+            identity.writeText(JsonObject(state).toString())
+        }
         fun owner(file: File): Pair<Int, Int> {
             val state = Json.parseToJsonElement(identity.readText()).jsonObject
-            val owner = state.getValue("owners").jsonObject[key(file)]?.jsonObject ?: state
-            return owner.getValue("uid").jsonPrimitive.int to owner.getValue("gid").jsonPrimitive.int
+            val owner = state.getValue("owners").jsonObject[key(file)]?.jsonObject
+            return (owner?.getValue("uid") ?: state.getValue("hostUid")).jsonPrimitive.int to
+                (owner?.getValue("gid") ?: state.getValue("hostGid")).jsonPrimitive.int
         }
         fun mode(file: File) = (Files.getAttribute(file.toPath(), "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and 4095
-        fun mode(file: File, mode: Int) { Files.setAttribute(file.toPath(), "unix:mode", mode, NOFOLLOW_LINKS) }
+        fun mode(file: File, mode: Int) {
+            require(!Files.isSymbolicLink(file.toPath()))
+            Files.setAttribute(file.toPath(), "unix:mode", mode)
+        }
         override fun close() { endpoint.close(); debugger.close(); root.deleteRecursively() }
+    }
+
+    @Test fun mappedRootAndNonrootInstallAndRunWhenOwnershipSyscallsAreUnsupported() = runBlocking {
+        for (uid in listOf(0, 1000)) for (errno in listOf("EPERM", "EINVAL", "ENOSYS")) {
+            ClientFixture(uid, uid + 1, 12001, 12002, mapped = true, chownError = errno).use { f ->
+                f.install()
+                val managed = listOf(f.directory, f.bin, f.privateDir, f.marker, f.record, f.executable, f.config)
+                managed.forEach { assertEquals(12001 to 12002, f.owner(it), "$uid/$errno: ${it.path}") }
+                f.install() // Existing paths, marker, digest and exclusive initial publication all matter.
+                assertEquals(448, f.mode(f.privateDir))
+                assertEquals(448, f.mode(f.executable))
+                listOf(f.marker, f.record, f.config).forEach { assertEquals(384, f.mode(it)) }
+                assertEquals("container", f.client("list").getValue("containerId").jsonPrimitive.content)
+                assertEquals("service output", f.client("logs", "demo").getValue("output").jsonPrimitive.content)
+            }
+        }
+    }
+
+    @Test fun ownedAndMappedSetgidPathsDoNotRequireUnnecessaryGroupChanges() = runBlocking {
+        for (mapped in listOf(false, true)) for (errno in listOf("EPERM", "EINVAL", "ENOSYS")) {
+            val owner = if (mapped) 12001 else 1000
+            ClientFixture(1000, 1001, owner, 12002, mapped = mapped, chownError = errno).use { f ->
+                f.directory.mkdir()
+                f.mode(f.directory, 1528) // 02770: retain the shared parent policy.
+                f.install()
+                assertEquals(owner to 12002, f.owner(f.directory))
+                assertEquals(1528, f.mode(f.directory))
+                f.install()
+                assertEquals("container", f.client("list").getValue("containerId").jsonPrimitive.content)
+                listOf(f.bin, f.privateDir, f.config).forEach { assertEquals(owner to 12002, f.owner(it)) }
+                assertEquals(1528, f.mode(f.directory))
+            }
+        }
+    }
+
+    @Test fun deniedTakeoverNeverAcceptsForeignOwnersEvenForMappedRoot(): Unit = runBlocking {
+        for (uid in listOf(0, 1000)) for (errno in listOf("EPERM", "EINVAL", "ENOSYS")) {
+            ClientFixture(uid, uid + 1, 12001, 12002, mapped = true, chownError = errno).use { f ->
+                f.install()
+                for (target in listOf(f.directory, f.bin, f.privateDir, f.config)) {
+                    f.own(target, 13001, 13002)
+                    assertFailsWith<IllegalStateException> { f.install() }
+                    assertFailsWith<IllegalStateException> { f.client("list") }
+                    assertEquals(13001 to 13002, f.owner(target))
+                    f.own(target, 12001, 12002)
+                }
+                f.executable.writeText("user-edited CLI")
+                assertFailsWith<IllegalStateException> { f.install() }
+                assertEquals("user-edited CLI", f.executable.readText())
+            }
+        }
+        // A real host owner is not implicitly trusted without the runtime's mapping contract.
+        ClientFixture(1000, 1001, 12001, 12002, chownError = "EPERM").use { f ->
+            assertFailsWith<IllegalStateException> { f.install() }
+        }
+    }
+
+    @Test fun mappedClientRetainsPrivateTypeLinkAndUsablePermissionValidation() = runBlocking {
+        ClientFixture(0, 0, 12001, 12002, mapped = true, chownError = "EPERM").use { f ->
+            f.install()
+            for ((target, mode) in listOf(f.config to 420, f.config to 128, f.privateDir to 384, f.bin to 384)) {
+                val previous = f.mode(target)
+                f.mode(target, mode)
+                try {
+                    assertFailsWith<IllegalStateException> { f.client("list") }
+                    if (target == f.bin) assertFailsWith<IllegalStateException> { f.install() }
+                } finally { f.mode(target, previous) }
+            }
+            val backup = File(f.root, "config-backup")
+            Files.move(f.config.toPath(), backup.toPath())
+            try {
+                Files.createSymbolicLink(f.config.toPath(), backup.toPath())
+                assertFailsWith<IllegalStateException> { f.install() }
+                assertFailsWith<IllegalStateException> { f.client("list") }
+                Files.delete(f.config.toPath())
+                Files.createLink(f.config.toPath(), backup.toPath())
+                assertFailsWith<IllegalStateException> { f.install() }
+                assertFailsWith<IllegalStateException> { f.client("list") }
+            } finally {
+                Files.deleteIfExists(f.config.toPath())
+                Files.move(backup.toPath(), f.config.toPath())
+            }
+            assertEquals("container", f.client("list").getValue("containerId").jsonPrimitive.content)
+        }
+    }
+
+    @Test fun unexpectedOwnershipErrorsRemainFailuresForInstallerAndRealClient() = runBlocking {
+        for (uid in listOf(0, 1000)) {
+            ClientFixture(uid, uid + 1, 12001, 12002, mapped = true, chownError = "EPERM").use { f ->
+                f.install()
+                f.chownError("EIO")
+                val installation = assertFailsWith<IllegalStateException> { f.install() }
+                val client = assertFailsWith<IllegalStateException> { f.client("list") }
+                assertTrue(installation.message.orEmpty().contains("EIO"))
+                assertTrue(client.message.orEmpty().contains("EIO"))
+                f.chownError("EPERM")
+                assertEquals("container", f.client("list").getValue("containerId").jsonPrimitive.content)
+            }
+        }
     }
 
     @Test fun productionInstallerAndClientReclaimForeignOwnersOnlyAsRoot() = runBlocking {
@@ -384,12 +509,12 @@ const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
 process.getuid = () => state.uid;
 process.getgid = () => state.gid;
 const key = info => String(info.dev) + ':' + String(info.ino);
-const owner = info => state.owners[key(info)] || { uid: state.uid, gid: state.gid };
+const owner = info => state.owners[key(info)] || { uid: state.hostUid, gid: state.hostGid };
 function decorate(info) { return Object.assign(info, owner(info)); }
 function save() { original.writeFileSync(statePath, JSON.stringify(state)); }
 function created(location, info) {
   const parent = original.lstatSync(path.dirname(String(location)));
-  state.owners[key(info)] = { uid: state.uid, gid: (parent.mode & 0o2000) ? owner(parent).gid : state.gid };
+  state.owners[key(info)] = { uid: state.hostUid, gid: (parent.mode & 0o2000) ? owner(parent).gid : state.hostGid };
   save();
 }
 fs.lstatSync = (location, options) => decorate(original.lstatSync(location, options));
@@ -408,6 +533,7 @@ fs.openSync = (location, flags, mode) => {
 };
 fs.fchownSync = (fd, uid, gid) => {
   const info = original.fstatSync(fd), current = owner(info);
+  if (state.chownError) throw Object.assign(Error('simulated fchown ' + state.chownError), { code: state.chownError });
   if (state.uid !== 0 && (current.uid !== state.uid || uid !== state.uid || gid !== state.gid)) {
     throw Object.assign(Error('simulated fchown permission denied'), { code: 'EPERM' });
   }

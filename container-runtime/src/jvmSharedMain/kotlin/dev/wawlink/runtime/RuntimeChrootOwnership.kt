@@ -14,15 +14,21 @@ internal object ChrootHostIdentity {
         .substringAfter(':').trim().split(Regex("\\s+"))[1].toInt()
 }
 
-/** Host-created shared directories must also work when created after chroot prepare (e.g. send). */
+/** Prepare managed host writes both before and after guest startup; never traverse bindings. */
 fun prepareContainerHostDirectory(config: ContainerConfig, directory: File) {
-    if (config.engine != ContainerEngineType.CHROOT) return
-    val (root, target) = chrootHostPath(config, directory)
+    if (config.engine != ContainerEngineType.CHROOT) {
+        prepareMappedHostDirectory(config, directory)
+        return
+    }
+    val (root, target) = containerHostPath(config, directory)
     var current = root
     for (part in root.relativize(target)) {
         current = current.resolve(part)
-        val created = !Files.exists(current, NOFOLLOW_LINKS)
-        if (created) Files.createDirectory(current)
+        var created = false
+        if (!Files.exists(current, NOFOLLOW_LINKS)) {
+            try { Files.createDirectory(current); created = true }
+            catch (_: java.nio.file.FileAlreadyExistsException) { /* Another host management writer won. */ }
+        }
         require(Files.isDirectory(current, NOFOLLOW_LINKS) && !Files.isSymbolicLink(current)) { "chroot 共享目录不能是链接或特殊文件：$current" }
         if (created || current == target) {
             val uid = (Files.getAttribute(current, "unix:uid", NOFOLLOW_LINKS) as Number).toInt()
@@ -39,8 +45,11 @@ fun prepareContainerHostDirectory(config: ContainerConfig, directory: File) {
 
 /** Call on an exclusive temporary file before writing data, not on an unchecked destination. */
 fun prepareContainerHostFile(config: ContainerConfig, file: File) {
-    if (config.engine != ContainerEngineType.CHROOT) return
-    val (_, target) = chrootHostPath(config, file)
+    if (config.engine != ContainerEngineType.CHROOT) {
+        prepareMappedHostFile(config, file)
+        return
+    }
+    val (_, target) = containerHostPath(config, file)
     require(Files.isRegularFile(target, NOFOLLOW_LINKS) && !Files.isSymbolicLink(target)) { "chroot 共享文件不是普通文件：$target" }
     require((Files.getAttribute(target, "unix:nlink", NOFOLLOW_LINKS) as Number).toLong() == 1L) { "chroot 共享文件不能是硬链接：$target" }
     val uid = (Files.getAttribute(target, "unix:uid", NOFOLLOW_LINKS) as Number).toInt()
@@ -53,39 +62,39 @@ fun prepareContainerHostFile(config: ContainerConfig, file: File) {
         (Files.getAttribute(target, "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and 0x1B0 == 0x1B0) { "chroot 共享文件权限无效：$target" }
 }
 
-private fun chrootHostPath(config: ContainerConfig, requested: File): Pair<Path, Path> {
+internal fun containerHostPath(config: ContainerConfig, requested: File): Pair<Path, Path> {
     val lexicalRoot = File(config.rootfsPath).absoluteFile.normalize().toPath()
-    require(!Files.isSymbolicLink(lexicalRoot) && Files.isDirectory(lexicalRoot, NOFOLLOW_LINKS)) { "chroot Rootfs 无效" }
+    require(!Files.isSymbolicLink(lexicalRoot) && Files.isDirectory(lexicalRoot, NOFOLLOW_LINKS)) { "容器 Rootfs 无效" }
     val root = lexicalRoot.toRealPath()
     val path = requested.absoluteFile.normalize().toPath()
     val target = if (path.startsWith(lexicalRoot)) root.resolve(lexicalRoot.relativize(path)) else path
-    require(target.startsWith(root) && target != root) { "chroot 共享路径越出 Rootfs" }
+    require(target.startsWith(root) && target != root) { "容器管理路径越出 Rootfs" }
     val excluded = listOf("/dev", "/proc", "/sys", "/host-rootfs") + config.mounts.map { it.target }
     for (name in excluded) {
         val boundary = root.resolve(name.trimStart('/')).normalize()
-        require(!target.startsWith(boundary)) { "chroot 共享路径不能位于宿主或系统挂载内：$requested" }
+        require(!target.startsWith(boundary)) { "容器管理路径不能位于宿主或系统挂载内：$requested" }
     }
     var current = root
     for (part in root.relativize(target)) {
         current = current.resolve(part)
-        require(!Files.isSymbolicLink(current)) { "chroot 共享路径不能包含符号链接：$current" }
+        require(!Files.isSymbolicLink(current)) { "容器管理路径不能包含符号链接：$current" }
     }
     return root to target
 }
 
-private val chrootReservedHomes = setOf("/", "/home", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var", "/tmp", "/opt", "/run", "/boot")
+internal val reservedContainerHomes = setOf("/", "/home", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var", "/tmp", "/opt", "/run", "/boot")
 
 internal fun prepareChrootOwnership(
     config: ContainerConfig, root: File, uid: String, gid: String, account: String, homeName: String,
     rootCommand: (String) -> String,
 ) {
-    require(File(homeName).toPath().normalize().toString() !in chrootReservedHomes) { "chroot HOME 不能使用系统目录根，拒绝接管其所有权" }
+    require(File(homeName).toPath().normalize().toString() !in reservedContainerHomes) { "chroot HOME 不能使用系统目录根，拒绝接管其所有权" }
     val home = File(root, homeName.trimStart('/'))
-    chrootHostPath(config, home)
+    containerHostPath(config, home)
     val workspace = File(root, "workspace").takeUnless { candidate ->
         config.mounts.any { candidate.toPath().startsWith(root.toPath().resolve(it.target.trimStart('/'))) }
     }
-    if (workspace != null) chrootHostPath(config, workspace)
+    if (workspace != null) containerHostPath(config, workspace)
     val escapedMount = Regex("""\\([0-7]{3})""")
     val mounts = rootCommand("cat /proc/self/mountinfo").lineSequence().filter(String::isNotBlank).map { line ->
         val fields = line.split(' ')
@@ -95,7 +104,7 @@ internal fun prepareChrootOwnership(
     require(mounts.none { home.toPath().startsWith(it.toPath()) }) { "chroot HOME 不能位于已有挂载内" }
     val writableWorkspace = workspace?.takeUnless { candidate -> mounts.any { candidate.toPath().startsWith(it.toPath()) } }
     if (uid != "0" && gid != ChrootHostIdentity.gid.toString()) {
-        chrootHostPath(config, File(root, "etc/group"))
+        containerHostPath(config, File(root, "etc/group"))
         require(mounts.none { File(root, "etc/group").toPath().startsWith(it.toPath()) }) { "chroot 用户组数据库不能位于挂载内" }
         RuntimeIdentity.update(root, setOf(ChrootHostIdentity.gid), member = account)
     }
@@ -107,7 +116,7 @@ internal fun prepareChrootOwnership(
 /** Only managed roots and files: never walk HOME or project/dependency trees on startup. */
 internal fun chrootOwnershipScript(
     root: File, home: File, workspace: File?, uid: String, gid: String,
-    exclusions: List<File>, hostUid: Int = ChrootHostIdentity.uid, hostGid: Int = ChrootHostIdentity.gid,
+    exclusions: List<File>, hostGid: Int = ChrootHostIdentity.gid,
 ): String {
     val boundaries = exclusions.distinct().joinToString("|") { shellQuote(it.path.trimEnd('/') + "/") + "*" }
     val mountPrunes = exclusions.distinct().joinToString("") { file ->
@@ -154,7 +163,6 @@ internal fun chrootOwnershipScript(
             set -- ${'$'}(stat -c '%d %i %h %u %g %a' "${'$'}entry")
             identity="${'$'}1:${'$'}2"; links=${'$'}3; owner=${'$'}4; group=${'$'}5; mode=${'$'}6
             [ "${'$'}kind" != file ] || [ "${'$'}links" = 1 ] || exit 0
-            if [ "${'$'}owner" != '$hostUid' ] && [ "${'$'}owner" != '$uid' ] && [ "${'$'}location" != "${'$'}home" ] && [ "${'$'}location" != "${'$'}workspace" ]; then exit 0; fi
             target_group='$gid'
             [ "${'$'}policy" != shared ] || target_group='$hostGid'
             if [ "${'$'}kind" = file ]; then verify_file; fi
@@ -206,7 +214,7 @@ internal fun chrootOwnershipScript(
             # Native find tests metadata once, batching only entries requiring actual changes.
             find "${'$'}scan_root" -xdev "${'$'}@" \
                 \( -name node_modules -o -name .git -o -name .bun -o -name .cache -o -name .venv$mountPrunes \) -prune -o \
-                \( ${'$'}file_filter \( -user '$hostUid' -o -user '$uid' \) \
+                \( ${'$'}file_filter \
                     \( -type d \( ! -user '$uid' -o ! -group '$hostGid' -o ! -perm -2770 -o -perm -0001 -o -perm -0002 -o -perm -0004 \) \
                     -o -type f -links 1 \( ! -user '$uid' -o ! -group '$hostGid' -o ! -perm -0660 -o -perm -0001 -o -perm -0002 -o -perm -0004 \) \) \) \
                 -exec "${'$'}worker_shell" -c "${'$'}worker" wawlink-chroot-permissions {} +
@@ -235,7 +243,8 @@ internal fun chrootOwnershipScript(
         for dir in wawlink sessions rules prompts agents advisors; do scan_shared "${'$'}home/.omp/agent/${'$'}dir" tree; done
         repair "${'$'}home/.omp/agent/skills" shared
         repair "${'$'}home/.omp/agent/skills/wawlink-functions" shared
-        scan_shared "${'$'}home/.omp/agent/skills/wawlink-functions" files
+        repair "${'$'}home/.omp/agent/skills/wawlink-functions/SKILL.md" shared
+        repair "${'$'}home/.omp/agent/skills/wawlink-functions/.wawlink-builtin.sha256" private
         if [ -n "${'$'}workspace" ]; then
             ensure_root "${'$'}workspace"
             repair "${'$'}workspace" shared

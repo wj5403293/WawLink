@@ -942,6 +942,88 @@ class OmpPromptDeliveryTest {
         }
     }
 
+    @Test fun optionalSkillAndDebuggerFailuresRemainDiscoverableWithoutBlockingChatOrConfiguration() = runBlocking {
+        for ((skillFailure, debugFailure) in listOf(true to false, false to true, true to true)) {
+            fixture(withManagement = true) {
+                managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+                awaitState { !it.modelLoading }
+                if (skillFailure) skillInstallFailure = "Skill directory: EACCES"
+                if (debugFailure) debugInstallFailure = "fchown: EPERM"
+                val features = featureService()
+                withTimeout(5_000) { featureDiscoveryStarted.await() }
+                // Exercise discovery too: the debugger must not be reported as a Skill failure.
+                val catalog = features.catalog("fixture")
+                assertEquals(if (skillFailure && debugFailure) 2 else 1, catalog.errors.size)
+                assertEquals(skillFailure, catalog.errors.any { it.startsWith("内置 Skill 注入失败") })
+                assertEquals(debugFailure, catalog.errors.any { it.startsWith("功能调试器安装失败") })
+                if (!skillFailure) assertTrue(File(directory, "home/.omp/agent/skills/wawlink-functions/SKILL.md").isFile)
+
+                gate.complete(transport)
+                controller.sendPrompt("辅助安装失败后仍可聊天")
+                val request = transport.request()
+                transport.acceptUser(request)
+                transport.respond(request)
+                transport.finish(request)
+                val completed = awaitState { it.status == SessionStatus.DONE }
+                assertEquals(listOf("辅助安装失败后仍可聊天"), completed.feed.filterIsInstance<UserMessageItem>().map { it.text })
+                assertNull(completed.error)
+                assertTrue(pool.runtimeIssues.value.isEmpty(), "Optional support must not request OMP repair")
+                val warnings = features.errors.value.getValue("fixture")
+                assertEquals(skillFailure, warnings.any { it.startsWith("内置 Skill 注入失败") })
+                assertEquals(debugFailure, warnings.any { it.startsWith("功能调试器安装失败") })
+                assertTrue(debugInstallStarts.get() > 0, "Debugger setup must still be attempted after a Skill failure")
+
+                val management = pool.management("fixture", "/workspace")
+                val reload = async { management.reload() }
+                managementTransport.respondManagement(managementTransport.managementRequest("snapshot"), JsonObject(emptyMap()))
+                managementTransport.respondManagement(managementTransport.managementRequest("modelsSnapshot"), nativeDefault)
+                reload.await()
+                assertFalse(management.state.value.loading)
+                assertNull(management.state.value.error)
+                assertNull(management.state.value.modelsError)
+                assertEquals("resolved", management.state.value.models.single().id)
+                assertTrue(pool.runtimeIssues.value.isEmpty())
+            }
+        }
+    }
+
+    @Test fun optionalSetupFailureDoesNotHideNativePermissionRejection() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            skillInstallFailure = "Skill directory: EACCES"
+            val features = featureService()
+            withTimeout(5_000) { featureDiscoveryStarted.await() }
+            controller.sendPrompt("原生权限错误不能被忽略")
+            withTimeout(5_000) { opened.await() }
+            gate.completeExceptionally(IOException("native OMP config: EACCES"))
+            val failed = awaitState { it.status == SessionStatus.ERROR }
+            assertContains(failed.error.orEmpty(), "native OMP config: EACCES")
+            assertTrue(failed.feed.filterIsInstance<UserMessageItem>().isEmpty())
+            assertTrue(features.errors.value.getValue("fixture").any { it.startsWith("内置 Skill 注入失败") })
+            withTimeout(5_000) { inspectionFinished.await() }
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
+    @Test fun containerStopWinsOverAnOptionalInstallFailureBeforePromptAdmission() = runBlocking {
+        fixture(withManagement = true) {
+            managementTransport.respondManagement(managementCatalogue(), nativeDefault)
+            awaitState { !it.modelLoading }
+            val bootstrap = CompletableDeferred<Process>()
+            skillInstallGate = bootstrap
+            controller.sendPrompt("辅助安装失败前停止")
+            withTimeout(5_000) { skillInstallStarted.await() }
+            stopContainer()
+            restartContainer()
+            bootstrap.completeExceptionally(IOException("late Skill permission failure"))
+            val stopped = awaitState { it.status == SessionStatus.STOPPED && it.feed.filterIsInstance<UserMessageItem>().isEmpty() }
+            assertNull(stopped.error)
+            assertFalse(opened.isCompleted, "A stopped prompt must never start the chat RPC")
+            assertTrue(pool.runtimeIssues.value.isEmpty())
+        }
+    }
+
     @Test fun containerStopDuringFeatureSkillInstallDoesNotCancelThePromptActor() = runBlocking {
         fixture(withManagement = true) {
             managementTransport.respondManagement(managementCatalogue(), nativeDefault)
@@ -1061,7 +1143,16 @@ class OmpPromptDeliveryTest {
             assertEquals(raw, optimistic.text)
             assertEquals(listOf(attachment), optimistic.attachments)
             gate.complete(transport)
-            val request = transport.request()
+            val request = coroutineScope {
+                val failure = async { controller.state.first { it.status == SessionStatus.ERROR } }
+                val pending = async { transport.request() }
+                try {
+                    kotlinx.coroutines.selects.select {
+                        failure.onAwait { error("附件发送未进入 RPC：${it.error}") }
+                        pending.onAwait { it }
+                    }
+                } finally { failure.cancel(); pending.cancel() }
+            }
             val pending = awaitState { it.feed.filterIsInstance<UserMessageItem>().singleOrNull()?.attachments?.singleOrNull()?.source == AttachmentSource.WORKSPACE }
                 .feed.filterIsInstance<UserMessageItem>().single()
             assertEquals(raw, pending.text)
@@ -1202,6 +1293,11 @@ class OmpPromptDeliveryTest {
         val inspectionStarts = AtomicInteger()
         @Volatile var skillInstallGate: CompletableDeferred<Process>? = null
         val skillInstallStarted = CompletableDeferred<Unit>()
+        @Volatile var skillInstallFailure: String? = null
+        @Volatile var debugInstallFailure: String? = null
+        val debugInstallStarts = AtomicInteger()
+        val featureDiscoveryStarted = CompletableDeferred<Unit>()
+        private var features: ContainerFeatureService? = null
         @Volatile var chatManagementInstance = ""
         private val containerState = MutableStateFlow<List<ContainerInfo>>(emptyList())
         private val chatStarts = AtomicInteger()
@@ -1224,12 +1320,21 @@ class OmpPromptDeliveryTest {
                 }
                 // Bootstrap is a real short-lived shell process, not the chat transport.
                 if (arguments.firstOrNull() == "/bin/sh" && arguments.getOrNull(1) == "-c") {
+                    val debugger = arguments.last().startsWith("exec /usr/local/bin/bun -e ")
+                    if (debugger) {
+                        debugInstallStarts.incrementAndGet()
+                        debugInstallFailure?.let { return FinishedProcess("", status = 1, error = it) }
+                    } else if (arguments.last().contains("wawlink-functions")) {
+                        skillInstallFailure?.let { return FinishedProcess("", status = 1, error = it) }
+                    }
+                    if (!debugger && arguments.last().contains(".wawlink/features")) featureDiscoveryStarted.complete(Unit)
                     skillInstallGate?.let { blocked ->
                         skillInstallStarted.complete(Unit)
                         return blocked.await()
                     }
                     val home = File(directory, "home").apply { mkdirs() }
-                    return ProcessBuilder(arguments).directory(directory).apply {
+                    val command = if (debugger) arguments.dropLast(1) + arguments.last().replaceFirst("/usr/local/bin/bun", "node") else arguments
+                    return ProcessBuilder(command).directory(directory).apply {
                         environment().clear()
                         environment().putAll(environment)
                         environment()["PATH"] = System.getenv("PATH")
@@ -1261,6 +1366,7 @@ class OmpPromptDeliveryTest {
             pool = OmpProcessPool(runtime, data)
             controller = pool.session("session", "fixture", "/workspace", autoApprove = autoApprove)
         }
+        fun featureService(): ContainerFeatureService = features ?: ContainerFeatureService(runtime).also { features = it }
         fun stopContainer() {
             containerState.value = containerState.value.map { it.copy(running = false, stopGeneration = it.stopGeneration + 1) }
         }
@@ -1292,6 +1398,7 @@ class OmpPromptDeliveryTest {
             replacements.forEach(RpcTransport::destroy)
             chatReplacements.close()
             managementReplacements.close()
+            features?.close()
             local.close()
             directory.deleteRecursively()
         }
@@ -1402,15 +1509,16 @@ class OmpPromptDeliveryTest {
             errorOutput.close()
         }
     }
-    private class FinishedProcess(output: String) : Process() {
+    private class FinishedProcess(output: String, private val status: Int = 0, error: String = "") : Process() {
         val destroyed = CompletableDeferred<Unit>()
         private val input = ByteArrayInputStream(output.toByteArray())
+        private val stderr = ByteArrayInputStream(error.toByteArray())
         override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
         override fun getInputStream(): InputStream = input
-        override fun getErrorStream(): InputStream = ByteArrayInputStream(byteArrayOf())
-        override fun waitFor(): Int = 0
+        override fun getErrorStream(): InputStream = stderr
+        override fun waitFor(): Int = status
         override fun waitFor(timeout: Long, unit: TimeUnit): Boolean = true
-        override fun exitValue(): Int = 0
+        override fun exitValue(): Int = status
         override fun isAlive(): Boolean = false
         override fun destroy() { destroyed.complete(Unit) }
     }

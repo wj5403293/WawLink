@@ -454,6 +454,8 @@ class OmpConfigRepositoriesTest {
         for (engine in listOf(ContainerEngineType.CHROOT, ContainerEngineType.PROROOT, ContainerEngineType.PROOT)) {
             withContainer("/srv/custom-home") { rootfs, dir, scope ->
                 val configuration = ContainerConfig("offline", "离线权限", rootfs.path, engine = engine)
+                Files.setAttribute(dir.parentFile.toPath(), "unix:mode", 0x140)
+                Files.setAttribute(dir.toPath(), "unix:mode", 0x140)
                 val settings = OmpSettingsRepository({ rootfs }, { dir }, scope, configuration = { configuration }) { _, _ -> }
                 val providers = OmpProviderRepository({ rootfs }, { dir }, scope, configuration = { configuration }) { _, _ -> }
                 try {

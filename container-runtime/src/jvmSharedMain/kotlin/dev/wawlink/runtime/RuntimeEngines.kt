@@ -222,8 +222,11 @@ internal class RuntimeEngines(
 
     fun prepare(config: ContainerConfig) {
         validate(config)
-        if (config.engine != ContainerEngineType.CHROOT) return
         val root = validateRoot(config)
+        if (config.engine != ContainerEngineType.CHROOT) {
+            prepareMappedOwnership(config, root, home(config))
+            return
+        }
         val owned = ownedMounts.getOrPut(config.id) { mutableListOf() }
         fun mount(target: File, command: String, readOnlySource: File? = null) {
             val quoted = shellQuote(target.path)
@@ -289,6 +292,13 @@ internal class RuntimeEngines(
         val env = linkedMapOf("HOME" to loginHome(config, user), "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         env.putAll(config.environment)
         environment.forEach { (key, value) -> require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && '\u0000' !in value) { "进程环境变量无效：$key" }; env[key] = value }
+        if (config.engine == ContainerEngineType.PROOT || config.engine == ContainerEngineType.PROROOT) {
+            env["WAWLINK_MAPPED_HOST_UID"] = ChrootHostIdentity.uid.toString()
+            env["WAWLINK_MAPPED_HOST_GID"] = ChrootHostIdentity.gid.toString()
+        } else {
+            env.remove("WAWLINK_MAPPED_HOST_UID")
+            env.remove("WAWLINK_MAPPED_HOST_GID")
+        }
         env["PATH"] = env.getValue("HOME").trimEnd('/') + "/.wawlink/bin:" + env.getValue("PATH")
         // Proroot installs its path hooks in the guest environment; env -i would erase them
         // before the shell exec. PRoot/chroot do not depend on inherited guest LD_* state.

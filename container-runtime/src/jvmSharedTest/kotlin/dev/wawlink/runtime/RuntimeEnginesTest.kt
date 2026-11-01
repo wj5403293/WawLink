@@ -244,4 +244,130 @@ class RuntimeEnginesTest {
             }
         } finally { RootfsArchives.deleteTree(home) }
     }
+    @Test fun mappedStartupRepairsManagedOwnerAccessWithoutOpeningPrivateDataOrWalkingDependencies() = fixture { directory, data, root, _ ->
+        val home = File(root, "srv/selected-home").apply { mkdirs() }
+        val bin = File(home, ".wawlink/bin").apply { mkdirs() }
+        val preferences = File(home, ".wawlink/feature-cards.json").apply { writeText("{\"hidden\":[\"demo\"]}") }
+        val agent = File(home, ".omp/agent").apply { mkdirs() }
+        val settings = File(agent, "config.yml").apply { writeText("model: preserved") }
+        val session = File(agent, "wawlink/sessions/native/events.jsonl").apply { parentFile.mkdirs(); writeText("history") }
+        val builtin = File(agent, "skills/wawlink-functions/SKILL.md").apply { parentFile.mkdirs(); writeText("managed Skill") }
+        val dependencies = listOf("plugins/custom/node_modules/keep", "skills/custom/keep", "wawlink/node_modules/keep")
+            .map { File(agent, it).apply { parentFile.mkdirs(); writeText("third-party") } }
+        val workspace = File(root, "workspace").apply { mkdirs() }
+        val project = File(workspace, "private").apply { writeText("project") }
+        val outside = File(directory, "outside").apply { writeText("outside") }
+        Files.createLink(File(agent, "hardlink").toPath(), outside.toPath())
+        Files.createSymbolicLink(File(agent, "link").toPath(), outside.toPath())
+        val mounted = File(agent, "wawlink/mounted").apply { mkdirs() }
+        val bound = File(mounted, "keep").apply { writeText("bound") }
+        for (file in dependencies + project + outside + bound + preferences + settings + session + builtin) {
+            Files.setAttribute(file.toPath(), "unix:mode", 0x100) // 0400
+        }
+        Files.setAttribute(home.toPath(), "unix:mode", 0x1C0) // 0700 is already sufficient for the actual App owner
+        Files.setAttribute(bin.toPath(), "unix:mode", 0xC0) // 0300: writable but debugger O_RDONLY open fails
+        for (folder in listOf(agent, workspace)) Files.setAttribute(folder.toPath(), "unix:mode", 0x140) // 0500
+        val config = ContainerConfig("mapped-modes", "权限", root.path, arch = System.getProperty("os.arch"),
+            engine = ContainerEngineType.PROOT, user = "alice", shell = "/bin/sh", link2symlink = false,
+            environment = mapOf("HOME" to "/srv/selected-home"),
+            mounts = listOf(ContainerMount(directory.path, "/srv/selected-home/.omp/agent/wawlink/mounted")))
+        try { RuntimeEngines(RuntimePaths(data, hostProot = "/bin/true")).prepare(config) }
+        catch (failure: Throwable) {
+            for (folder in listOf(bin, agent, workspace)) Files.setAttribute(folder.toPath(), "unix:mode", 0x1C0)
+            throw failure
+        }
+        assertEquals(0x1C0, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+        for (folder in listOf(bin, agent, workspace)) {
+            assertEquals(0x1C0, (Files.getAttribute(folder.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            val probe = File(folder, "write-probe").apply { writeText("writable") }
+            assertEquals("writable", probe.readText())
+        }
+        for (file in listOf(preferences, settings, session, builtin)) {
+            assertEquals(0x180, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            file.appendText("\nupdated")
+        }
+        assertEquals("model: preserved\nupdated", settings.readText())
+        assertEquals("history\nupdated", session.readText())
+        for (file in dependencies + project + outside + bound) {
+            assertEquals(0x100, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF, file.path)
+        }
+        assertEquals("outside", outside.readText())
+    }
+
+    @Test fun mappedHostWritesPrepareStrictParentsBeforeStartingAnyGuest() = fixture { _, _, root, _ ->
+        for (engine in listOf(ContainerEngineType.PROOT, ContainerEngineType.PROROOT)) {
+            val home = File(root, "selected-${engine.name}").apply { mkdirs() }
+            val omp = File(home, ".omp").apply { mkdirs() }
+            Files.setAttribute(omp.toPath(), "unix:mode", 0x140)
+            val config = ContainerConfig("host-write", "权限", root.path, engine = engine)
+            val directory = File(omp, "agent/wawlink/sessions/active")
+            prepareContainerHostDirectory(config, directory)
+            val request = File(directory, "request.json").apply { writeText("original") }
+            Files.setAttribute(request.toPath(), "unix:mode", 0x100)
+            prepareContainerHostFile(config, request)
+            request.writeText("request")
+            assertEquals("request", request.readText())
+            assertEquals(0x180, (Files.getAttribute(request.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals(0x1C0, (Files.getAttribute(omp.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+        }
+    }
+
+    @Test fun concurrentConfigurationAndSessionWritersCanShareNewManagedParents() = fixture { _, _, root, _ ->
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(12)
+        try {
+            for (engine in ContainerEngineType.entries) {
+                val ready = java.util.concurrent.CountDownLatch(12)
+                val start = java.util.concurrent.CountDownLatch(1)
+                val config = ContainerConfig("concurrent", "并发写入", root.path, engine = engine)
+                val directory = File(root, "selected-${engine.name}/.omp/agent/wawlink/sessions/active")
+                val writers = (1..12).map { index -> pool.submit {
+                    ready.countDown()
+                    check(start.await(5, TimeUnit.SECONDS))
+                    prepareContainerHostDirectory(config, directory)
+                    val request = File(directory, "request-$index.json")
+                    check(request.createNewFile())
+                    prepareContainerHostFile(config, request)
+                    request.writeText("request-$index")
+                } }
+                assertTrue(ready.await(5, TimeUnit.SECONDS))
+                start.countDown()
+                writers.forEach { it.get(10, TimeUnit.SECONDS) }
+                for (index in 1..12) assertEquals("request-$index", File(directory, "request-$index.json").readText())
+                if (engine == ContainerEngineType.CHROOT) {
+                    assertEquals(0x5F8, (Files.getAttribute(directory.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+                    assertEquals(0x1B0, (Files.getAttribute(File(directory, "request-1.json").toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+                }
+            }
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test fun unsafeOptionalSupportIsLeftForItsInstallerWithoutBlockingNativeEngineAdmission() = fixture { directory, data, root, _ ->
+        val home = File(root, "root").apply { mkdirs() }
+        val outside = File(directory, "unmanaged").apply { mkdirs() }
+        val user = File(outside, "keep").apply { writeText("user data"); Files.setAttribute(toPath(), "unix:mode", 0x100) }
+        File(home, ".wawlink").mkdirs()
+        for (name in listOf("bin", "feature-debug", "features")) {
+            Files.createSymbolicLink(File(home, ".wawlink/$name").toPath(), outside.toPath())
+        }
+        File(home, ".omp/agent").mkdirs()
+        Files.createSymbolicLink(File(home, ".omp/agent/skills").toPath(), outside.toPath())
+        val config = ContainerConfig("optional", "辅助路径隔离", root.path, engine = ContainerEngineType.PROOT,
+            arch = System.getProperty("os.arch"), shell = "/bin/sh", link2symlink = false)
+        RuntimeEngines(RuntimePaths(data, hostProot = "/bin/true")).prepare(config)
+        File(home, ".omp/agent/config.yml").writeText("native: writable")
+        assertEquals("native: writable", File(home, ".omp/agent/config.yml").readText())
+        assertEquals("user data", user.readText())
+        assertEquals(0x100, (Files.getAttribute(user.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+    }
+
+    @Test fun mappedManagementLinksCannotChangeOutsidePermissions() = fixture { directory, _, root, _ ->
+        val home = File(root, "root").apply { mkdirs() }
+        val outside = File(directory, "outside").apply { mkdirs() }
+        val file = File(outside, "config.yml").apply { writeText("private"); Files.setAttribute(toPath(), "unix:mode", 0x100) }
+        Files.createSymbolicLink(File(home, ".omp").toPath(), outside.toPath())
+        val config = ContainerConfig("linked", "链接", root.path, engine = ContainerEngineType.PROOT)
+        assertFailsWith<IllegalArgumentException> { prepareMappedOwnership(config, root, "/root") }
+        assertEquals(0x100, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+        assertEquals("private", file.readText())
+    }
 }

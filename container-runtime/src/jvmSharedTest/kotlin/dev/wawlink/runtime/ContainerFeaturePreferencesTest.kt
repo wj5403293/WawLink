@@ -4,18 +4,19 @@ import java.io.File
 import java.lang.reflect.Proxy
 import java.nio.charset.CharacterCodingException
 import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 
 /** Real shell processes with isolated guest homes; no configured rootfs is inspected. */
 class ContainerFeaturePreferencesTest {
-    private class Fixture : AutoCloseable {
+    private class Fixture(engine: ContainerEngineType = ContainerEngineType.PROOT) : AutoCloseable {
         val root = Files.createTempDirectory("wawlink-card-preferences-").toFile()
         val home = File(root, "guest home '中文").apply { mkdir() }
         val directory = File(home, ".wawlink")
         val file = File(directory, "feature-cards.json")
-        val containers = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("guest", "Guest", root.path))))
+        val containers = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("guest", "Guest", root.path, engine = engine))))
         val runtime = Proxy.newProxyInstance(ContainerRuntime::class.java.classLoader, arrayOf(ContainerRuntime::class.java)) { _, method, args ->
             if (method.name == "getContainers") return@newProxyInstance containers
             check(method.name == "openProcess") { "Unexpected runtime API: ${method.name}" }
@@ -50,6 +51,51 @@ class ContainerFeaturePreferencesTest {
         }
     }
 
+    @Test fun chrootCreatesAndReplacesSharedPreferencesWithInheritedGroup() = runBlocking {
+        for (existing in listOf(false, true)) Fixture(ContainerEngineType.CHROOT).use { f ->
+            // Startup prepares HOME's shared group; new management directories must inherit it.
+            Files.setAttribute(f.home.toPath(), "unix:mode", 0x5f8) // 02770
+            val group = Files.getAttribute(f.home.toPath(), "unix:gid")
+            if (existing) {
+                f.directory.mkdir()
+                Files.setAttribute(f.directory.toPath(), "unix:mode", 0x1c0) // imported 0700
+                f.file.writeText("old")
+                Files.setPosixFilePermissions(f.file.toPath(), PosixFilePermissions.fromString("rw-------"))
+            }
+            val untouched = File(f.home, "project").apply { mkdir() }
+            Files.setPosixFilePermissions(untouched.toPath(), PosixFilePermissions.fromString("rwx------"))
+            f.service.write("guest", "shared", if (existing) "old" else null)
+            assertEquals("shared", f.service.read("guest"))
+            assertEquals(0x5f8, (Files.getAttribute(f.directory.toPath(), "unix:mode") as Int) and 0xfff)
+            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
+            assertEquals(group, Files.getAttribute(f.directory.toPath(), "unix:gid"))
+            assertEquals(group, Files.getAttribute(f.file.toPath(), "unix:gid"))
+            f.service.write("guest", "replacement", "shared")
+            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
+            assertEquals(group, Files.getAttribute(f.file.toPath(), "unix:gid"))
+            assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(untouched.toPath()))
+            f.assertNoStaging()
+        }
+    }
+
+    @Test fun mappedEnginesKeepOwnerAccessAndPrivateReplacementWithoutChangingHardlinkAliases() = runBlocking {
+        for (engine in listOf(ContainerEngineType.PROOT, ContainerEngineType.PROROOT, ContainerEngineType.CHROOT)) Fixture(engine).use { f ->
+            f.directory.mkdir()
+            f.file.writeText("old")
+            Files.setPosixFilePermissions(f.file.toPath(), PosixFilePermissions.fromString("rw-------"))
+            val alias = File(f.home, "private-alias")
+            Files.createLink(alias.toPath(), f.file.toPath())
+            Files.setPosixFilePermissions(f.directory.toPath(), PosixFilePermissions.fromString("r-x------"))
+            f.service.write("guest", "new", "old")
+            assertEquals("new", f.service.read("guest"))
+            assertEquals("old", alias.readText())
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(alias.toPath()))
+            assertEquals(PosixFilePermissions.fromString(if (engine == ContainerEngineType.CHROOT) "rw-rw----" else "rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
+            assertTrue(Files.getPosixFilePermissions(f.directory.toPath()).containsAll(PosixFilePermissions.fromString("rwx------")))
+            f.assertNoStaging()
+        }
+    }
+
     @Test fun absentAndStaleConflictsRetainExternalDocument() = runBlocking {
         Fixture().use { f ->
             f.service.write("guest", "original", null)
@@ -66,7 +112,7 @@ class ContainerFeaturePreferencesTest {
     }
 
     @Test fun rejectsDirectoryAndFileSymlinksAndSpecialFiles() = runBlocking {
-        Fixture().use { f ->
+        for (engine in ContainerEngineType.entries) Fixture(engine).use { f ->
             val outside = File(f.root, "outside").apply { mkdir() }
             val kept = File(outside, "feature-cards.json").apply { writeText("kept") }
             Files.createSymbolicLink(f.directory.toPath(), outside.toPath())

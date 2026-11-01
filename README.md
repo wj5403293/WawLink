@@ -198,6 +198,8 @@ git push origin v1.0.0
 - 容器详情 → 挂载目录支持主机目录选择，主机路径右侧的文件夹按钮在 Android 打开系统目录选择器，Desktop 打开原生目录选择器；也可手填 `/sdcard/项目` 等实际主机路径并指定容器内挂载点。Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，Android 10 使用传统共享储存访问；启动不自动申请。仅解析本机共享储存卷的目录，保存实际路径而非 `content://`，不复制或同步目录内容；取消选择、拒绝授权或保存失败保留草稿。云盘等文档提供方不能直接挂载；系统选择器不允许选择共享储存根目录或 Download 时，可在授权后手填路径。权限不绕过 Android 对其他应用私有目录的限制；只读保护仍仅由 chroot 提供。更新 APK 即可使用，无需重新导入 Rootfs。
 - 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，bind 和只读重挂载都显式传入源与目标，并校验内核报告的只读状态；挂载失败回滚并保留实际错误。Android 的 mount 不支持私有化标志时允许继续，不能保证挂载传播隔离；停止容器时回收所属进程、卸载挂载点。
 - chroot 启动在挂载验证后修复宿主离线写入与客体登录身份的差异。HOME、`.wawlink` 根、`.omp` 及未挂载的 `/workspace` 使用登录 UID / App 共享 GID，目录 2770、共享文件 660（保留属主/组执行位）；非 root 登录账户补充该组并在实际 su 后核对，主 UID/GID 不改。权限准备只处理明确管理路径，不递归修复 HOME、工作区或依赖/插件树；普通文件固定父目录后操作 `./名字`，不依赖 proc fd。宿主后续配置、会话、管理扩展、通道及 Rootfs 工作区附件写入沿用共享规则；调试器私有目录/凭据保持当前 UID/GID 与 700/600，仅 root 可在真实 HOME 边界内接管异主所有权，非 root 不绕过 UID 检查。链接、硬链接别名和挂载不参与修复，PRoot/Proroot 保持原有模式。更新后停止并重启已有 chroot 容器即可重新准备，不要求重导入 Rootfs。
+- PRoot/Proroot 的客体 UID 映射不授予真实 chown 权限。离线解压的文件归当前 App 实际 UID；0700 在属主正确时已足够。启动与启动前配置/会话写入只为 App 拥有的管理路径补齐 owner 访问权限，不恢复归档 UID、不改成 777、不遍历 HOME/项目或第三方依赖，也不修改宿主挂载和链接别名。跨引擎遗留的真实异主且不可访问数据仍需原 chroot/Root 身份修复，并报告实际 UID。
+- Skill 与调试器独立初始化并分别显示真实失败原因，辅助失败不再阻断 OMP 聊天或原生配置桥；停止、取消及原生配置/进程错误仍正常生效。调试器仅对当前 UID 或启动器明确映射的 App 属主容忍不支持的 fchown，保留 700/600、路径/类型/硬链接校验和用户修改保护；chroot 布局及内置 Skill 正文使用共享 2770/660，Skill 安装记录保持 600。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
 - 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 保留 Love2Droid 的黑色控制台、Maple Mono 字体及两行等宽快捷键栏，移植 Termux TerminalView/TerminalSession；挂载和窗口获焦后重建输入连接，点击终端唤出软键盘，快捷键不抢焦点。Desktop 使用 JediTerm 3.63 + pty4j 0.13.4。支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新；离开页面关闭其终端进程，退出后保留输出并提示重新打开，不关闭其他会话的进程。
 - 容器宿主进程的 `/proc/<pid>/stat` 不可读时，以仍存活的原进程句柄回退跟踪和终止；恢复可读后固定 starttime，避免将复用的 PID 当作原进程。Android Termux PTY 的已知会话进程组也会收到停止信号；若 `/proc` 持续不可读，无法保证发现所有后代，组长退出后不会再向未验证的进程组发信号，忽略停止信号或脱离进程组的后代可能残留。chroot 仍要求经过 Root 身份握手及特权快照。
@@ -960,4 +962,33 @@ node --experimental-vm-modules --test \
   agent-driver-omp/src/jvmSharedTest/resources/explorer-attachments.test.mjs
 ./gradlew :app-android:assembleDebug
 ```
+
+### Release 容器权限与辅助初始化隔离修复（2026-11-01）
+
+本轮针对外部分发 Rootfs 的调试器 `fchown EPERM`、管理目录/布局 `EACCES`，以及辅助安装失败阻断 OMP 的问题。0700 本身不是故障：PRoot/Proroot 不恢复归档 UID，App 拥有的 0700 目录保持私有且可访问；补齐的是 App 所有管理路径缺失的 owner 权限，不把客体映射 root 当作真实 Root。
+
+- 调试器安装和客户端复核 inode、fd、类型及真实 HOME 边界后，仅对当前/明确映射的 App 属主容忍不支持的 fchown；真正异主、未知错误、链接/硬链接别名及用户修改仍拒绝。
+- HOME、`.wawlink`、必要 `.omp` 管理数据和未挂载 workspace 顶层在启动前准备；配置与会话的宿主先行写入沿用同一策略。并发创建父目录后重新校验，不再把其他写入者先创建目录视为失败。依赖、项目、宿主挂载与第三方技能不做全树改权。
+- chroot 布局与内置 Skill 正文沿用共享 2770/660，PRoot/Proroot 不套用 chroot 共享规则；调试凭据与 Skill 安装记录保持私有。更新 Skill 仍保留原文冲突和原子替换检查。
+- Skill 与调试器分别尝试、分别报告失败，安装失败不阻断聊天发送或原生配置桥；停止取消及旧代次回执隔离保留。管理桥本无此辅助依赖，未为其增加另一套启动路径。
+
+最终相关模块回归均无失败、错误或跳过：
+
+| 范围 | 通过 |
+|---|---:|
+| container-runtime Desktop JVM | 182 |
+| container-runtime Android JVM | 10 |
+| agent-driver-omp Desktop JVM | 196 |
+
+执行命令同时包含 Android Kotlin 编译，全部成功；没有打包 APK：
+
+```bash
+./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
+  :agent-driver-omp:desktopTest :app-android:compileDebugKotlin \
+  --continue --no-daemon --console=plain
+```
+
+另以真实上游 PRoot 5.5.0、Node 执行生产安装脚本和已安装 CLI，映射 root 与普通用户两种身份均完成 Skill 安装、生产布局 API 读写及连接生产 Kotlin loopback 调试端点的 list 请求。原生 OMP 使用独立 HOME 和 loopback-only 模型配置，收到真实 ready 及成功 get_state 回执；没有模型请求或复制开发机认证。
+
+未运行 Android 模拟器、真机界面、真实 Proroot 或特权 chroot 跨 UID 验收。chroot 挂载/跨 UID 元数据与不支持的 fchown 分支由夹具明确模拟；真实 PRoot、Linux/JVM 脚本与编译结果不代表 Android UID、SELinux 或厂商引擎验收。
 

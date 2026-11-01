@@ -23,12 +23,23 @@ try {
   const home = fs.realpathSync(process.env.HOME || '');
   if (!path.isAbsolute(home)) throw Error('Guest HOME must be absolute');
   const uid = process.getuid(), gid = process.getgid();
+  const mappedUid = process.env.WAWLINK_MAPPED_HOST_UID;
+  const mappedGid = process.env.WAWLINK_MAPPED_HOST_GID;
+  const mapped = /^\d+$/.test(mappedUid || '') && /^\d+$/.test(mappedGid || '') &&
+    Number.isSafeInteger(Number(mappedUid)) && Number.isSafeInteger(Number(mappedGid));
+  const owned = info => info.uid === uid || (mapped && info.uid === Number(mappedUid));
   function checkOwner(info, created = false) {
-    if (info.uid !== uid && uid !== 0 && !created) throw Error('Debugger path has a different owner');
+    if (!owned(info) && uid !== 0 && !created) throw Error('Debugger path has a different owner');
   }
   function claim(fd, info, created = false) {
     checkOwner(info, created);
-    if (info.uid !== uid || info.gid !== gid) fs.fchownSync(fd, uid, gid);
+    if (info.uid === uid && info.gid === gid) return;
+    try { fs.fchownSync(fd, uid, gid); }
+    catch (error) {
+      // UID mapping may expose the real App owner, and setgid may retain an inherited GID.
+      // Only an already-owned inode can survive an unsupported ownership adjustment.
+      if (!['EPERM', 'EINVAL', 'ENOSYS'].includes(error.code) || !owned(info) || !owned(fs.fstatSync(fd))) throw error;
+    }
   }
   function checked(location, directory, action) {
     const before = fs.lstatSync(location);
@@ -49,7 +60,8 @@ try {
     checked(location, true, (fd, info) => {
       if (privateMode && !created) { checkOwner(info); return; }
       // The engine may share .wawlink with the host App GID via setgid; retain that policy.
-      if (created || name !== '.wawlink' || info.uid !== uid) claim(fd, info, created);
+      if (created || name !== '.wawlink' || !owned(info)) claim(fd, info, created);
+      if ((fs.fstatSync(fd).mode & 0o500) !== 0o500) throw Error('Debugger directory is not readable and searchable');
     });
     return location;
   }
@@ -63,7 +75,7 @@ try {
     catch (error) { if (error.code === 'ENOENT') return false; throw error; }
   }
   function regular(location) {
-    return checked(location, false, (_, info) => { checkOwner(info); return info; });
+    return checked(location, false, (fd, info) => { claim(fd, info); return info; });
   }
   function readOwned(location) {
     return checked(location, false, (fd, info) => { checkOwner(info); return fs.readFileSync(fd, 'utf8'); });
@@ -145,10 +157,18 @@ const MAX_RESPONSE = 32 * 1024 * 1024;
 let secret = '';
 function fail(message) { throw Error(message); }
 const uid = process.getuid(), gid = process.getgid();
+const mappedUid = process.env.WAWLINK_MAPPED_HOST_UID;
+const mappedGid = process.env.WAWLINK_MAPPED_HOST_GID;
+const mapped = /^\d+$/.test(mappedUid || '') && /^\d+$/.test(mappedGid || '') &&
+  Number.isSafeInteger(Number(mappedUid)) && Number.isSafeInteger(Number(mappedGid));
+const owned = info => info.uid === uid || (mapped && info.uid === Number(mappedUid));
 function claim(fd, info, created = false, shared = false) {
   if (info.uid === uid && (shared || info.gid === gid)) return;
-  if (uid !== 0 && info.uid !== uid && !created) fail('Debugger configuration has a different owner');
-  fs.fchownSync(fd, uid, gid);
+  if (!owned(info) && uid !== 0 && !created) fail('Debugger configuration has a different owner');
+  try { fs.fchownSync(fd, uid, gid); }
+  catch (error) {
+    if (!['EPERM', 'EINVAL', 'ENOSYS'].includes(error.code) || !owned(info) || !owned(fs.fstatSync(fd))) throw error;
+  }
 }
 function checked(location, directory, privateMode, action, shared = false) {
   const before = fs.lstatSync(location);
@@ -159,6 +179,8 @@ function checked(location, directory, privateMode, action, shared = false) {
     const info = fs.fstatSync(fd);
     if (info.dev !== before.dev || info.ino !== before.ino || (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) fail('Debugger configuration changed');
     if (privateMode && (info.mode & 0o077) !== 0) fail('Debugger configuration is not private');
+    const required = directory ? 0o500 : 0o400;
+    if ((info.mode & required) !== required) fail('Debugger configuration is not readable or searchable');
     claim(fd, info, false, shared);
     return action ? action(fd, info) : undefined;
   } finally { fs.closeSync(fd); }

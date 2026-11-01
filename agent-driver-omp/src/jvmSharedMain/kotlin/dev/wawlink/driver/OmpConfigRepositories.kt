@@ -98,7 +98,7 @@ private fun modelsConfigFile(directory: File): File {
 }
 
 internal fun prepareOmpHostDirectory(directory: File, configuration: ContainerConfig?) {
-    if (configuration?.engine == ContainerEngineType.CHROOT) prepareContainerHostDirectory(configuration, directory)
+    if (configuration != null) prepareContainerHostDirectory(configuration, directory)
     else Files.createDirectories(directory.toPath())
 }
 

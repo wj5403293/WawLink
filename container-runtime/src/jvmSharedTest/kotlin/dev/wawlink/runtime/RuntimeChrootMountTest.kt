@@ -98,7 +98,7 @@ class RuntimeChrootMountTest {
             environment()["PATH"] = listOfNotNull(interceptors.path, privilegedTools.path.takeIf { privileged },
                 tools?.path ?: environment()["PATH"]).joinToString(":")
         }
-        fun run(command: String): String = HostCommands.run(builder(command), 15)
+        fun run(command: String, privileged: Boolean = false): String = HostCommands.run(builder(command, privileged), 15)
 
         fun mounts(): List<File> = state.listFiles().orEmpty().filter { it.isDirectory }
         fun calls(name: String): List<List<String>> = if (!log.exists()) emptyList() else
@@ -347,6 +347,38 @@ class RuntimeChrootMountTest {
             assertEquals(0x1B0, (Files.getAttribute(request.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
         }
     }
+    @Test fun privilegedPreparationAdoptsManagedDataFromNeitherHostNorLoginUid() = fixture { fixture ->
+        with(fixture) {
+            val home = File(root, "home/imported").apply { mkdirs() }
+            val preferences = File(home, ".wawlink/feature-cards.json").apply { parentFile.mkdirs(); writeText("layout") }
+            val settings = File(home, ".omp/agent/config.yml").apply { parentFile.mkdirs(); writeText("native settings") }
+            val skill = File(home, ".omp/agent/skills/wawlink-functions/SKILL.md").apply { parentFile.mkdirs(); writeText("Skill") }
+            val record = File(skill.parentFile, ".wawlink-builtin.sha256").apply { writeText("record") }
+            for (file in listOf(preferences, settings, skill, record)) Files.setAttribute(file.toPath(), "unix:mode", 0x100)
+            val actual = ChrootHostIdentity.uid
+            val login = if (actual == 30000) "30001" else "30000"
+            val foreign = if (actual == 30003) 30004 else 30003
+            // Kernel UID changes are simulated by the fixture; modes and file operations are real.
+            intercept("stat", """
+                if [ "${'$'}1" = -c ] && [ "${'$'}2" = '%d %i %h %u %g %a' ]; then
+                    set -- ${'$'}(${shellQuote(tool("stat"))} "${'$'}@")
+                    printf '%s %s %s %s %s %s\n' "${'$'}1" "${'$'}2" "${'$'}3" '$foreign' "${'$'}5" "${'$'}6"
+                else
+                    exec ${shellQuote(tool("stat"))} "${'$'}@"
+                fi
+            """.trimIndent())
+            run(chrootOwnershipScript(root, home, null, login, "30002", emptyList()), privileged = true)
+            assertEquals(0x5F8, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            for (file in listOf(preferences, settings, skill)) {
+                assertEquals(0x1B0, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+                file.appendText("\nshared")
+            }
+            assertEquals("native settings\nshared", settings.readText())
+            assertEquals(0x180, (Files.getAttribute(record.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals("record", record.readText())
+        }
+    }
+
     @Test fun largeDependencyAndProjectTreesDoNotParticipateInStartupRepair() = fixture { fixture ->
         with(fixture) {
             val home = File(root, "home/alice").apply { mkdirs() }
@@ -448,14 +480,19 @@ class RuntimeChrootMountTest {
         with(fixture) {
             val outside = File(directory, "outside-dir").apply { mkdirs() }
             Files.createSymbolicLink(File(root, "home").toPath(), outside.toPath())
-            assertFailsWith<IllegalArgumentException> { prepareContainerHostDirectory(config, File(root, "home/.omp/agent")) }
-            assertTrue(outside.listFiles().orEmpty().isEmpty())
-            assertFailsWith<IllegalArgumentException> { prepareContainerHostDirectory(config, target) }
+            for (engine in ContainerEngineType.entries) {
+                val selected = config.copy(engine = engine)
+                assertFailsWith<IllegalArgumentException> { prepareContainerHostDirectory(selected, File(root, "home/.omp/agent")) }
+                assertTrue(outside.listFiles().orEmpty().isEmpty())
+                assertFailsWith<IllegalArgumentException> { prepareContainerHostDirectory(selected, target) }
+            }
             val home = File(root, "root").apply { mkdirs() }
             val alias = File(home, "hardlink")
             val sourceFile = File(directory, "file").apply { writeText("unchanged") }
             Files.createLink(alias.toPath(), sourceFile.toPath())
-            assertFailsWith<IllegalArgumentException> { prepareContainerHostFile(config, alias) }
+            for (engine in ContainerEngineType.entries) {
+                assertFailsWith<IllegalArgumentException> { prepareContainerHostFile(config.copy(engine = engine), alias) }
+            }
             assertEquals("unchanged", sourceFile.readText())
         }
     }

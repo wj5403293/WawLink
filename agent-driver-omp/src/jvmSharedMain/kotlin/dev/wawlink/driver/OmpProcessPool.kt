@@ -4,7 +4,7 @@ import dev.wawlink.protocol.*
 import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.ContainerFileService
-import dev.wawlink.runtime.installContainerFeatureSkill
+import dev.wawlink.runtime.prepareContainerFeatureSupport
 import dev.wawlink.runtime.wasInterrupted
 import dev.wawlink.runtime.containerHome
 import dev.wawlink.runtime.ContainerEngineType
@@ -1153,7 +1153,7 @@ class OmpProcessPool(val runtime: ContainerRuntime, val dataDir: File, private v
                 prepareOmpHostDirectory(resolveWorkspace(containerId, workspace, write = true), workspaceOwnership)
             }
             prepareOmpHostDirectory(confined(directory, "management"), config(containerId))
-            installContainerFeatureSkill(runtime, containerId)
+            prepareContainerFeatureSupport(runtime, containerId)
             val history = newestHistory(directory)
             sessionFile = history?.let { guestSessionDirectory(containerId, id) + "/" + it.name }
             val args = mutableListOf("omp", "--mode", "rpc-ui", "--cwd", workspace, "--session-dir", guestSessionDirectory(containerId, id), "--approval-mode", if (state.value.autoApprove) "yolo" else "always-ask")
