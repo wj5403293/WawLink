@@ -38,11 +38,19 @@ Android“应用设置 → 外观与显示 → 屏幕常亮”默认关闭，开
 
 “应用设置 → 后台保活”默认关闭，设置跨重启保留。Android 可按需启用前台服务、锁屏 CPU 唤醒锁、Wi-Fi 锁及循环静音音频，也可打开电池优化请求和厂商自启动设置；无可用厂商页面时回退系统应用设置。页面显示服务和资源的实际状态与错误，关闭保活会释放可选资源，但仍有活动任务时原有前台服务继续工作。Desktop 不提供 Android 系统资源。保活增加耗电，受 Android 与 ROM 策略限制，强行停止后不保证恢复；不会自动启动容器或恢复会话。
 
+前台服务启动按“立即前台化 → 处理启动命令 → 按需获取资源”排序；每条启动命令重新确认前台契约，Application 合并尚未确认和已运行实例，不再按短暂 `active=false` 直接停服务。只有停服等待 300 ms 空闲宽限，并以系统最新 startId 核对后移除通知；关闭保活的资源释放不等待这段宽限。Android 14+ 保留合法 `specialUse` 基础类型，添加 `mediaPlayback` 失败时停用音频但保留基础服务，不能改用无类型或其他用途绕过限制。启动前校验基础权限和清单，拒绝通知权限不阻止合法 FGS；系统完全拒绝前台化时报告实际原因、停止无效实例，不宣称已满足启动契约或无限重试。
+
+Android 17 的后台音频限制对当前 targetSdk 35 同样要求可见 Activity 或非 shortService 前台服务；未来 targetSdk 37 还要求后台服务具备 while-in-use 能力，重复 `startForeground()` 不会凭空获得该能力。静音音轨状态仅反映 AudioTrack 可观察状态，不能证明系统没有静默抑制音频，也不保证厂商保活效果。参阅 [前台服务启动与故障](https://developer.android.com/develop/background-work/services/fgs/troubleshooting)、[类型与权限](https://developer.android.com/develop/background-work/services/fgs/service-types) 及 [Android 17 后台音频限制](https://developer.android.com/about/versions/17/changes/bg-audio)。
+
+`specialUse` 不是后台启动豁免或应用商店审核豁免；已声明类型/权限不代表任意常驻或静音保活都符合平台及商店政策。本次修复不通过其他类型、假播放用途或延长系统期限绕过这些限制。
+
 “应用设置 → 关于”使用“图标 + 标题 + 描述”的 Material 3 标准列表，展示项目 GitHub 地址 `https://github.com/wsdx233/WawLink` 与作者 `wsdx233`。点击 GitHub 项由系统打开外部链接，Android 使用 `ACTION_VIEW` Intent；返回应用设置保留原滚动位置。
 
 ## 构建与运行
 
 构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35、Build Tools 35.0.0 与 NDK 27.0.12077973（编译终端 JNI）、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
+
+Android Application/Service 的 Robolectric 单元测试另需 JDK 21，以加载 API 36/37 的 Android 框架；Gradle 只为测试进程选择 Java 21 并开放其所需 FileDescriptor 访问桥，APK/生产源码仍使用 Java 17，不提高应用最低 Android 版本。
 
 在工程根目录执行：
 
@@ -991,4 +999,33 @@ node --experimental-vm-modules --test \
 另以真实上游 PRoot 5.5.0、Node 执行生产安装脚本和已安装 CLI，映射 root 与普通用户两种身份均完成 Skill 安装、生产布局 API 读写及连接生产 Kotlin loopback 调试端点的 list 请求。原生 OMP 使用独立 HOME 和 loopback-only 模型配置，收到真实 ready 及成功 get_state 回执；没有模型请求或复制开发机认证。
 
 未运行 Android 模拟器、真机界面、真实 Proroot 或特权 chroot 跨 UID 验收。chroot 挂载/跨 UID 元数据与不支持的 fchown 分支由夹具明确模拟；真实 PRoot、Linux/JVM 脚本与编译结果不代表 Android UID、SELinux 或厂商引擎验收。
+
+### Android 前台服务启动契约与状态时序修复（2026-11-01）
+
+针对 realme RMX6688 / Android 17 报告的 `ForegroundServiceDidNotStartInTimeException`，采用立即前台化、合并启动请求、仅延迟空闲停服的方案；不延迟首次启动、不改变容器/会话生命周期，也不以其他服务类型绕过平台限制。
+
+- `ContainerForegroundService` 创建时先提交基础前台通知，每条启动命令重新确认；空闲宽限为 300 ms，先以最新 startId 的 `stopSelfResult` 确认停服，再移除通知。通知构建失败尝试真实最小通知，可选 `mediaPlayback` 被拒绝时回落合法基础类型并停用音频。
+- `WawLinkApplication` 直接观察已包含 Android 保活偏好的 `AppCoordinator.active`，合并待确认启动及当前实例，不发送交叉 `stopService`；原生启动返回 null、权限/清单失败均保留原因并清除待启动状态。
+- 独立烟测发现并补齐快速“重新开启 → 新启动命令 → 关闭”的资源漏释放边界：每条启动命令重建状态观察，避免旧 StateFlow 观察者合并中间状态后漏掉关闭；不影响仍在执行的工作。新增回归在修复前的 API 34–37 上均失败，修复后全部通过。
+- 不能保证非法清单、系统拒绝、Android 17 后台音频限制或厂商策略下仍能前台化。已知基础类型/权限错误在请求 FGS 前检查；不可恢复拒绝如实报告、有界回收，不假报运行或无限重启。`specialUse` 不构成后台启动或商店政策豁免。
+
+本轮 Kotlin 编译通过；以下 JVM 验证均无失败、错误或跳过：
+
+| 验证范围 | 通过 |
+|---|---:|
+| Service 回归，API 26 及 34–37 | 37 |
+| Application 客户端回归，API 34–37 | 44 |
+| API 37 独立生命周期烟测，含 25 次启动命令/CPU 锁获取释放循环 | 1 |
+
+烟测执行生产 Application/Service，观察到活动工作与前台通知保留、无 Application 交叉停止/重复前台启动请求，以及最终最新 startId 停服与通知移除。系统服务接收/startId 与主线程时钟由 Robolectric 夹具建模，不是 Android 系统超时或真机保活验收；临时烟测脚本不进入仓库。
+
+完整 `lintDebug` 仍被既有 `src/main/res/values/styles.xml:10` 的 `NewApi` 错误阻断，报告共 1 个错误、27 个警告；本轮未修改该资源、提高 minSdk 或添加 Lint 屏蔽。未运行 Android 模拟器、真机或 APK 打包，线上设备仍需复测。
+
+仓库内持久回归和静态检查的复跑命令（Android JVM 测试另需 JDK 21）：
+
+```bash
+./gradlew :app-android:testDebugUnitTest :app-android:compileDebugKotlin \
+  --continue --no-daemon --console=plain
+./gradlew :app-android:lintDebug --no-daemon --console=plain
+```
 

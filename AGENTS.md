@@ -23,6 +23,8 @@
 - 应用默认密度统一校准到原型，主页、聊天和所有设置页共用同一缩放，不在嵌套主题中重复缩放；应用设置提供持久化的“整体缩放”和恢复默认，保留系统字体缩放。当前基线以旧版 115% 为新版 100%；已有 115% 设置迁移为 100%，不得在升级或重启后重复放大。
 - Android 应用设置提供“屏幕常亮”开关，默认关闭并持久化；开启后整个应用在前台可见时保持亮屏，关闭或进入后台恢复系统熄屏策略，终端不再独立强制常亮。
 - Android“后台保活”独立于屏幕常亮，默认关闭并持久化；开启后可选择 CPU 唤醒锁、Wi-Fi 锁与静音音频，并提供电池优化和 ROM 自启动设置入口。关闭时释放可选资源，不中断仍有活动的容器/会话服务；状态反映实际获取结果，不保证绕过系统限制或强行停止。
+- Android 前台服务由 Application 合并启动请求、由 Service 自主管理停服；不得按 `active=false` 直接发送 `stopService` 与尚未确认的前台启动交叉。Service 创建时先以合法基础类型立即前台化，每条 start command 均重新确认契约，再观察状态和获取可选资源；空闲仅延迟停服，关闭保活立即释放可选资源，且不停止活动容器/会话。停服先用最新 startId 的 `stopSelfResult` 确认再移除通知，拒绝过期停止时保留前台状态。
+- API 34+ 前台服务保留已声明且有权限的 `specialUse` 基础类型，`mediaPlayback` 失败仅停用音频，不伪造无类型、其他用途或成功状态。启动前检查基础清单/权限；拒绝通知权限不等于禁止 FGS。不可恢复的系统拒绝保留真实原因并有界清理、不自动重启循环；不能承诺在非法清单、系统拒绝或厂商限制下仍能成功前台化。Android 17 后台音频/WIU 限制不靠重复前台化绕过，当前 targetSdk 35 与未来 targetSdk 37 的差异须如实说明。
 - 启动及容器列表更新只读取会话元数据，打开某个会话时才恢复其正文与控制器；主页继续观察已打开的会话，不批量恢复未打开的历史。
 - 容器运行时初始化不递归遍历 Rootfs 统计体积，先加载轻量配置、校验根目录并读取元数据，体积在后台计算并发布，可使用上次持久化值作初始缓存；迟到结果不得覆盖已删除或已变更的容器。克隆/导出的归档读写与体积遍历不持有全局锁，同容器启动、修改和删除与归档隔离，其他容器仍可操作；手动停止、关闭及取消后不得由收尾自动重新启动容器。
 - 容器导出默认完整备份，分段标签为“完整导出”和“脱敏导出”，避免换行；脱敏导出允许分别排除 OMP 配置与凭据、会话日志、Shell 历史及 SSH/Git 凭据与缓存，仅在归档中按用户 HOME 和配置档过滤，不修改源 Rootfs。路径和用户数据库越界必须拒绝，向用户说明未列入过滤的文件仍可能包含敏感内容。
@@ -181,9 +183,11 @@
 - `app-android/`：仅 arm64-v8a 的 Android 宿主、系统文件选择和后台会话保活；Rootfs 通过容器页单独导入。
   - `src/main/kotlin/dev/wawlink/app/TerminalSurface.android.kt` 将共享终端会话接入移植的 Android TerminalView，保留 Love2Droid 原快捷键布局与输入焦点；`src/main/res/font/maple_mono_nf_cn_regular.ttf` 保存原项目终端字体。
   - `src/main/kotlin/dev/wawlink/app/MainActivity.kt` 提供系统打开、下载、APK 安装及主机挂载目录选择，按 Android 版本处理共享储存授权与本机储存卷路径，并按前台生命周期应用屏幕常亮偏好；`src/main/res/xml/file_paths.xml` 仅共享应用缓存中的暂存文件，Manifest 使用非导出的 FileProvider 与临时 URI 读取授权。
-  - `ContainerForegroundService.kt` 按用户设置管理前台服务、CPU/Wi-Fi 锁与静音音频，发布实际状态并在关闭时回收；`MainActivity.kt` 提供电池优化及厂商自启动设置入口并回退系统设置。
+  - `ContainerForegroundService.kt` 按用户设置管理前台服务、CPU/Wi-Fi 锁与静音音频，创建及每条启动命令先满足前台契约，并重建当前状态观察以避免快速切换被合并后漏释放/漏停服；按最新 startId 和空闲宽限自管停服。`WawLinkApplication.kt` 观察统一活动状态，合并待确认启动与当前实例，不发送交叉停止 IPC。`MainActivity.kt` 提供电池优化及厂商自启动设置入口并回退系统设置。
   - `src/main/kotlin/dev/wawlink/app/FeatureAndroidLuaBridge.kt` 提供来源限定的网页桥，取消并注销被拒绝提交的 FutureTask，已销毁代次不回传迟到错误；`FeatureAndroidLuaRuntime.kt` 统一标准 LuaJ/Java、Android UI 调度、Intent 助手及 JSON 转换，`FeatureNativeLuaExecutor.android.kt` 提供无 WebView 的后台原生按钮执行。导航/销毁取消旧任务，LuaJ 与 AndroidX WebKit 显式依赖，不开放无来源限制的 `addJavascriptInterface`。
   - `src/main/kotlin/dev/wawlink/app/FeatureDebugSurface.android.kt` 为卡片与完整功能页共用的实际 Android WebView 提供调试适配，在主线程读取布局/执行 JavaScript/获取真实画面，后台编码 PNG；按文档导航和销毁隔离 Promise 回执，使用现有受信主框架与 LuaJ 来源边界。
+  - `src/test/kotlin/dev/wawlink/app/ContainerForegroundServiceTest.kt` 与 `WawLinkApplicationServiceTest.kt` 使用 Robolectric 执行生产 Application/Service 代码，覆盖 API 26 及 34–37 的前台确认、短任务/重复启动、过期停服、通知/可选类型失败及关闭保活不打断活动工作；系统服务器拒绝和队列由 shadow 显式模拟，不代替 Android 真机、ROM 或系统超时验收。测试使用 Java 21，应用编译仍为 Java 17 / SDK 35。
+  - 同测试目录的 `ForegroundTestContext.kt` 提供每例独立 Main 调度与显式虚拟时钟、缺失 APK nativeLibraryDir 元数据，以及 Robolectric 4.17 在旧 API 链接新版 BlockingOption 的 Wi-Fi manager 适配；复用既有 WifiLock 状态模型，不提供客体程序、不证明真实 Wi-Fi 性能、不改写生产 Application 初始化。API 36/37 框架共享内存使用测试 JVM 的 FileDescriptor 访问桥，相关模块导出仅限测试进程。
 - `terminal-emulator/`、`terminal-view/`：从 Love2Droid 固定提交移植的 Android Termux 终端解析器、JNI PTY 与视图，仅构建 arm64-v8a；`TerminalSession.java` 隔离读/写/等待线程失败并只通知一次完成，保留正常关闭及 PTY EIO/EOF 的真实退出码；`AndroidPtyProcess.java` 在 JNI 等待失败时报告 -1、回收资源并释放等待者。`terminal-emulator/NOTICE` 记录上游来源及修改，许可同时保存在模块 assets 与 `licenses/`。
 - `licenses/`：Termux 终端、JediTerm、pty4j、Love2Droid/r2droid、Maple Mono 及 LuaJ 的完整上游许可及来源；`LUAJ-LICENSE.txt` 同时随 `app-android/src/main/assets/licenses/` 打包。
 - `scripts/`：免 Docker Rootfs、Android 原生二进制与验证脚本。

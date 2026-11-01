@@ -36,8 +36,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
+    testOptions.unitTests.isIncludeAndroidResources = true
 }
 kotlin { jvmToolchain(17) }
+tasks.withType<Test>().configureEach {
+    // Robolectric's API 36/37 framework jars require Java 21; app bytecode remains Java 17.
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) })
+    // Android 16+ shared-memory setup uses the JDK's FileDescriptor access bridge.
+    jvmArgs("--add-exports=java.base/jdk.internal.access=ALL-UNNAMED")
+    systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+}
 dependencies {
     implementation(project(":agent-ui"))
     implementation(project(":agent-driver-omp"))
@@ -51,4 +59,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     implementation(compose.material3)
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("org.robolectric:robolectric:4.17")
 }

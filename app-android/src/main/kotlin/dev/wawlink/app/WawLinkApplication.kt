@@ -5,7 +5,8 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
-import androidx.core.content.ContextCompat
+import android.os.Handler
+import android.os.Looper
 import dev.wawlink.driver.OmpProcessPool
 import dev.wawlink.runtime.LocalContainerRuntime
 import dev.wawlink.runtime.RuntimePaths
@@ -18,6 +19,9 @@ class WawLinkApplication : Application() {
     lateinit var coordinator: AppCoordinator
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var containerService: ContainerForegroundService? = null
+    private var containerServiceStartPending = false
     override fun onCreate() {
         super.onCreate()
         val data = File(filesDir, "wawlink")
@@ -40,12 +44,45 @@ class WawLinkApplication : Application() {
         val runtime = LocalContainerRuntime(RuntimePaths(data, nativeLibraryDir = File(applicationInfo.nativeLibraryDir), isAndroid = true, resolvConf = resolvConf))
         coordinator = AppCoordinator(runtime, OmpProcessPool(runtime, data, resolvConf = resolvConf), data, isAndroid = true)
         scope.launch {
-            coordinator.active.collect { active ->
-                try {
-                    if (active) ContextCompat.startForegroundService(this@WawLinkApplication, Intent(this@WawLinkApplication, ContainerForegroundService::class.java))
-                    else stopService(Intent(this@WawLinkApplication, ContainerForegroundService::class.java))
-                } catch (e: Exception) { coordinator.showError(e) }
+            // AppCoordinator.active already includes Android keep-alive demand.
+            coordinator.active.collect { needed ->
+                if (needed) startContainerServiceIfNeeded()
             }
         }
+    }
+
+    internal fun onContainerServiceCreated(service: ContainerForegroundService) {
+        containerService = service
+        containerServiceStartPending = false
+    }
+
+    internal fun onContainerServiceDestroyed(service: ContainerForegroundService, restartIfNeeded: Boolean) {
+        if (containerService !== service) return
+        containerService = null
+        if (restartIfNeeded && wantsContainerService()) {
+            // Leave onDestroy before requesting a replacement, then re-read the latest demand.
+            mainHandler.post { startContainerServiceIfNeeded() }
+        }
+    }
+
+    private fun wantsContainerService(): Boolean = coordinator.active.value || coordinator.keepAlive.value.enabled
+
+    private fun startContainerServiceIfNeeded() {
+        if (!wantsContainerService() || containerServiceStartPending || containerService != null) return
+        containerServiceStartPending = true
+        try {
+            ContainerForegroundService.validateStartConfiguration(this)
+            checkNotNull(startForegroundService(Intent(this, ContainerForegroundService::class.java))) {
+                "Android 未启动容器前台服务"
+            }
+        } catch (error: Exception) {
+            containerServiceStartPending = false
+            coordinator.showError(error)
+            coordinator.updateKeepAliveStatus {
+                it.copy(serviceRunning = false, wakeLockHeld = false, wifiLockHeld = false, silentAudioPlaying = false,
+                    error = "前台服务：${error.message ?: error.javaClass.simpleName}")
+            }
+        }
+        // Idle shutdown belongs to the Service; a stop IPC could cancel an unpromoted start.
     }
 }
