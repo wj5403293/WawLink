@@ -3,12 +3,6 @@ package dev.wawlink.driver
 import dev.wawlink.protocol.ProviderConfig
 import dev.wawlink.protocol.ProviderApiType
 import dev.wawlink.protocol.ThinkingLevel
-import dev.wawlink.runtime.ContainerConfig
-import dev.wawlink.runtime.prepareContainerHostFile
-import java.io.File
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -20,19 +14,23 @@ internal object ModelPayloadExtension {
     private const val SCRIPT_NAME = "wawlink-model-payload.mjs"
     private const val BUDGET_NAME = "wawlink-model-budgets.json"
 
-    fun install(agentDir: File, guestAgentDir: String, configuration: ContainerConfig? = null): String {
-        require(guestAgentDir.startsWith('/') && !guestAgentDir.split('/').contains("..")) { "Agent 配置目录必须是容器内绝对路径" }
+
+    suspend fun install(files: OmpFileSession, guestAgentDir: String): String {
+        val directory = ompAgentDirectory(files, guestAgentDir)
         val source = checkNotNull(javaClass.getResourceAsStream("/$SCRIPT_NAME")) { "缺少模型预算扩展资源" }
-            .use { it.readBytes() }
-        val target = File(agentDir, SCRIPT_NAME)
-        if (!target.isFile || !target.readBytes().contentEquals(source)) atomicWrite(target, source, configuration)
-        return "${guestAgentDir.trimEnd('/')}/$SCRIPT_NAME"
+            .bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val target = "$directory/$SCRIPT_NAME"
+        val existing = files.readText(target)
+        if (existing != source) files.writeText(target, source, expectedVersion = contentVersion(existing), createOnly = existing == null)
+        return target
     }
 
-    fun readBudgets(agentDir: File): Map<String, Int> {
-        val file = File(agentDir, BUDGET_NAME)
-        if (!file.exists()) return emptyMap()
-        val values = Json.parseToJsonElement(file.readText()) as? JsonObject
+    suspend fun readBudgets(files: OmpFileSession, guestAgentDir: String): Map<String, Int> =
+        parseBudgets(files.readText("${ompAgentDirectory(files, guestAgentDir)}/$BUDGET_NAME"))
+
+    fun parseBudgets(content: String?): Map<String, Int> {
+        if (content == null) return emptyMap()
+        val values = Json.parseToJsonElement(content) as? JsonObject
             ?: error("模型思考预算文件必须是键值表")
         return values.mapValues { (key, value) ->
             val budget = value.jsonPrimitive.intOrNull
@@ -41,7 +39,9 @@ internal object ModelPayloadExtension {
         }
     }
 
-    fun writeBudgets(agentDir: File, providers: List<ProviderConfig>, configuration: ContainerConfig? = null) {
+    suspend fun writeBudgets(files: OmpFileSession, guestAgentDir: String, providers: List<ProviderConfig>) {
+        val target = "${ompAgentDirectory(files, guestAgentDir)}/$BUDGET_NAME"
+        val existing = files.readText(target)
         val budgets = buildMap<String, JsonPrimitive> {
             providers.forEach { provider ->
                 provider.models.forEach { model ->
@@ -53,26 +53,7 @@ internal object ModelPayloadExtension {
                 }
             }
         }
-        atomicWrite(File(agentDir, BUDGET_NAME), JsonObject(budgets).toString().toByteArray(Charsets.UTF_8), configuration)
+        files.writeText(target, JsonObject(budgets).toString() + "\n", expectedVersion = contentVersion(existing), createOnly = existing == null)
     }
 
-    private fun atomicWrite(file: File, bytes: ByteArray, configuration: ContainerConfig?) {
-        prepareOmpHostDirectory(file.parentFile, configuration)
-        require(!Files.isSymbolicLink(file.toPath())) { "拒绝覆盖符号链接配置文件" }
-        val temporary = File.createTempFile(".${file.name}.", ".tmp", file.parentFile)
-        try {
-            if (configuration != null) prepareContainerHostFile(configuration, temporary)
-            temporary.outputStream().use { stream ->
-                stream.write(bytes)
-                stream.fd.sync()
-            }
-            try {
-                Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        } finally {
-            temporary.delete()
-        }
-    }
 }

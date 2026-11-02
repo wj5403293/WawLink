@@ -122,9 +122,8 @@ private val LEGACY_FEATURE_SKILL_HASHES = listOf(
 )
 
 internal val FEATURE_SKILL_INSTALL = featureSkillInstallScript(FEATURE_SKILL)
-internal val FEATURE_SKILL_SHARED_INSTALL = featureSkillInstallScript(FEATURE_SKILL, sharedGroup = true)
 
-internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = false): String {
+internal fun featureSkillInstallScript(content: String): String {
     val bytes = content.toByteArray(Charsets.UTF_8)
     val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     return """
@@ -133,7 +132,7 @@ internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = f
         case "${'$'}HOME" in /*) ;; *) echo '容器 HOME 无效' >&2; exit 1;; esac
         home=${'$'}(readlink -f -- "${'$'}HOME")
         prepare_directory() {
-            ${if (sharedGroup) "chmod 2770 ." else "mode=\$(stat -c %a .); [ \"\$((0\$mode & 0700))\" = 448 ] || chmod u+rwx ."}
+            mode=${'$'}(stat -c %a .); [ "${'$'}((0${'$'}mode & 0700))" = 448 ] || chmod u+rwx .
         }
         # Resolve each existing ancestor before creating the next: BusyBox has no readlink -m,
         # and readlink -f cannot resolve an entire tree with missing intermediate directories.
@@ -183,7 +182,7 @@ internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = f
             [ -f "${'$'}file" ] || exit 0
             digest=${'$'}(sha256sum -- "${'$'}file"); digest=${'$'}{digest%% *}
             mode=${'$'}(stat -c %a -- "${'$'}file")
-            [ "${'$'}((0${'$'}mode & ${if (sharedGroup) "0667" else "0600"}))" = ${if (sharedGroup) "432" else "384"} ] || repair_mode=1
+            [ "${'$'}((0${'$'}mode & 0600))" = 384 ] || repair_mode=1
             if [ "${'$'}digest" != "${'$'}target" ]; then
                 if [ -n "${'$'}recorded" ]; then
                     [ "${'$'}digest" = "${'$'}recorded" ] || [ "${'$'}digest" = "${'$'}prior" ] || exit 0
@@ -207,7 +206,7 @@ internal fun featureSkillInstallScript(content: String, sharedGroup: Boolean = f
         else
             [ ! -e "${'$'}file" ] && [ ! -L "${'$'}file" ] || exit 0
         fi
-        chmod u+rw${if (sharedGroup) ",g+rw,o-rwx" else ""} -- "${'$'}stage/content"
+        chmod u+rw -- "${'$'}stage/content"
         [ ! -L "${'$'}record" ] || exit 0
         # Retain both sides until content replacement completes, so interruption is recoverable.
         printf '%s\n' "${'$'}target" > "${'$'}stage/record"

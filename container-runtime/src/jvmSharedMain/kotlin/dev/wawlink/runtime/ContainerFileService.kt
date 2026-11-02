@@ -20,6 +20,24 @@ internal class ContainerFileOperation(val containerId: String, val stopGeneratio
     }
 }
 
+/** Binds a multi-process guest operation to its first admission, including commit and cleanup. */
+suspend fun <T> withContainerFileOperation(
+    runtime: ContainerRuntime, containerId: String, expectedStopGeneration: Long? = null,
+    runningOnly: Boolean = false, expectedRunGeneration: Long? = null, block: suspend () -> T,
+): T {
+    val current = runtime.containers.value.firstOrNull { it.config.id == containerId }
+        ?: throw CancellationException("容器已移除")
+    if (expectedStopGeneration != null && current.stopGeneration != expectedStopGeneration || runningOnly && !current.running ||
+        expectedRunGeneration != null && (!current.running || current.runGeneration != expectedRunGeneration))
+        throw CancellationException("容器已停止或重新启动")
+    val inherited = currentCoroutineContext()[ContainerFileOperation]?.takeIf { it.containerId == containerId }
+    val operation = inherited ?: ContainerFileOperation(containerId, current.stopGeneration, current.runGeneration.takeIf { current.running })
+    if (!operation.isCurrent(runtime)) throw CancellationException("容器已停止或重新启动")
+    return withContext(operation) {
+        block().also { if (!operation.isCurrent(runtime)) throw CancellationException("容器已停止或重新启动") }
+    }
+}
+
 data class ContainerFile(val name: String, val kind: String, val size: Long, val modified: Long, val mode: String, val owner: String, val group: String, val readable: Boolean) {
     val directory get() = kind == "directory"
     val regular get() = kind == "file"

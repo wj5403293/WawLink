@@ -198,16 +198,16 @@ git push origin v1.0.0
 - 思考强度包含无、低、中、高、超高（`xhigh`）和最大（`max`）；支持接口自定义 effort 与 Message 数值预算，预算须至少 1024 且小于最大输出。两个最高档分别贯通原生 RPC、配置和请求参数，不互相合并。
 - 模型列表与输入区模型选择按钮共用离线品牌图标并保留原色；按钮随当前模型切换，列表项始终展示各自模型图标。未匹配品牌的模型显示 ID 首字符的大写单字标识及圆形底色，底色按字母稳定生成，同字母同色，不使用服务商图标或通用脑图标替代。选中背景覆盖整行，弹出菜单动画保留外部阴影。品牌图标参照 Kelivo，DeepSeek 使用原蓝鲸；Codex、Kimi 因 Kelivo 对应资源的许可来源未能核实，使用 MIT 许可的 LobeHub 同品牌图标。来源与差异见 `agent-ui/src/commonMain/composeResources/files/model-icons/NOTICE.txt` 和 `provenance.json`。
 - Agent 设置按 OMP Schema 展示，过滤外观及 TUI 专属项。外观独立保存在宿主设置中，不写回 TUI 配置。
-- `models.yml` / `config.yml` 位于容器当前用户有效 HOME 的 `~/.omp/agent/`，账户与 `HOME` 覆盖离线解析，不为定位目录启动容器。全局配置、受管会话、模型扩展与原生管理桥使用同一有效目录，不固定为 `/root`，不自动迁移其他用户的数据。宿主对应目录限定在所属 Rootfs 内，拒绝链接逃逸及覆盖该目录的宿主/系统挂载；普通工作区挂载保持原有语义。支持应用写入和外部修改回流；模型服务配置可能含 API Key，应留在本地数据目录，不要提交版本控制。
+- `models.yml` / `config.yml` 位于容器当前用户有效 HOME 的 `~/.omp/agent/`，账户与 `HOME` 覆盖离线解析，不为定位目录启动容器。全局配置、受管会话、模型扩展与原生管理桥使用同一有效目录，不固定为 `/root`，不自动迁移其他用户的数据。文件操作通过该容器当前账户的客体进程执行，不从 App 直接读取 Rootfs 内的 OMP 私有文件；拒绝链接、特殊文件和覆盖配置目录的宿主/系统挂载，普通工作区挂载保持原有语义。支持应用写入和外部修改回流；模型服务配置可能含 API Key，应留在本地数据目录，不要提交版本控制。
 - Proroot 上游仅提供 Android arm64 版本；桌面使用真实 PRoot/QEMU 或具备 Root 权限的 chroot，不伪装支持 Proroot。
 - Proroot 参照 DSHA 的显式 `host:guest` 绑定方式修复 `/dev` 等默认路径启动报错，工作区与自定义挂载同样显式映射。修复位于宿主启动参数，无需重新导入 Rootfs。
 - Proroot 五库固定为作者 [andClaw 2.3.47 的同一提交](https://github.com/coderredlab/andClaw/tree/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a)，逐文件校验 SHA-256 并原样打包；启动时显式选择当前 APK 配套的 runtime/linker，避免自动发现混用旧组件。该更新修复旧 syscall relay 破坏寄存器导致的 Bun 崩溃及原生模块加载失败；保留原 Bun、OMP 和 Rootfs，无需禁用缓存、屏蔽错误或加入兼容 shim，更新 APK 即可生效。
 - 容器详情按原型重置操作按钮、工具链卡片、主题色分段控件和挂载 bottom sheet；保留原有功能。包括 Proroot 在内的普通登录身份可填写容器中已有的用户名或数字 UID，实际启动使用该账户的 UID/GID、HOME、USER 与 LOGNAME，不固定为 `user`，不自动创建账户。有效 HOME 使用与启动器共用的离线账户解析，并遵循容器配置中的 `HOME` 环境覆盖。
 - 容器详情 → 挂载目录支持主机目录选择，主机路径右侧的文件夹按钮在 Android 打开系统目录选择器，Desktop 打开原生目录选择器；也可手填 `/sdcard/项目` 等实际主机路径并指定容器内挂载点。Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，Android 10 使用传统共享储存访问；启动不自动申请。仅解析本机共享储存卷的目录，保存实际路径而非 `content://`，不复制或同步目录内容；取消选择、拒绝授权或保存失败保留草稿。云盘等文档提供方不能直接挂载；系统选择器不允许选择共享储存根目录或 Download 时，可在授权后手填路径。权限不绕过 Android 对其他应用私有目录的限制；只读保护仍仅由 chroot 提供。更新 APK 即可使用，无需重新导入 Rootfs。
 - 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，bind 和只读重挂载都显式传入源与目标，并校验内核报告的只读状态；挂载失败回滚并保留实际错误。Android 的 mount 不支持私有化标志时允许继续，不能保证挂载传播隔离；停止容器时回收所属进程、卸载挂载点。
-- chroot 启动在挂载验证后修复宿主离线写入与客体登录身份的差异。HOME、`.wawlink` 根、`.omp` 及未挂载的 `/workspace` 使用登录 UID / App 共享 GID，目录 2770、共享文件 660（保留属主/组执行位）；非 root 登录账户补充该组并在实际 su 后核对，主 UID/GID 不改。权限准备只处理明确管理路径，不递归修复 HOME、工作区或依赖/插件树；普通文件固定父目录后操作 `./名字`，不依赖 proc fd。宿主后续配置、会话、管理扩展、通道及 Rootfs 工作区附件写入沿用共享规则；调试器私有目录/凭据保持当前 UID/GID 与 700/600，仅 root 可在真实 HOME 边界内接管异主所有权，非 root 不绕过 UID 检查。链接、硬链接别名和挂载不参与修复，PRoot/Proroot 保持原有模式。更新后停止并重启已有 chroot 容器即可重新准备，不要求重导入 Rootfs。
+- chroot 启动在挂载验证后准备宿主离线数据与客体登录身份的差异。HOME、`.wawlink` 元数据/布局及未挂载 `/workspace` 顶层保留登录 UID / App 共享 GID 的 2770/660 策略；非 root 登录账户补充该组并在实际 su 后核对，主 UID/GID 不改。OMP 的 `.omp/agent`、有限受管数据与内置 Skill 使用登录 UID/GID、700/600，不再靠放宽权限让 App 读取。配置、会话、管理扩展、通道和工作区附件由同一客体身份访问，允许 OMP 在运行时收紧私有目录。准备不递归 HOME、工作区、依赖或第三方插件/技能树；链接、硬链接别名及挂载不参与改权。调试器保持私有 700/600，仅 root 可在真实 HOME 边界内接管异主目录。更新后停止并重启已有 chroot 容器即可准备，不要求重导入 Rootfs。
 - PRoot/Proroot 的客体 UID 映射不授予真实 chown 权限。离线解压的文件归当前 App 实际 UID；0700 在属主正确时已足够。启动与启动前配置/会话写入只为 App 拥有的管理路径补齐 owner 访问权限，不恢复归档 UID、不改成 777、不遍历 HOME/项目或第三方依赖，也不修改宿主挂载和链接别名。跨引擎遗留的真实异主且不可访问数据仍需原 chroot/Root 身份修复，并报告实际 UID。
-- Skill 与调试器独立初始化并分别显示真实失败原因，辅助失败不再阻断 OMP 聊天或原生配置桥；停止、取消及原生配置/进程错误仍正常生效。调试器仅对当前 UID 或启动器明确映射的 App 属主容忍不支持的 fchown，保留 700/600、路径/类型/硬链接校验和用户修改保护；chroot 布局及内置 Skill 正文使用共享 2770/660，Skill 安装记录保持 600。
+- Skill 与调试器独立初始化并分别显示真实失败原因，辅助失败不阻断 OMP 聊天或原生配置桥；停止、取消及原生配置/进程错误仍正常生效。调试器仅对当前 UID 或启动器明确映射的 App 属主容忍不支持的 fchown，保留 700/600、路径/类型/硬链接校验和用户修改保护。内置 Skill 安装只补 owner 权限，不再将 `.omp` 祖先重新放宽为 chroot 共享目录；安装记录保持 600，布局仍保留既有共享策略。
 - 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
 - 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 保留 Love2Droid 的黑色控制台、Maple Mono 字体及两行等宽快捷键栏，移植 Termux TerminalView/TerminalSession；挂载和窗口获焦后重建输入连接，点击终端唤出软键盘，快捷键不抢焦点。Desktop 使用 JediTerm 3.63 + pty4j 0.13.4。支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新；离开页面关闭其终端进程，退出后保留输出并提示重新打开，不关闭其他会话的进程。
 - 容器宿主进程的 `/proc/<pid>/stat` 不可读时，以仍存活的原进程句柄回退跟踪和终止；恢复可读后固定 starttime，避免将复用的 PID 当作原进程。Android Termux PTY 的已知会话进程组也会收到停止信号；若 `/proc` 持续不可读，无法保证发现所有后代，组长退出后不会再向未验证的进程组发信号，忽略停止信号或脱离进程组的后代可能残留。chroot 仍要求经过 Root 身份握手及特权快照。
@@ -1028,4 +1028,36 @@ node --experimental-vm-modules --test \
   --continue --no-daemon --console=plain
 ./gradlew :app-android:lintDebug --no-daemon --console=plain
 ```
+
+### chroot 首轮后失去 OMP 文件访问的切换（2026-11-02）
+
+针对 Poco F6 / 澎湃 2.0.208.0 / Android 15 的“应用内首轮后失败、新会话与 Slash 失效、模型配置未知，但终端正常”反馈，核对了提供的 Rootfs 归档元数据及其中 OMP 18.12.6 源码，未改写原归档或读取其中的认证正文。OMP 原生 `assertOwnerPrivateDir` 会把自身目录从 2770 收紧为 0700；chroot 的客体 UID 与 App UID 不同，启动时共享组 chmod 无法保证原生运行后 App 仍能遍历。该机制与反馈一致，但尚未取得故障设备的 UID、SELinux 与挂载现场，不能宣称已证明所有设备差异的唯一原因。
+
+- `OmpGuestFiles` / `guest-files.mjs` 用当前客体账户执行配置、会话历史、模型扩展、附件和管理通道文件操作。按容器运行代次复用文件进程，文件分块传输、目录分批读取；不把 `EACCES` 当成不存在或空配置，不把文件进程异常退出当作用户停止。
+- 配置保持 YAML 注释、未知字段和认证值，SHA-256 版本冲突拒绝覆盖，写入采用同目录暂存与替换；跨文件失败仅尝试回滚本次仍未被外部改动的写入，不承诺整组文件的磁盘事务。拒绝链接、危险类型、硬链接写入、受保护根和只读挂载。
+- 会话、配置、提交、清理及后续原生启动绑定停止/运行代次；停止或快速重启后旧操作不能重新拉起容器或提交到新实例。取消单次读取、暂存写入或历史响应等待不关闭整个共享文件进程，未交付的句柄与暂存文件会清理；已完成的原子提交不伪装为回滚。原生请求/响应继续校验 OMP 实例。
+- 移除 OMP 通道及 Skill 的共享组放宽分支；HOME/容器信息/布局的离线访问契约不变，不使用 777、递归修复全 HOME、吞权限错误或重建 Rootfs。
+
+已在隔离 HOME 的真实 arm64 PRoot/QEMU + Bun 中调用 OMP 原生私有目录检查，观察到 2770 → 700；随后生产客体文件进程连续两轮创建、读取私有会话文件，内容正确且文件保持 600。真实 OMP RPC 连续两轮完成 `ready`、`get_state`、`get_available_commands`，通过生产 `session.mjs` 与文件进程完成实例隔离的 `pins` 请求/响应；仅使用隔离 HOME 和 loopback 模型配置，未发送模型请求或导入开发机认证。另有 Linux Node 生产进程烟测覆盖创建、替换、原生收紧后的继续读写和过期版本拒绝。BusyBox 路径下的权限准备与 Skill 定向回归通过。开发机 user namespace UID 映射被系统拒绝，未获得真实特权 chroot/跨 UID 或 Android SELinux 验证；未使用 Android 模拟器，不把 JVM/Linux 与 APK 构建结果当作问题设备已修复。
+
+本轮验证结果：
+
+| 范围 | 通过 | 失败 / 错误 |
+| --- | ---: | ---: |
+| `agent-driver-omp:desktopTest` | 216 | 0 |
+| `container-runtime:desktopTest` | 182 | 0 |
+| `container-runtime:testDebugUnitTest` | 10 | 0 |
+| 原生会话通道 Node 回归 | 1 | 0 |
+
+```bash
+./gradlew :agent-driver-omp:desktopTest :container-runtime:desktopTest \
+  :container-runtime:testDebugUnitTest :app-android:assembleDebug --continue --console=plain
+node --experimental-vm-modules --test agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs
+env WAWLINK_TEST_HOST_TOOLS=/usr/bin/busybox WAWLINK_TEST_BUSYBOX=/usr/bin/busybox \
+  ./gradlew :container-runtime:desktopTest --rerun \
+  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
+  --tests 'dev.wawlink.runtime.ContainerFeatureSkillTest' --console=plain
+```
+
+默认 Debug APK 为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，本轮构建与 `apksigner verify` 通过，57,216,080 字节。它使用 Android Debug 签名，与正式 Release 不同，不能据此承诺覆盖安装；复测不得通过卸载正式版丢弃原容器数据。
 

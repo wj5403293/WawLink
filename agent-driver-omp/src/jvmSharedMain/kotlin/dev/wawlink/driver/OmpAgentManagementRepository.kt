@@ -1,13 +1,11 @@
 package dev.wawlink.driver
 
 import dev.wawlink.protocol.*
-import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.wasInterrupted
-import java.io.File
+import dev.wawlink.runtime.withContainerFileOperation
 import java.io.IOException
 import java.io.InputStream
-import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -23,9 +21,8 @@ import kotlinx.serialization.json.*
 internal class OmpAgentManagementRepository(
     private val runtime: ContainerRuntime,
     private val context: AgentConfigurationContext,
-    private val directory: () -> File,
+    private val files: OmpGuestFiles,
     private val guestDirectory: () -> String,
-    private val resolveGuest: (String, Boolean) -> File,
     parentScope: CoroutineScope,
     private val changed: suspend (ConfigurationScope, Set<String>) -> Unit,
     private val pin: suspend (String, String?) -> Unit,
@@ -45,7 +42,8 @@ internal class OmpAgentManagementRepository(
     private data class PendingRequest(val child: Process, val result: CompletableDeferred<JsonElement>, val models: MutableList<ManagedModel>?)
     private val pending = ConcurrentHashMap<String, PendingRequest>()
     @Volatile private var closed = false
-    private class NativeChild(val process: Process, val stopGeneration: Long) {
+    private class NativeChild(val process: Process, val files: OmpFileSession) {
+        val stopGeneration: Long get() = files.stopGeneration
         @Volatile var intentional = false
         val reported = AtomicBoolean()
     }
@@ -56,19 +54,19 @@ internal class OmpAgentManagementRepository(
     private fun currentStopGeneration(): Long = runtime.containers.value.firstOrNull { it.config.id == context.containerId }?.stopGeneration
         ?: throw OmpProcessStoppedException()
 
-    private fun interrupted(owner: NativeChild): Boolean = owner.intentional || runtime.wasInterrupted(context.containerId, owner.stopGeneration)
+    private fun interrupted(owner: NativeChild): Boolean = owner.intentional || runtime.containers.value.none {
+        it.config.id == context.containerId && it.running && it.stopGeneration == owner.stopGeneration && it.runGeneration == owner.files.runGeneration
+    }
 
     init {
         val generation = runtime.containers.value.firstOrNull { it.config.id == context.containerId }?.stopGeneration
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            runtime.containers.map { values -> values.firstOrNull { it.config.id == context.containerId }?.stopGeneration }
-                .distinctUntilChanged().collect { current ->
-                    if (current != generation) {
-                        val owner = nativeChild.get()
-                        if (owner == null || interrupted(owner)) {
-                            owner?.let(::stopOwned)
-                            mutable.update { it.copy(loading = false, modelsLoading = false, authentication = null) }
-                        }
+            runtime.containers.map { values -> values.firstOrNull { it.config.id == context.containerId }?.let { Triple(it.running, it.runGeneration, it.stopGeneration) } }
+                .distinctUntilChanged().collect {
+                    val owner = nativeChild.get()
+                    if ((owner == null && it?.third != generation) || (owner != null && interrupted(owner))) {
+                        owner?.let(::stopOwned)
+                        mutable.update { it.copy(loading = false, modelsLoading = false, authentication = null) }
                     }
                 }
         }
@@ -79,11 +77,11 @@ internal class OmpAgentManagementRepository(
 
     val resources: AgentResourceRepository = object : AgentResourceRepository {
         override val context: AgentConfigurationContext get() = this@OmpAgentManagementRepository.context
-        override suspend fun request(operation: String, arguments: Map<String, Any?>): Map<String, Any?> = externalOperation { stopGeneration ->
+        override suspend fun request(operation: String, arguments: Map<String, Any?>): Map<String, Any?> = externalOperation { session ->
             require(operation.startsWith("plugins.") || operation.startsWith("skills.")) { "未知的资源管理操作" }
             suspend fun perform(): Map<String, Any?> {
                 val result = try {
-                    this@OmpAgentManagementRepository.request(operation, arguments, stopGeneration = stopGeneration).configMap()
+                    this@OmpAgentManagementRepository.request(operation, arguments, fileSession = session).configMap()
                 } catch (failure: Exception) {
                     val mayHaveWritten = when (operation) {
                         "plugins.install", "plugins.uninstall", "plugins.upgrade", "plugins.upgradeMarket",
@@ -113,29 +111,32 @@ internal class OmpAgentManagementRepository(
         }
     }
 
-    private suspend fun start(stopGeneration: Long) = lifecycle.withLock {
+    private suspend fun start(fileSession: OmpFileSession) = lifecycle.withLock {
+        val stopGeneration = fileSession.stopGeneration
         check(!closed) { "Agent management is closed" }
         if (runtime.wasInterrupted(context.containerId, stopGeneration)) throw OmpProcessStoppedException()
         nativeChild.get()?.let { owner ->
-            if (!interrupted(owner) && owner.process.isAlive) return@withLock
+            if (!interrupted(owner) && owner.files === fileSession && owner.process.isAlive) return@withLock
             stopOwned(owner)
         }
         val generation = parkGeneration.get()
-        val root = directory()
-        val guestRoot = guestDirectory().trimEnd('/')
-        val destination = File(root, "wawlink/management")
-        require(destination.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Management bridge path escapes container" }
+        val guestRoot = scopedPath(guestDirectory())
+        val destination = scopedPath("$guestRoot/wawlink/management", write = true)
+        fileSession.mkdirs(destination)
         for (name in listOf("bootstrap.mjs", "main.mjs", "agents.ts", "auth-models.ts", "diagnostics.mjs", "plugins.ts", "plugin-native.mjs", "plugin-worker.ts", "skills.ts", "skill-files.ts", "skill-registry.ts", "clawhub.ts", "clawhub-http.ts", "clawhub-source.ts")) {
             val source = requireNotNull(javaClass.getResourceAsStream("/omp-management/$name")) { "Missing bundled native management bridge" }.bufferedReader().use { it.readText() }
-            val file = File(destination, name)
-            require(file.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Management bridge path escapes container" }
-            if (!file.exists() || file.readText() != source) repoAtomicWrite(file, source, hostConfiguration(file))
+            val path = scopedPath("$destination/$name", write = true)
+            if (fileSession.readText(path) != source) fileSession.writeText(path, source)
         }
         if (runtime.wasInterrupted(context.containerId, stopGeneration) || generation != parkGeneration.get()) throw OmpProcessStoppedException()
+        var launched: Process? = null
         val child = try {
-            runtime.openProcess(context.containerId, listOf("/usr/local/bin/bun", "$guestRoot/wawlink/management/bootstrap.mjs"), context.projectPath ?: "/", mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1"))
-        } catch (cancelled: CancellationException) { throw cancelled }
+            withContainerFileOperation(runtime, context.containerId, stopGeneration, runningOnly = true, expectedRunGeneration = fileSession.runGeneration) {
+                runtime.openRunningProcess(context.containerId, listOf("/usr/local/bin/bun", "$guestRoot/wawlink/management/bootstrap.mjs"), context.projectPath ?: "/", mapOf("PI_NO_PTY" to "1", "PI_NO_TITLE" to "1")).also { launched = it }
+            }
+        } catch (cancelled: CancellationException) { launched?.let(::stop); throw cancelled }
         catch (failure: Exception) {
+            launched?.let(::stop)
             if (runtime.wasInterrupted(context.containerId, stopGeneration) || generation != parkGeneration.get()) throw OmpProcessStoppedException()
             scope.launch {
                 if (closed || generation != parkGeneration.get() || runtime.wasInterrupted(context.containerId, stopGeneration)) return@launch
@@ -148,7 +149,7 @@ internal class OmpAgentManagementRepository(
             }
             throw failure
         }
-        val owner = NativeChild(child, stopGeneration)
+        val owner = NativeChild(child, fileSession)
         nativeChild.set(owner)
         if (closed || generation != parkGeneration.get() || interrupted(owner)) { stopOwned(owner); throw OmpProcessStoppedException() }
         scope.launch {
@@ -162,7 +163,7 @@ internal class OmpAgentManagementRepository(
                     if (nativeChild.get() !== owner || interrupted(owner)) throw OmpProcessStoppedException()
                     when (frame.text("event")) {
                         "authentication" -> mutable.update { it.copy(error = frame.optional("error"), authentication = (frame["challenge"] as? JsonObject)?.let { value -> AuthenticationChallenge(value.text("provider"), value.optional("url"), value.optional("instructions"), value.optional("prompt"), value["secret"]?.jsonPrimitive?.booleanOrNull == true) }) }
-                        "changed" -> scope.launch { reloadForGeneration(false, owner.stopGeneration) }
+                        "changed" -> scope.launch { reloadForSession(false, owner.files) }
                         "models_page" -> {
                             val response = pending[frame.text("id")]
                             if (response?.child === child && response.models != null) {
@@ -254,11 +255,11 @@ internal class OmpAgentManagementRepository(
             throw failure
         } finally { pending.remove(id) }
     }
-    private suspend fun <T> externalOperation(block: suspend (Long) -> T): T {
+    private suspend fun <T> externalOperation(block: suspend (OmpFileSession) -> T): T {
         val stopGeneration = runtime.containers.value.firstOrNull { it.config.id == context.containerId }?.stopGeneration
         try {
             if (stopGeneration == null) throw OmpProcessStoppedException()
-            return block(stopGeneration)
+            return block(files.session(expectedStopGeneration = stopGeneration))
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             if (failure !is OmpProcessStoppedException && stopGeneration != null && !runtime.wasInterrupted(context.containerId, stopGeneration)) throw failure
@@ -267,8 +268,8 @@ internal class OmpAgentManagementRepository(
     }
 
     private suspend fun request(op: String, args: Map<String, Any?> = emptyMap(), models: MutableList<ManagedModel>? = null,
-        stopGeneration: Long = currentStopGeneration()): JsonElement = withContext(Dispatchers.IO) {
-        try { start(stopGeneration); requestStarted(op, args, models, stopGeneration) }
+        fileSession: OmpFileSession, stopGeneration: Long = fileSession.stopGeneration): JsonElement = withContext(Dispatchers.IO) {
+        try { start(fileSession); requestStarted(op, args, models, stopGeneration) }
         catch (failure: Exception) {
             if (failure !is CancellationException && runtime.wasInterrupted(context.containerId, stopGeneration)) throw OmpProcessStoppedException()
             throw failure
@@ -293,90 +294,87 @@ internal class OmpAgentManagementRepository(
             when (frame.text("op")) {
                 "pinAccount" -> pin(args.text("provider"), args.optional("accountId"))
                 "accountPins" -> result = pins()
-                "editSettings" -> editSettings(ConfigurationScope.valueOf(args.text("scope")), args["changes"].configMap(), checkVersion = true)
+                "editSettings" -> editSettings(owner.files, ConfigurationScope.valueOf(args.text("scope")), args["changes"].configMap(), checkVersion = true)
                 "atomicWrite", "atomicDelete", "patchYaml" -> {
-                    val file = writable(args.text("path"))
+                    val file = scopedPath(args.text("path"), write = true)
                     val expected = args.optional("expectedVersion")
-                    if (expected != null) require(version(file) == expected) { "Configuration changed on disk; reload before saving" }
+                    if (expected != null) require(owner.files.version(file) == expected) { "Configuration changed on disk; reload before saving" }
                     when (frame.text("op")) {
-                        "atomicWrite" -> repoAtomicWrite(file, args.text("content"), hostConfiguration(file))
-                        "atomicDelete" -> check(!file.exists() || file.delete()) { "Cannot delete definition" }
+                        "atomicWrite" -> owner.files.writeText(file, args.text("content"), expectedVersion = expected)
+                        "atomicDelete" -> { owner.files.request("delete", mapOf("path" to file, "expectedVersion" to expected)) }
                         else -> {
                             val body = args.optional("body")
-                            val current = if (file.exists()) file.readText() else ""
+                            val current = owner.files.readText(file).orEmpty()
                             val yamlText = if (body != null && current.removePrefix("\uFEFF").startsWith("---")) current.lineSequence().drop(1).takeWhile { it.trim() != "---" }.joinToString("\n") else if (body != null) "" else current
                             val yaml = safeYaml(yamlText)
                             args["changes"].configMap().forEach { (key, value) -> yaml.set(if (body != null) listOf(key) else key.split('.'), value) }
-                            repoAtomicWrite(file, if (body == null) yaml.render() else "---\n${yaml.render()}---\n$body", hostConfiguration(file))
+                            owner.files.writeText(file, if (body == null) yaml.render() else "---\n${yaml.render()}---\n$body", expectedVersion = expected)
                         }
                     }
                 }
                 else -> error("Unsupported host management operation")
             }
         } catch (failure: Exception) {
-            failureMessage = when (failure.message) {
-                "Configuration changed on disk; reload before saving" -> "CONFLICT: Configuration changed on disk; reload before saving"
-                "Invalid configuration path", "Definition is outside the selected configuration scope", "Configuration symlink escapes scope" -> "UNAVAILABLE: Configuration path is outside the selected writable scope"
-                "Cannot delete definition" -> "UNAVAILABLE: Cannot delete the selected configuration definition"
+            failureMessage = when {
+                failure is OmpGuestFileException && failure.code == "CONFLICT" -> "CONFLICT: Configuration changed on disk; reload before saving"
+                failure.message == "Configuration changed on disk; reload before saving" -> "CONFLICT: Configuration changed on disk; reload before saving"
+                failure.message in setOf("Invalid configuration path", "Definition is outside the selected configuration scope") -> "UNAVAILABLE: Configuration path is outside the selected writable scope"
                 else -> "UNAVAILABLE: Cannot persist configuration or access the selected session capability"
             }
         }
         send(child, buildJsonObject { put("id", frame.text("id")); put("hostResponse", true); if (failureMessage != null) put("error", failureMessage) else put("result", result.element()) })
     }
 
-    private fun hostConfiguration(file: File): ContainerConfig? {
-        val configuration = runtime.containers.value.firstOrNull { it.config.id == context.containerId }?.config
-            ?: throw OmpProcessStoppedException()
-        if (file.toPath().startsWith(directory().toPath())) return configuration
-        val project = requireNotNull(context.projectPath).trimEnd('/')
-        return configuration.takeUnless { candidate -> candidate.mounts.any { mount ->
-            val target = mount.target.trimEnd('/')
-            project == target || project.startsWith("$target/") || target.startsWith("$project/")
-        } }
+    private fun scopedPath(guest: String, write: Boolean = false): String {
+        fun normalized(path: String, rootAllowed: Boolean = false): Boolean =
+            path.startsWith('/') && '\u0000' !in path && ((rootAllowed && path == "/") ||
+                (path != "/" && !path.endsWith('/') && path.split('/').drop(1).none { it.isEmpty() || it == "." || it == ".." }))
+        require(normalized(guest)) { "Invalid configuration path" }
+        fun within(path: String, root: String) = root == "/" || path == root || path.startsWith("$root/")
+        val global = guestDirectory()
+        val project = context.projectPath
+        require(normalized(global) && (project == null || normalized(project, rootAllowed = true))) { "Invalid configuration path" }
+        val inGlobal = within(guest, global)
+        require(inGlobal || (project != null && within(guest, project))) { "Definition is outside the selected configuration scope" }
+        val configuration = runtime.containers.value.firstOrNull { it.config.id == context.containerId }?.config ?: throw OmpProcessStoppedException()
+        require(configuration.mounts.none { mount ->
+            val target = mount.target.trimEnd('/').ifEmpty { "/" }
+            val overlaps = target == "/" || within(guest, target) || within(target, guest)
+            overlaps && (inGlobal || (write && !mount.readWrite))
+        }) { "Definition is outside the selected configuration scope" }
+        return guest
     }
+    private suspend fun config(session: OmpFileSession, scope: ConfigurationScope, write: Boolean = false): String = if (scope == ConfigurationScope.GLOBAL) {
+        val root = scopedPath(guestDirectory())
+        val yml = scopedPath("$root/config.yml", write)
+        if (session.stat(yml) != null || session.stat(scopedPath("$root/config.yaml", write)) == null) yml else scopedPath("$root/config.yaml", write)
+    } else scopedPath(requireNotNull(context.projectPath) { "No project selected" }.trimEnd('/') + "/.omp/config.yml", write)
 
-    private fun writable(guest: String): File {
-        require(guest.startsWith('/') && guest.split('/').none { it == ".." }) { "Invalid configuration path" }
-        val global = guestDirectory().trimEnd('/') + "/"
-        val project = context.projectPath?.trimEnd('/')?.plus("/")
-        require(guest.startsWith(global) || (project != null && guest.startsWith(project))) { "Definition is outside the selected configuration scope" }
-        // Global configuration is rootfs-owned, even when a host mount shadows its guest path.
-        val root = if (guest.startsWith(global)) directory() else resolveGuest(requireNotNull(context.projectPath), true)
-        val file = if (guest.startsWith(global)) File(root, guest.removePrefix(global)) else resolveGuest(guest, true)
-        require(file.canonicalFile.toPath().startsWith(root.canonicalFile.toPath())) { "Configuration symlink escapes scope" }
-        return file
-    }
-    private fun config(scope: ConfigurationScope): File = if (scope == ConfigurationScope.GLOBAL) {
-        File(directory(), "config.yml").let { yml -> writable(guestDirectory().trimEnd('/') + "/" + if (yml.exists() || !File(directory(), "config.yaml").exists()) "config.yml" else "config.yaml") }
-    } else writable(requireNotNull(context.projectPath) { "No project selected" }.trimEnd('/') + "/.omp/config.yml")
-    private fun version(file: File): String {
-        if (!file.exists()) return ""
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(8192)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                digest.update(buffer, 0, count)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-    private suspend fun editSettings(scope: ConfigurationScope, changes: Map<String, Any?>, checkVersion: Boolean) {
-        val file = config(scope)
-        if (checkVersion) versions[file.path]?.let { require(version(file) == it) { "Configuration changed on disk; reload before saving" } }
-        val yaml = safeYaml(if (file.exists()) file.readText() else "")
+    private suspend fun editSettings(session: OmpFileSession, scope: ConfigurationScope, changes: Map<String, Any?>, checkVersion: Boolean) {
+        val file = config(session, scope, write = true)
+        val expected = session.version(file)
+        if (checkVersion) versions[file]?.let { require(expected == it) { "Configuration changed on disk; reload before saving" } }
+        val yaml = safeYaml(session.readText(file).orEmpty())
         changes.forEach { (key, value) -> require(key.split('.').none { it in setOf("__proto__", "prototype", "constructor") }); yaml.set(key.split('.'), value) }
-        yaml.write(file, hostConfiguration(file))
-        versions[file.path] = version(file)
+        session.writeText(file, yaml.render(), expectedVersion = expected)
+        versions[file] = session.version(file)
         changed(scope, changes.keys)
     }
 
-    override suspend fun reload(online: Boolean) = externalOperation { reloadForGeneration(online, it) }
+    override suspend fun reload(online: Boolean) = externalOperation { reloadForSession(online, it) }
 
-    private suspend fun reloadForGeneration(online: Boolean, stopGeneration: Long) = withContext(Dispatchers.IO) {
+    private suspend fun reloadForGeneration(online: Boolean, stopGeneration: Long) {
+        try { reloadForSession(online, files.session(expectedStopGeneration = stopGeneration)) }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            mutable.update { it.copy(loading = false, modelsLoading = false,
+                error = if (failure is OmpProcessStoppedException || runtime.wasInterrupted(context.containerId, stopGeneration)) it.error else managementFailure(failure)) }
+        }
+    }
+    private suspend fun reloadForSession(online: Boolean, session: OmpFileSession) = withContext(Dispatchers.IO) {
+        val stopGeneration = session.stopGeneration
         operations.withLock { ompConfigMutex.withLock {
-            try { reloadLocked(online, stopGeneration) }
+            try { reloadLocked(online, session) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 mutable.update { it.copy(loading = false, modelsLoading = false,
@@ -384,31 +382,32 @@ internal class OmpAgentManagementRepository(
             }
         } }
     }
-    private suspend fun prepareNativeConfiguration(file: File, id: String, stopGeneration: Long) {
-        if (!file.exists()) return
-        val content = file.readText()
-        val guest = if (id == "project") context.projectPath?.trimEnd('/') + "/.omp/config.yml" else "${guestDirectory().trimEnd('/')}/${file.name}"
-        val normalized = OmpYaml.parse(content, guest).render()
+    private suspend fun prepareNativeConfiguration(session: OmpFileSession, file: String, id: String) {
+        val expected = session.version(file)
+        val content = session.readText(file) ?: return
+        val normalized = OmpYaml.parse(content, file).render()
         if (normalized == content) return
         // Legacy pretty-flow is legal to SnakeYAML but not to Bun. Validate the
         // complete normalized candidate before migration so a rejected document
         // remains byte-for-byte intact and can still be repaired in the editor.
-        request("validateDocument", mapOf("id" to id, "path" to guest, "content" to normalized), stopGeneration = stopGeneration)
-        repoAtomicWrite(file, normalized, hostConfiguration(file))
+        scopedPath(file, write = true)
+        request("validateDocument", mapOf("id" to id, "path" to file, "content" to normalized), fileSession = session)
+        session.writeText(file, normalized, expectedVersion = expected)
     }
-    private suspend fun reloadLocked(online: Boolean = false, stopGeneration: Long = currentStopGeneration()) {
+    private suspend fun loadConfigurationLocked(session: OmpFileSession, modelsLoading: Boolean) {
+        val stopGeneration = session.stopGeneration
         if (runtime.wasInterrupted(context.containerId, stopGeneration)) throw OmpProcessStoppedException()
-        mutable.update { it.copy(modelsLoading = true, error = null, modelsError = null) }
+        mutable.update { it.copy(modelsLoading = modelsLoading, error = null, modelsError = null) }
         try {
             val before = ConfigurationScope.entries.filter { it == ConfigurationScope.GLOBAL || context.projectPath != null }.associate {
-                val file = config(it)
-                prepareNativeConfiguration(file, if (it == ConfigurationScope.GLOBAL) "global" else "project", stopGeneration)
-                file.path to version(file)
+                val file = config(session, it)
+                prepareNativeConfiguration(session, file, if (it == ConfigurationScope.GLOBAL) "global" else "project")
+                file to session.version(file)
             }
-            val value = request("snapshot", stopGeneration = stopGeneration).jsonObject
-            require(before.all { (path, hash) -> version(File(path)) == hash }) { "Configuration changed while loading; reload before saving" }
+            val value = request("snapshot", fileSession = session).jsonObject
+            require(before.all { (path, hash) -> session.version(path) == hash }) { "Configuration changed while loading; reload before saving" }
             versions.putAll(before)
-            mutable.update { decode(value, it).copy(loading = false, modelsLoading = true) }
+            mutable.update { decode(value, it).copy(loading = false, modelsLoading = modelsLoading) }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
@@ -417,10 +416,14 @@ internal class OmpAgentManagementRepository(
             if (stopped) throw OmpProcessStoppedException()
             throw failure
         }
+    }
+    private suspend fun reloadLocked(online: Boolean = false, session: OmpFileSession) {
+        val stopGeneration = session.stopGeneration
+        loadConfigurationLocked(session, modelsLoading = true)
         try {
-            mutable.value.files.firstOrNull { it.id == "models" }?.let { prepareNativeConfiguration(writable(it.path), "models", stopGeneration) }
+            mutable.value.files.firstOrNull { it.id == "models" }?.let { prepareNativeConfiguration(session, scopedPath(it.path), "models") }
             val models = ArrayList<ManagedModel>(mutable.value.models.size)
-            val value = request("modelsSnapshot", mapOf("online" to online), models, stopGeneration).jsonObject
+            val value = request("modelsSnapshot", mapOf("online" to online), models, fileSession = session).jsonObject
             checkCatalogue(value, models.size)
             val roles = value.list("roles").map(::decodeRole)
             val accounts = value.list("accounts").map { ManagedAccount(it.text("provider"), it.text("id"), it.text("label"), it.text("type"), it.text("status"), it.optional("quota"), it["pinned"]?.jsonPrimitive?.booleanOrNull == true) }
@@ -435,9 +438,9 @@ internal class OmpAgentManagementRepository(
             if (stopped) throw OmpProcessStoppedException()
         }
     }
-    override suspend fun updateSettings(scope: ConfigurationScope, changes: Map<String, Any?>) = externalOperation { stopGeneration -> withContext(Dispatchers.IO) {
+    override suspend fun updateSettings(scope: ConfigurationScope, changes: Map<String, Any?>) = externalOperation { session -> withContext(Dispatchers.IO) {
         operations.withLock { ompConfigMutex.withLock {
-            request("updateSettings", mapOf("scope" to scope.name, "changes" to changes), stopGeneration = stopGeneration); reloadLocked(stopGeneration = stopGeneration)
+            request("updateSettings", mapOf("scope" to scope.name, "changes" to changes), fileSession = session); reloadLocked(session = session)
             if (changes.keys.any { it == "modelRoles" || it == "modelRoles.default" || it == "defaultThinkingLevel" }) applyResolvedDefault()
         } }
     } }
@@ -445,11 +448,11 @@ internal class OmpAgentManagementRepository(
         val keys = state.value.categories.flatMap { it.groups }.flatMap { it.items }.map { it.id }.filterNot { it in setOf("modelRoles", "modelTags", "modelPresets", "modelRoleStorage", "enabledModels", "enabledProviders", "disabledProviders", "modelProviderOrder", "cycleOrder", "retry.fallbackChains") }
         updateSettings(scope, keys.associateWith { null })
     }
-    private suspend fun mutation(op: String, args: Map<String, Any?>) = externalOperation { stopGeneration -> withContext(Dispatchers.IO) {
+    private suspend fun mutation(op: String, args: Map<String, Any?>) = externalOperation { session -> withContext(Dispatchers.IO) {
         operations.withLock { ompConfigMutex.withLock {
-            request(op, args, stopGeneration = stopGeneration)
+            request(op, args, fileSession = session)
             if (op !in setOf("applyPreset", "savePreset", "deletePreset")) changed(if (args["scope"] == "PROJECT") ConfigurationScope.PROJECT else ConfigurationScope.GLOBAL, emptySet())
-            reloadLocked(stopGeneration = stopGeneration)
+            reloadLocked(session = session)
             if (op == "applyPreset") applyResolvedDefault()
         } }
     } }
@@ -462,41 +465,50 @@ internal class OmpAgentManagementRepository(
     private fun safeYaml(content: String): OmpYaml = try { OmpYaml.parse(content) } catch (_: Exception) { throw IllegalArgumentException("Invalid YAML configuration; content is not included for credential safety") }
     override suspend fun saveAgent(scope: ConfigurationScope, name: String, fields: Map<String, Any?>, systemPrompt: String, original: ManagedAgent?) = mutation("saveAgent", mapOf("scope" to scope.name, "name" to name, "fields" to fields, "systemPrompt" to systemPrompt, "original" to original?.values()))
     override suspend fun deleteAgent(agent: ManagedAgent) = mutation("deleteAgent", mapOf("agent" to agent.values(), "scope" to if (context.projectPath?.let { agent.path.startsWith(it.trimEnd('/') + "/") } == true) "PROJECT" else "GLOBAL"))
-    override suspend fun generateAgent(description: String): String = externalOperation { request("generateAgent", mapOf("description" to description), stopGeneration = it).jsonPrimitive.content }
-    override suspend fun parseAgent(content: String): ManagedAgent = externalOperation { decodeAgent(request("parseAgent", mapOf("content" to content), stopGeneration = it).jsonObject) }
-    override suspend fun renderAgent(name: String, fields: Map<String, Any?>, systemPrompt: String): String = externalOperation { request("renderAgent", mapOf("name" to name, "fields" to fields, "systemPrompt" to systemPrompt), stopGeneration = it).jsonPrimitive.content }
-    override suspend fun previewRole(role: String, scope: ConfigurationScope, selector: String?): ManagedRole = externalOperation { decodeRole(request("previewRole", mapOf("role" to role, "scope" to scope.name, "selector" to selector), stopGeneration = it).jsonObject) }
-    override suspend fun modelDetails(provider: String, modelId: String): ManagedModel = externalOperation { stopGeneration -> withContext(Dispatchers.IO) {
-        operations.withLock { decodeModel(request("modelDetails", mapOf("provider" to provider, "modelId" to modelId), stopGeneration = stopGeneration).jsonObject) }
+    override suspend fun generateAgent(description: String): String = externalOperation { request("generateAgent", mapOf("description" to description), fileSession = it).jsonPrimitive.content }
+    override suspend fun parseAgent(content: String): ManagedAgent = externalOperation { decodeAgent(request("parseAgent", mapOf("content" to content), fileSession = it).jsonObject) }
+    override suspend fun renderAgent(name: String, fields: Map<String, Any?>, systemPrompt: String): String = externalOperation { request("renderAgent", mapOf("name" to name, "fields" to fields, "systemPrompt" to systemPrompt), fileSession = it).jsonPrimitive.content }
+    override suspend fun previewRole(role: String, scope: ConfigurationScope, selector: String?): ManagedRole = externalOperation { decodeRole(request("previewRole", mapOf("role" to role, "scope" to scope.name, "selector" to selector), fileSession = it).jsonObject) }
+    override suspend fun modelDetails(provider: String, modelId: String): ManagedModel = externalOperation { session -> withContext(Dispatchers.IO) {
+        operations.withLock { decodeModel(request("modelDetails", mapOf("provider" to provider, "modelId" to modelId), fileSession = session).jsonObject) }
     } }
-    override suspend fun modelDefaults(provider: String, modelId: String, api: String): Map<String, Any?> = externalOperation { stopGeneration -> withContext(Dispatchers.IO) {
-        operations.withLock { request("modelDefaults", mapOf("provider" to provider, "modelId" to modelId, "api" to api), stopGeneration = stopGeneration).configMap() }
+    override suspend fun modelDefaults(provider: String, modelId: String, api: String): Map<String, Any?> = externalOperation { session -> withContext(Dispatchers.IO) {
+        operations.withLock { request("modelDefaults", mapOf("provider" to provider, "modelId" to modelId, "api" to api), fileSession = session).configMap() }
     } }
-    override suspend fun fetchProviderModels(provider: String) = externalOperation { stopGeneration -> withContext(Dispatchers.IO) {
+    override suspend fun fetchProviderModels(provider: String) = externalOperation { session -> withContext(Dispatchers.IO) {
         operations.withLock { ompConfigMutex.withLock {
-            request("fetchProviderModels", mapOf("provider" to provider), stopGeneration = stopGeneration)
-            reloadLocked(stopGeneration = stopGeneration)
+            request("fetchProviderModels", mapOf("provider" to provider), fileSession = session)
+            reloadLocked(session = session)
         } }
     } }
     override suspend fun saveAdvisor(scope: ConfigurationScope, configuration: Map<String, Any?>, original: ManagedAdvisor?) = mutation("saveAdvisor", mapOf("scope" to scope.name, "configuration" to configuration, "original" to original?.values()))
     override suspend fun deleteAdvisor(advisor: ManagedAdvisor) = mutation("deleteAdvisor", mapOf("advisor" to advisor.values(), "scope" to advisor.scope.name))
     override suspend fun updateAdvisorShared(scope: ConfigurationScope, instructions: String, maxNotes: Int?) = mutation("updateAdvisorShared", mapOf("scope" to scope.name, "instructions" to instructions, "maxNotes" to maxNotes))
 
-    override suspend fun readDocument(id: String): ConfigurationDocument = withContext(Dispatchers.IO) { ompConfigMutex.withLock {
-        val definition = state.value.files.firstOrNull { it.id == id } ?: error("Unknown configuration document")
-        val file = writable(definition.path)
-        val content = if (file.exists()) file.readText() else ""
-        ConfigurationDocument(id, definition.path, content, version(file), definition.writable, if (content.isBlank()) emptyMap() else runCatching { safeYaml(content).values() }.getOrDefault(emptyMap()))
+    override suspend fun readDocument(id: String): ConfigurationDocument = externalOperation { session -> withContext(Dispatchers.IO) {
+        operations.withLock { ompConfigMutex.withLock {
+            if (state.value.files.isEmpty()) {
+                // A failed or unfinished initial snapshot is not an unknown document.
+                state.value.error?.let { error(it) }
+                loadConfigurationLocked(session, modelsLoading = false)
+            }
+            val definition = state.value.files.firstOrNull { it.id == id } ?: error("Unknown configuration document")
+            val file = scopedPath(definition.path)
+            val version = session.version(file)
+            val content = session.readText(file).orEmpty()
+            require(session.version(file) == version) { "Configuration changed while loading; reload before saving" }
+            ConfigurationDocument(id, definition.path, content, version, definition.writable, if (content.isBlank()) emptyMap() else runCatching { safeYaml(content).values() }.getOrDefault(emptyMap()))
+        } }
     } }
-    override suspend fun saveDocument(document: ConfigurationDocument, content: String, overwrite: Boolean) = externalOperation { stopGeneration -> withContext(Dispatchers.IO) {
+    override suspend fun saveDocument(document: ConfigurationDocument, content: String, overwrite: Boolean) = externalOperation { session -> withContext(Dispatchers.IO) {
         operations.withLock { ompConfigMutex.withLock {
             require(document.writable)
-            val file = writable(document.path)
+            val file = scopedPath(document.path, write = true)
             require(state.value.files.any { it.id == document.id && it.path == document.path && it.writable }) { "Unknown configuration document" }
-            require(overwrite || version(file) == document.version) { "Configuration changed on disk; reload before saving" }
-            request("validateDocument", mapOf("id" to document.id, "path" to document.path, "content" to content), stopGeneration = stopGeneration)
-            request("writeDocument", mapOf("path" to document.path, "content" to content, "expectedVersion" to if (overwrite) null else document.version), stopGeneration = stopGeneration)
-            changed(if (document.id == "project") ConfigurationScope.PROJECT else ConfigurationScope.GLOBAL, emptySet()); reloadLocked(stopGeneration = stopGeneration)
+            require(overwrite || session.version(file) == document.version) { "Configuration changed on disk; reload before saving" }
+            request("validateDocument", mapOf("id" to document.id, "path" to document.path, "content" to content), fileSession = session)
+            request("writeDocument", mapOf("path" to document.path, "content" to content, "expectedVersion" to if (overwrite) null else document.version), fileSession = session)
+            changed(if (document.id == "project") ConfigurationScope.PROJECT else ConfigurationScope.GLOBAL, emptySet()); reloadLocked(session = session)
         } }
     } }
     override suspend fun saveDocumentValues(document: ConfigurationDocument, values: Map<String, Any?>) {
@@ -504,11 +516,11 @@ internal class OmpAgentManagementRepository(
         yaml.replace(values)
         saveDocument(document, yaml.render())
     }
-    override suspend fun exportRedacted(): String = externalOperation { stopGeneration -> withContext(Dispatchers.IO) {
+    override suspend fun exportRedacted(): String = externalOperation { session -> withContext(Dispatchers.IO) {
         operations.withLock {
-            val configuration = request("snapshot", stopGeneration = stopGeneration).jsonObject
+            val configuration = request("snapshot", fileSession = session).jsonObject
             val models = ArrayList<ManagedModel>(mutable.value.models.size)
-            val catalogue = request("modelsSnapshot", models = models, stopGeneration = stopGeneration).jsonObject
+            val catalogue = request("modelsSnapshot", models = models, fileSession = session).jsonObject
             checkCatalogue(catalogue, models.size)
             val entries = JsonArray(models.map { model -> buildJsonObject {
                 put("provider", model.provider); put("id", model.id); put("name", model.name)
@@ -522,15 +534,15 @@ internal class OmpAgentManagementRepository(
     override suspend fun applyPreset(name: String) = mutation("applyPreset", mapOf("name" to name))
     override suspend fun savePreset(name: String) = mutation("savePreset", mapOf("name" to name))
     override suspend fun deletePreset(name: String) = mutation("deletePreset", mapOf("name" to name))
-    override suspend fun probeModel(provider: String, modelId: String): LatencyInfo = externalOperation { stopGeneration ->
-        val value = request("probeModel", mapOf("provider" to provider, "modelId" to modelId), stopGeneration = stopGeneration).jsonObject
+    override suspend fun probeModel(provider: String, modelId: String): LatencyInfo = externalOperation { session ->
+        val value = request("probeModel", mapOf("provider" to provider, "modelId" to modelId), fileSession = session).jsonObject
         LatencyInfo(value["latencyMs"]?.jsonPrimitive?.longOrNull ?: 0, value["statusCode"]?.jsonPrimitive?.intOrNull ?: 0, value.text("message"))
     }
-    override suspend fun login(provider: String) { externalOperation { request("login", mapOf("provider" to provider), stopGeneration = it) } }
-    override suspend fun answerLogin(value: String) { externalOperation { request("answerLogin", mapOf("value" to value), stopGeneration = it) } }
+    override suspend fun login(provider: String) { externalOperation { request("login", mapOf("provider" to provider), fileSession = it) } }
+    override suspend fun answerLogin(value: String) { externalOperation { request("answerLogin", mapOf("value" to value), fileSession = it) } }
     override fun cancelLogin() { if (!closed && nativeChild.get()?.process?.isAlive == true) scope.launch { runCatching { requestStarted("cancelLogin") } } }
     override suspend fun logout(provider: String, accountId: String?) { mutation("logout", mapOf("provider" to provider, "accountId" to accountId)) }
-    override suspend fun pinAccount(provider: String, accountId: String?) { externalOperation { generation -> require(context.sessionId != null) { "Runtime account pinning requires an active session" }; request("pinAccount", mapOf("provider" to provider, "accountId" to accountId), stopGeneration = generation); reloadForGeneration(false, generation) } }
+    override suspend fun pinAccount(provider: String, accountId: String?) { externalOperation { session -> require(context.sessionId != null) { "Runtime account pinning requires an active session" }; request("pinAccount", mapOf("provider" to provider, "accountId" to accountId), fileSession = session); reloadForSession(false, session) } }
 
     private fun decode(v: JsonObject, previous: AgentManagementState): AgentManagementState = AgentManagementState(
         context = context, globalValues = v["globalValues"].configMap(), projectValues = v["projectValues"].configMap(), effectiveValues = v["effectiveValues"].configMap(), defaultValues = v["defaultValues"].configMap(), provenance = v["provenance"].configMap().mapValues { it.value.toString() },

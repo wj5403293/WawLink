@@ -327,7 +327,7 @@ class RuntimeChrootMountTest {
             val command = chrootOwnershipScript(root, home, workspace, uid, gid, listOf(mounted))
             run(command)
             assertEquals(0x5F8, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
-            assertEquals(0x1B0, (Files.getAttribute(configFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals(0x180, (Files.getAttribute(configFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals("settings", configFile.readText())
             assertEquals(0x180, (Files.getAttribute(privateFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals(0x1C0, (Files.getAttribute(privateFile.parentFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
@@ -336,15 +336,8 @@ class RuntimeChrootMountTest {
             assertEquals(outsideMode, Files.getAttribute(outside.toPath(), "unix:mode"))
             assertEquals(protectedMode, Files.getAttribute(protected.toPath(), "unix:mode"))
             assertEquals("untouched", outside.readText())
-            // Exercise production host writes after preparation, not merely mode calculations.
-            val session = File(home, ".omp/agent/wawlink/sessions/new/management")
-            prepareContainerHostDirectory(config, session)
-            val request = Files.createTempFile(session.toPath(), "request-", ".tmp").toFile()
-            prepareContainerHostFile(config, request)
-            request.writeText("request")
-            assertEquals("request", request.readText())
-            assertEquals(ChrootHostIdentity.gid, (Files.getAttribute(request.toPath(), "unix:gid") as Number).toInt())
-            assertEquals(0x1B0, (Files.getAttribute(request.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals(0x1C0, (Files.getAttribute(configFile.parentFile.toPath(), "unix:mode") as Number).toInt() and 0xFFF,
+                "OMP 数据由客体身份访问，不再向宿主共享组开放")
         }
     }
     @Test fun privilegedPreparationAdoptsManagedDataFromNeitherHostNorLoginUid() = fixture { fixture ->
@@ -370,12 +363,43 @@ class RuntimeChrootMountTest {
             run(chrootOwnershipScript(root, home, null, login, "30002", emptyList()), privileged = true)
             assertEquals(0x5F8, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
             for (file in listOf(preferences, settings, skill)) {
-                assertEquals(0x1B0, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+                assertEquals(if (file == preferences) 0x1B0 else 0x180, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
                 file.appendText("\nshared")
             }
             assertEquals("native settings\nshared", settings.readText())
             assertEquals(0x180, (Files.getAttribute(record.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals("record", record.readText())
+        }
+    }
+
+    @Test fun ownershipChangesRestoreSetgidFromFreshMetadataBeforeLaterWrites() = fixture { fixture ->
+        with(fixture) {
+            val home = File(root, "home/imported").apply { mkdirs() }
+            val channel = File(home, ".wawlink").apply { mkdirs() }
+            for (folder in listOf(home, channel)) Files.setAttribute(folder.toPath(), "unix:mode", 0x5F8)
+            val login = if (ChrootHostIdentity.uid == 30000) "30001" else "30000"
+            // Model kernels/filesystems clearing setgid on chown, independent of test runner privileges.
+            intercept("chown", """
+                [ "${'$'}1" != -h ] || shift
+                shift
+                ${shellQuote(tool("chown"))} -h '${ChrootHostIdentity.uid}:${ChrootHostIdentity.gid}' "${'$'}@" || exit
+                if [ -d "${'$'}1" ] && [ ! -L "${'$'}1" ]; then
+                    ${shellQuote(tool("chmod"))} g-s "${'$'}@"
+                fi
+            """.trimIndent())
+            val command = chrootOwnershipScript(root, home, null, login, "30002", emptyList())
+            run(command)
+            for (folder in listOf(home, channel)) {
+                assertEquals(0x5F8, (Files.getAttribute(folder.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            }
+            val session = File(channel, "later-session").apply { mkdir() }
+            assertEquals(0x400, (Files.getAttribute(session.toPath(), "unix:mode") as Number).toInt() and 0x400,
+                "启动后新目录必须继承 setgid，而非只在启动扫描时修复已有目录")
+            val request = Files.createTempFile(session.toPath(), "request-", ".tmp").toFile()
+            prepareContainerHostDirectory(config, session)
+            prepareContainerHostFile(config, request)
+            request.writeText("later request")
+            assertEquals("later request", request.readText())
         }
     }
 
@@ -398,7 +422,7 @@ class RuntimeChrootMountTest {
             val gid = ChrootHostIdentity.gid.toString()
             run(chrootOwnershipScript(root, home, workspace, uid, gid, listOf(mounted)))
             assertEquals(0x5F8, (Files.getAttribute(workspace.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
-            assertEquals(0x1B0, (Files.getAttribute(managed.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals(0x180, (Files.getAttribute(managed.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals("native settings", managed.readText())
             for (file in files + protected) assertEquals(0x100, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF, file.path)
             for (folder in folders) assertEquals(0x1C0, (Files.getAttribute(folder.toPath(), "unix:mode") as Number).toInt() and 0x1FF, folder.path)
@@ -458,7 +482,7 @@ class RuntimeChrootMountTest {
             assertFailsWith<IllegalStateException> { run(command) }
             assertEquals(0x1C0, (Files.getAttribute(outside.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals("untouched", File(outside, "keep").readText())
-            assertEquals(0x5F8, (Files.getAttribute(moved.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            assertEquals(0x1C0, (Files.getAttribute(moved.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
         }
     }
 

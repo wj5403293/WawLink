@@ -682,8 +682,7 @@ suspend fun prepareContainerFeatureSupport(runtime: ContainerRuntime, containerI
         }
     }
     install("内置 Skill 注入失败") {
-        val shared = runtime.containers.value.firstOrNull { it.config.id == containerId }?.config?.engine == ContainerEngineType.CHROOT
-        featureCommand(runtime, containerId, if (shared) FEATURE_SKILL_SHARED_INSTALL else FEATURE_SKILL_INSTALL)
+        featureCommand(runtime, containerId, FEATURE_SKILL_INSTALL)
     }
     install("功能调试器安装失败") { FeatureDebugServices.install(runtime, containerId) }
     ensureCurrent(runtime)

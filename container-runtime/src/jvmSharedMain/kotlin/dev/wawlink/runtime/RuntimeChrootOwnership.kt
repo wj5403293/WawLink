@@ -169,6 +169,8 @@ internal fun chrootOwnershipScript(
             if [ "${'$'}owner" != '$uid' ] || [ "${'$'}group" != "${'$'}target_group" ]; then
                 # Never dereference a file swapped to a symlink during ownership correction.
                 chown -h "$uid:${'$'}target_group" "${'$'}entry"
+                # chown can clear setgid even when the captured mode was already 2770.
+                mode=${'$'}(stat -c '%a' "${'$'}entry")
             fi
             if [ "${'$'}kind" = directory ]; then
                 if [ "${'$'}policy" = shared ]; then
@@ -199,10 +201,10 @@ internal fun chrootOwnershipScript(
         )
     """.trimIndent()
     return worker + "\n" + """
-        worker=${shellQuote(worker + "\nfor location do repair \"\$location\" shared; done")}
+        worker=${shellQuote(worker + "\nfor location do repair \"\$location\" private; done")}
         # BusyBox find can run an unqualified sh as its own ash applet, ignoring PATH.
         worker_shell=${'$'}(command -v sh)
-        scan_shared() {
+        scan_private() {
             [ -d "${'$'}1" ] && [ ! -L "${'$'}1" ] || return 0
             checked "${'$'}1"
             scan_root=${'$'}1; file_filter=
@@ -215,8 +217,8 @@ internal fun chrootOwnershipScript(
             find "${'$'}scan_root" -xdev "${'$'}@" \
                 \( -name node_modules -o -name .git -o -name .bun -o -name .cache -o -name .venv$mountPrunes \) -prune -o \
                 \( ${'$'}file_filter \
-                    \( -type d \( ! -user '$uid' -o ! -group '$hostGid' -o ! -perm -2770 -o -perm -0001 -o -perm -0002 -o -perm -0004 \) \
-                    -o -type f -links 1 \( ! -user '$uid' -o ! -group '$hostGid' -o ! -perm -0660 -o -perm -0001 -o -perm -0002 -o -perm -0004 \) \) \) \
+                    \( -type d \( ! -user '$uid' -o ! -group '$gid' -o ! -perm 0700 \) \
+                    -o -type f -links 1 \( ! -user '$uid' -o ! -group '$gid' -o ! -perm 0600 \) \) \) \
                 -exec "${'$'}worker_shell" -c "${'$'}worker" wawlink-chroot-permissions {} +
         }
         ensure_root "${'$'}home"
@@ -227,9 +229,11 @@ internal fun chrootOwnershipScript(
             parent=${'$'}{parent%/*}
         done
         repair "${'$'}home" shared
-        for dir in .wawlink .omp .omp/agent; do
+        ensure_root "${'$'}home/.wawlink"
+        repair "${'$'}home/.wawlink" shared
+        for dir in .omp .omp/agent; do
             ensure_root "${'$'}home/${'$'}dir"
-            repair "${'$'}home/${'$'}dir" shared
+            repair "${'$'}home/${'$'}dir" private
         done
         repair "${'$'}home/.wawlink/container.json" shared
         repair "${'$'}home/.wawlink/feature-cards.json" shared
@@ -237,13 +241,13 @@ internal fun chrootOwnershipScript(
         repair "${'$'}home/.wawlink/bin/wawlink-feature" executable
         for file in owner installation.json endpoint.json; do repair "${'$'}home/.wawlink/feature-debug/${'$'}file" private; done
         repair "${'$'}home/.wawlink/features" shared
-        scan_shared "${'$'}home/.omp" files
-        scan_shared "${'$'}home/.omp/agent" files
-        # These are host/native management data, not arbitrary skills/plugins/dependencies.
-        for dir in wawlink sessions rules prompts agents advisors; do scan_shared "${'$'}home/.omp/agent/${'$'}dir" tree; done
-        repair "${'$'}home/.omp/agent/skills" shared
-        repair "${'$'}home/.omp/agent/skills/wawlink-functions" shared
-        repair "${'$'}home/.omp/agent/skills/wawlink-functions/SKILL.md" shared
+        scan_private "${'$'}home/.omp" files
+        scan_private "${'$'}home/.omp/agent" files
+        # Adopt offline/imported managed data for the guest, never widen native privacy.
+        for dir in wawlink sessions rules prompts agents advisors; do scan_private "${'$'}home/.omp/agent/${'$'}dir" tree; done
+        repair "${'$'}home/.omp/agent/skills" private
+        repair "${'$'}home/.omp/agent/skills/wawlink-functions" private
+        repair "${'$'}home/.omp/agent/skills/wawlink-functions/SKILL.md" private
         repair "${'$'}home/.omp/agent/skills/wawlink-functions/.wawlink-builtin.sha256" private
         if [ -n "${'$'}workspace" ]; then
             ensure_root "${'$'}workspace"

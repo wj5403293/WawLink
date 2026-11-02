@@ -53,7 +53,7 @@ class OmpPromptDeliveryTest {
                 assertTrue(temporary.renameTo(responseFile))
                 val response = withTimeout(5_000) { result.await() }
                 if (responseInstance == chatManagementInstance) assertTrue(response.isSuccess)
-                else assertContains(response.exceptionOrNull()?.message.orEmpty(), "实例不匹配")
+                else assertEquals("INSTANCE_MISMATCH", (response.exceptionOrNull() as OmpGuestFileException).code)
             }
         }
     }
@@ -1065,23 +1065,23 @@ class OmpPromptDeliveryTest {
         }
     }
 
-    @Test fun chrootMessageStartupCreatesSharedSessionAndExtensionsWithoutLosingOfflineAccess() = runBlocking {
+    @Test fun chrootMessageStartupUsesPrivateGuestSessionExtensionsAndChannel() = runBlocking {
         fixture(withManagement = true, engine = ContainerEngineType.CHROOT, user = "operator") {
             managementTransport.respondManagement(managementCatalogue(), nativeDefault)
             awaitState { !it.modelLoading }
             gate.complete(transport)
             controller.sendPrompt("真实启动链")
             transport.request()
-            assertEquals("1", chatEnvironment["WAWLINK_MANAGEMENT_SHARED_GROUP"])
+            assertFalse("WAWLINK_MANAGEMENT_SHARED_GROUP" in chatEnvironment)
             val sessionPath = chatArguments[chatArguments.indexOf("--session-dir") + 1]
             val session = File(root, sessionPath.trimStart('/'))
             for (directory in listOf(session, File(session, "management"))) {
-                assertEquals("2770".toInt(8), (Files.getAttribute(directory.toPath(), "unix:mode") as Number).toInt() and 0xfff)
+                assertEquals("700".toInt(8), (Files.getAttribute(directory.toPath(), "unix:mode") as Number).toInt() and 0xfff)
             }
             for (extension in chatArguments.zipWithNext().filter { it.first == "--extension" }.map { File(root, it.second.trimStart('/')) }) {
                 assertTrue(extension.canRead())
                 assertTrue(extension.canWrite())
-                assertEquals("660".toInt(8), (Files.getAttribute(extension.toPath(), "unix:mode") as Number).toInt() and 0x1ff)
+                assertEquals("600".toInt(8), (Files.getAttribute(extension.toPath(), "unix:mode") as Number).toInt() and 0x1ff)
             }
             val before = session.listFiles().orEmpty().map { it.name }.toSet()
             val request = async { runCatching { pool.explorer("session").refreshHistory() } }
@@ -1091,7 +1091,7 @@ class OmpPromptDeliveryTest {
                 do { candidate = managed.listFiles()?.firstOrNull { it.name.startsWith("request-") }; if (candidate == null) delay(10) } while (candidate == null)
                 requireNotNull(candidate)
             }
-            assertEquals("660".toInt(8), (Files.getAttribute(receipt.toPath(), "unix:mode") as Number).toInt() and 0x1ff)
+            assertEquals("600".toInt(8), (Files.getAttribute(receipt.toPath(), "unix:mode") as Number).toInt() and 0x1ff)
             request.cancelAndJoin()
             assertEquals(before, session.listFiles().orEmpty().map { it.name }.toSet())
         }
@@ -1126,7 +1126,7 @@ class OmpPromptDeliveryTest {
                 assertTrue("$guestAgent/wawlink-model-payload.mjs" in extensions)
                 assertTrue("$guestAgent/wawlink/management/session.mjs" in extensions)
                 assertEquals("$guestSessions/management", chatEnvironment["WAWLINK_MANAGEMENT_DIRECTORY"])
-                assertEquals("0", chatEnvironment["WAWLINK_MANAGEMENT_SHARED_GROUP"])
+                assertFalse("WAWLINK_MANAGEMENT_SHARED_GROUP" in chatEnvironment)
                 assertTrue(File(root, "${guestAgent.trimStart('/')}/wawlink-model-payload.mjs").isFile)
                 assertContentEquals(original, history.readBytes())
             }
@@ -1170,6 +1170,44 @@ class OmpPromptDeliveryTest {
             val restored = pool.session("session", "fixture", "/workspace")
             val replayed = withTimeout(5_000) { restored.state.first { it.feed.filterIsInstance<UserMessageItem>().isNotEmpty() } }
             assertEquals(listOf(accepted), replayed.feed.filterIsInstance<UserMessageItem>())
+        }
+    }
+
+    @Test fun privateGuestWorkspaceListsAndImportsLocalAttachmentsWithoutModeChanges() = runBlocking {
+        fixture(engine = ContainerEngineType.CHROOT) {
+            val workspace = File(root, "workspace").apply { mkdirs() }
+            val nested = File(workspace, "private").apply { mkdirs() }
+            val existing = File(nested, "existing.txt").apply { writeText("保留私有内容") }
+            Files.setPosixFilePermissions(workspace.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
+            Files.setPosixFilePermissions(nested.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
+            Files.setPosixFilePermissions(existing.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))
+            val listed = controller.listWorkspaceFiles("private").first()
+            assertEquals(listOf("private/existing.txt"), listed.map { it.relativePath })
+            val selected = File(directory, "local.txt").apply { writeText("流式导入") }
+            gate.complete(transport)
+            controller.sendPrompt("私有附件", listOf(AttachmentFile("private-local", selected.name, selected.absolutePath)))
+            val request = transport.request()
+            val attachment = awaitState { it.feed.filterIsInstance<UserMessageItem>().singleOrNull()?.attachments?.singleOrNull()?.source == AttachmentSource.WORKSPACE }
+                .feed.filterIsInstance<UserMessageItem>().single().attachments.single()
+            val imported = File(root, attachment.path.trimStart('/'))
+            assertEquals("流式导入", imported.readText())
+            assertEquals("流式导入", selected.readText())
+            assertContains(request.string("message"), attachment.path)
+            assertEquals("600".toInt(8), (Files.getAttribute(imported.toPath(), "unix:mode") as Number).toInt() and 0x1ff)
+            assertEquals("700".toInt(8), (Files.getAttribute(nested.toPath(), "unix:mode") as Number).toInt() and 0x1ff)
+            assertEquals("保留私有内容", existing.readText())
+        }
+    }
+
+    @Test fun inaccessibleGuestHistoryFailsRatherThanPretendingTheSessionIsEmpty() = runBlocking {
+        fixture {
+            val historyRoot = File(root, "root/.omp/agent/wawlink/sessions").apply { mkdirs() }
+            val sessionHash = java.security.MessageDigest.getInstance("SHA-256").digest("session".toByteArray()).joinToString("") { "%02x".format(it) }
+            val external = File(directory, "not-session-history").apply { mkdirs() }
+            Files.createSymbolicLink(File(historyRoot, sessionHash).toPath(), external.toPath())
+            val failure = assertFailsWith<OmpGuestFileException> { pool.explorer("session").refreshHistory() }
+            assertEquals("ELOOP", failure.code)
+            assertFalse(opened.isCompleted, "A history read failure must not launch an empty replacement session")
         }
     }
 
@@ -1313,6 +1351,10 @@ class OmpPromptDeliveryTest {
                 return openProcess(id, arguments, cwd, environment)
             }
             override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                OmpGuestFilesFixture.launch(arguments, root, environment)?.let {
+                    containerState.value = containerState.value.map { info -> if (info.config.id == id) info.copy(running = true) else info }
+                    return it
+                }
                 if (arguments.lastOrNull() == "--inspect") {
                     inspectionStarts.incrementAndGet()
                     inspectionFinished.complete(Unit)

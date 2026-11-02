@@ -24,8 +24,8 @@ class ContainerFeatureSkillTest {
             }
             listOf(binary.path, "sh")
         }
-        fun install(content: String = FEATURE_SKILL, succeeds: Boolean = true, sharedGroup: Boolean = false) {
-            val process = ProcessBuilder(shell + listOf("-c", featureSkillInstallScript(content, sharedGroup))).apply {
+        fun install(content: String = FEATURE_SKILL, succeeds: Boolean = true) {
+            val process = ProcessBuilder(shell + listOf("-c", featureSkillInstallScript(content))).apply {
                 environment()["HOME"] = home.path
                 if (shell.size > 1) environment()["PATH"] = File(home, ".busybox-bin").path
                 redirectErrorStream(true)
@@ -63,82 +63,48 @@ class ContainerFeatureSkillTest {
         }
     }
 
-    @Test fun chrootPristineSkillIsSharedButRecordAndUserEditsStayPrivate() {
-        Fixture().use { f ->
-            f.install()
-            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
-            f.install(sharedGroup = true)
-            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
-            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.record.toPath()))
-            f.install("升级的内置内容\n", sharedGroup = true)
-            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
-            f.file.appendText("用户修改\n")
-            Files.setPosixFilePermissions(f.file.toPath(), PosixFilePermissions.fromString("rw-------"))
-            val edited = f.file.readText()
-            f.install(sharedGroup = true)
-            assertEquals(edited, f.file.readText())
-            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
-        }
-        Fixture().use { f ->
-            f.install(sharedGroup = true)
-            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
-            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.record.toPath()))
-        }
-        Fixture().use { f ->
-            f.install()
-            val privateAlias = File(f.home, "private-copy")
-            Files.createLink(privateAlias.toPath(), f.file.toPath())
-            f.install(sharedGroup = true)
-            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
-            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(privateAlias.toPath()))
-            assertEquals(FEATURE_SKILL, privateAlias.readText())
-        }
-    }
 
     @Test fun repairsOnlyStrictManagementDirectoriesAndCreatesUsableDescendants() {
-        for (shared in listOf(false, true)) Fixture().use { f ->
+        Fixture().use { f ->
             val imported = File(f.home, ".omp").apply { mkdir() }
             val unrelated = File(imported, "third-party").apply { mkdir() }
             Files.setPosixFilePermissions(unrelated.toPath(), PosixFilePermissions.fromString("r-x------"))
             Files.setPosixFilePermissions(imported.toPath(), PosixFilePermissions.fromString("r-x------"))
-            Files.setAttribute(f.home.toPath(), "unix:mode", 0x5f8) // 02770: inherit the App shared group.
+            Files.setAttribute(f.home.toPath(), "unix:mode", 0x5f8) // 保留导入目录的 setgid/组身份，内置 Skill 仍使用 owner-private 模式。
             val group = Files.getAttribute(f.home.toPath(), "unix:gid")
-            f.install(sharedGroup = shared)
+            f.install()
             for (path in listOf(".omp", ".omp/agent", ".omp/agent/skills", ".omp/agent/skills/wawlink-functions")) {
                 val directory = File(f.home, path).toPath()
-                assertEquals(PosixFilePermissions.fromString(if (shared) "rwxrwx---" else "rwx------"), Files.getPosixFilePermissions(directory))
-                if (shared) {
-                    assertEquals(0x5f8, (Files.getAttribute(directory, "unix:mode") as Int) and 0xfff)
-                    assertEquals(group, Files.getAttribute(directory, "unix:gid"))
-                }
+                assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(directory))
+                assertEquals(group, Files.getAttribute(directory, "unix:gid"))
             }
             assertEquals(PosixFilePermissions.fromString("r-x------"), Files.getPosixFilePermissions(unrelated.toPath()))
-            assertEquals(PosixFilePermissions.fromString(if (shared) "rw-rw----" else "rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
-            if (shared) assertEquals(group, Files.getAttribute(f.file.toPath(), "unix:gid"))
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
+            assertEquals(group, Files.getAttribute(f.file.toPath(), "unix:gid"))
             assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.record.toPath()))
             Files.setPosixFilePermissions(unrelated.toPath(), PosixFilePermissions.fromString("rwx------"))
         }
     }
 
     @Test fun repairsManagedOwnerModesByReplacementAndPreservesHardlinkedUserEdits() {
-        for (shared in listOf(false, true)) Fixture().use { f ->
+        Fixture().use { f ->
             f.install()
             Files.setPosixFilePermissions(f.file.toPath(), PosixFilePermissions.fromString("r--------"))
             val alias = File(f.home, "private-alias")
             Files.createLink(alias.toPath(), f.file.toPath())
             val oldRecord = File(f.home, "record-alias")
             Files.createLink(oldRecord.toPath(), f.record.toPath())
-            f.install(sharedGroup = shared)
-            assertEquals(PosixFilePermissions.fromString(if (shared) "rw-rw----" else "rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
+            f.install()
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
             assertEquals(PosixFilePermissions.fromString("r--------"), Files.getPosixFilePermissions(alias.toPath()))
-            f.install("新版内置 Skill\n", sharedGroup = shared)
+            f.install("新版内置 Skill\n")
             assertEquals(FEATURE_SKILL, alias.readText())
             assertEquals(hash(FEATURE_SKILL) + "\n", oldRecord.readText())
             assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(oldRecord.toPath()))
             f.file.appendText("用户修改\n")
             Files.setPosixFilePermissions(f.file.toPath(), PosixFilePermissions.fromString("r--------"))
             val edited = f.file.readText()
-            f.install(sharedGroup = shared)
+            f.install()
             assertEquals(edited, f.file.readText())
             assertEquals(PosixFilePermissions.fromString("r--------"), Files.getPosixFilePermissions(f.file.toPath()))
         }
@@ -186,30 +152,30 @@ class ContainerFeatureSkillTest {
     }
 
     @Test fun refusesLinkedDirectoriesFilesRecordsAndInvalidRecords() {
-        for (shared in listOf(false, true)) Fixture().use { f ->
+        Fixture().use { f ->
             val outside = File(f.home, "unrelated").apply { mkdir() }
             val kept = File(outside, "SKILL.md").apply { writeText("保留") }
             f.directory.parentFile.mkdirs()
             Files.createSymbolicLink(f.directory.toPath(), outside.toPath())
-            f.install(sharedGroup = shared)
+            f.install()
             assertEquals("保留", kept.readText())
             assertFalse(File(outside, ".wawlink-builtin.sha256").exists())
             Files.delete(f.directory.toPath())
             f.directory.mkdir()
             Files.createSymbolicLink(f.file.toPath(), kept.toPath())
-            f.install(sharedGroup = shared)
+            f.install()
             assertTrue(Files.isSymbolicLink(f.file.toPath()))
             assertFalse(f.record.exists())
             Files.delete(f.file.toPath())
             f.seed(FEATURE_SKILL)
             Files.createSymbolicLink(f.record.toPath(), kept.toPath())
-            f.install("新版", sharedGroup = shared)
+            f.install("新版")
             assertEquals(FEATURE_SKILL, f.file.readText())
             assertEquals("保留", kept.readText())
             Files.delete(f.record.toPath())
             for (bad in listOf("", "bad", "f".repeat(65), hash(FEATURE_SKILL) + "\n" + "x".repeat(64))) {
                 f.record.writeText(bad)
-                f.install("新版", sharedGroup = shared)
+                f.install("新版")
                 assertEquals(FEATURE_SKILL, f.file.readText())
                 assertEquals(bad, f.record.readText())
             }

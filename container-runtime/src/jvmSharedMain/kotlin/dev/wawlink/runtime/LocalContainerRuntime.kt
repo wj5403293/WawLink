@@ -820,6 +820,7 @@ class LocalContainerRuntime internal constructor(
                 ensureOpen()
                 ensureAvailable(id)
                 check(keepers[id]?.let { !it.stopping && it.process.isAlive } == true) { "容器已停止" }
+                if (operation != null) operation.runGeneration = runGenerations[id]
                 idleJobs.remove(id)?.cancel()
                 launchLocked(config(id), arguments, cwd, environment, false, false).process
             }

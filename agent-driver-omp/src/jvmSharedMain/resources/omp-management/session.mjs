@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, open, rename, unlink, lstat, chmod } from 'node:fs/promises';
+import { mkdir, readdir, readFile, open, rename, unlink, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createSessionExplorer, explorerError } from './explorer.mjs';
@@ -8,18 +8,15 @@ export default function managementSessionExtension(pi) {
   const directory = process.env.WAWLINK_MANAGEMENT_DIRECTORY;
   const instance = process.env.WAWLINK_MANAGEMENT_INSTANCE;
   if (!directory || !instance) return;
-  const shared = process.env.WAWLINK_MANAGEMENT_SHARED_GROUP === '1';
   let poller;
   let generation = 0;
   let context;
   const explorer = createSessionExplorer(pi, () => context);
   async function publish(destination, response) {
     const temporary = `${destination}.${randomUUID()}.tmp`;
-    const handle = await open(temporary, 'wx', shared ? 0o660 : 0o600);
+    const handle = await open(temporary, 'wx', 0o600);
     try {
       try {
-        // Explicit modes are not enough: a restrictive inherited umask can remove group access.
-        await handle.chmod(shared ? 0o660 : 0o600);
         await handle.writeFile(JSON.stringify({ ...response, instance }));
       } finally { await handle.close(); }
       await rename(temporary, destination);
@@ -103,10 +100,9 @@ export default function managementSessionExtension(pi) {
     clearTimeout(poller);
     context = ctx;
     try {
-      await mkdir(directory, { recursive: true, mode: shared ? 0o2770 : 0o700 });
+      await mkdir(directory, { recursive: true, mode: 0o700 });
       const info = await lstat(directory);
       if (!info.isDirectory() || info.isSymbolicLink()) throw Error('Session management directory is not a real directory');
-      if (shared && (info.mode & 0o2777) !== 0o2770) await chmod(directory, 0o2770);
       await channelState(true);
       await poll(currentGeneration);
     } catch (error) {

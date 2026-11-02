@@ -2,6 +2,7 @@ package dev.wawlink.driver
 
 import dev.wawlink.protocol.AgentConfigurationContext
 import dev.wawlink.runtime.ContainerConfig
+import dev.wawlink.runtime.ContainerMount
 import dev.wawlink.runtime.ContainerInfo
 import dev.wawlink.runtime.ContainerRuntime
 import dev.wawlink.runtime.LocalContainerRuntime
@@ -92,6 +93,47 @@ class OmpAgentManagementRepositoryTest {
             assertTrue(uncaught.isEmpty(), uncaught.toString())
         }
     }
+    @Test fun coldDocumentLoadInitializesConfigurationWithoutLoadingAuthenticationOrModels() = runBlocking {
+        fixture(loadInitially = false) {
+            val content = "temperature: 0.3\n"
+            file("config.yml").writeText(content)
+            val document = async { repository.readDocument("global") }
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            assertEquals(content, document.await().content)
+            assertFalse(repository.state.value.loading)
+            assertFalse(repository.state.value.modelsLoading)
+            transport.assertNoRequest()
+            assertTrue(uncaught.isEmpty(), uncaught.toString())
+        }
+    }
+
+    @Test fun failedInitialSnapshotRemainsTheDocumentErrorInsteadOfUnknownDocument() = runBlocking {
+        fixture {
+            val transport = connect()
+            val failure = "UNAVAILABLE: Cannot read native configuration file"
+            transport.respond(transport.request("snapshot"), error = failure)
+            awaitState { !it.loading && it.error != null }
+            val error = assertFailsWith<IllegalStateException> { repository.readDocument("models") }
+            assertEquals(failure, error.message)
+            assertFalse(file("models.yml").exists())
+            transport.assertNoRequest()
+        }
+    }
+
+    @Test fun inaccessibleDocumentPathIsNotReturnedAsAnEmptyMissingDocument() = runBlocking {
+        fixture {
+            val blocked = file("blocked").apply { writeText("not a directory") }
+            val transport = connect()
+            val snapshot = Json.parseToJsonElement(configurationWithModels.toString().replace("/models.yml", "/blocked/models.yml"))
+            transport.respond(transport.request("snapshot"), snapshot)
+            awaitState { !it.loading && !it.modelsLoading }
+            assertFailsWith<IOException> { repository.readDocument("models") }
+            assertEquals("not a directory", blocked.readText())
+            transport.assertNoRequest()
+        }
+    }
+
 
     @Test fun incompleteCatalogueDoesNotReplacePreviouslyLoadedModels() = runBlocking {
         fixture {
@@ -452,18 +494,111 @@ class OmpAgentManagementRepositoryTest {
             val outside = file("../../other-config.yml").canonicalFile.apply { writeText("temperature: 0.8\n") }
             assertTrue(global.delete())
             Files.createSymbolicLink(global.toPath(), outside.toPath())
-            assertFailsWith<IllegalArgumentException> { repository.readDocument("global") }
+            assertFailsWith<IOException> { repository.readDocument("global") }
             assertEquals("temperature: 0.8\n", outside.readText())
             transport.assertNoRequest()
         }
     }
 
-    private suspend fun fixture(home: String = "/root", initialConfig: String? = null, block: suspend Fixture.() -> Unit) {
-        val fixture = Fixture(home, initialConfig)
+    @Test fun stopDuringDocumentValidationNeverCommitsIntoRestartedGeneration() = runBlocking {
+        fixture {
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            transport.respond(transport.request("modelsSnapshot"), catalogueResult)
+            awaitState { !it.modelsLoading }
+            val config = file("config.yml").apply { writeText("temperature: 0.3\n") }
+            val document = repository.readDocument("global")
+            val save = async { runCatching { repository.saveDocument(document, "temperature: 0.8\n") } }
+            transport.request("validateDocument")
+            stopContainer()
+            restartContainer()
+            assertTrue(withTimeout(5_000) { save.await() }.exceptionOrNull() is CancellationException)
+            assertEquals(document.content, config.readText())
+            assertTrue(runtimeFailures.isEmpty())
+            val reload = async { repository.reload() }
+            val replacement = connect()
+            replacement.respond(replacement.request("snapshot"), configuration)
+            replacement.respond(replacement.request("modelsSnapshot"), catalogueResult)
+            reload.await()
+            assertEquals(document.content, repository.readDocument("global").content)
+        }
+    }
+
+    @Test fun privateGuestConfigurationDeploysBridgeAndPreservesYamlAndVersionConflicts() = runBlocking {
+        fixture(loadInitially = false) {
+            val original = "# retained comment\nfuture:\n  nested: untouched\ntemperature: 0.3\n"
+            val config = file("config.yml").apply { writeText(original) }
+            val directoryMode = java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")
+            val fileMode = java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")
+            Files.setPosixFilePermissions(config.parentFile.toPath(), directoryMode)
+            Files.setPosixFilePermissions(config.toPath(), fileMode)
+            val loading = async { repository.readDocument("global") }
+            val transport = connect()
+            transport.respond(transport.request("snapshot"), configuration)
+            val document = loading.await()
+            assertEquals(original, document.content)
+            assertTrue(file("wawlink/management/bootstrap.mjs").isFile)
+            val patch = buildJsonObject {
+                put("path", document.path); put("expectedVersion", document.version)
+                put("changes", buildJsonObject { put("temperature", 0.7) })
+            }
+            transport.host("patchYaml", patch)
+            assertNull(transport.hostResponse()["error"])
+            val changed = config.readText()
+            assertTrue(changed.contains("# retained comment"))
+            assertTrue(changed.contains("nested: untouched"))
+            assertEquals(0.7, OmpYaml.parse(changed).values()["temperature"])
+            assertEquals(directoryMode, Files.getPosixFilePermissions(config.parentFile.toPath()))
+            assertEquals(fileMode, Files.getPosixFilePermissions(config.toPath()))
+            transport.host("patchYaml", patch)
+            assertTrue(transport.hostResponse()["error"]!!.jsonPrimitive.content.startsWith("CONFLICT:"))
+            assertEquals(changed, config.readText())
+            transport.assertNoRequest()
+        }
+    }
+
+    @Test fun documentPathsRequireNormalizedSelectedGuestScope() = runBlocking {
+        for (path in listOf("/root/.omp/agent/../other.yml", "/root/.omp/agent//config.yml", "/root/.omp/agent/./config.yml", "/root/.omp/agent-other/config.yml", "/etc/config.yml")) {
+            fixture {
+                val transport = connect()
+                val snapshot = JsonObject(configuration.jsonObject + ("files" to buildJsonArray {
+                    add(buildJsonObject { put("id", "global"); put("path", path) })
+                }))
+                transport.respond(transport.request("snapshot"), snapshot)
+                transport.respond(transport.request("modelsSnapshot"), catalogueResult)
+                awaitState { !it.modelsLoading }
+                assertFailsWith<IllegalArgumentException> { repository.readDocument("global") }
+                transport.assertNoRequest()
+            }
+        }
+    }
+
+    @Test fun globalScopeExcludesMountsAndProjectWritesRespectReadOnlyMounts() = runBlocking {
+        fixture(loadInitially = false, mounts = listOf(ContainerMount("/unused", "/root/.omp/agent/config.yml"))) {
+            assertFailsWith<IllegalArgumentException> { repository.readDocument("global") }
+            assertTrue(launches.isEmpty())
+        }
+        fixture(projectPath = "/project", mounts = listOf(ContainerMount("/unused", "/project", readWrite = false))) {
+            val transport = connect()
+            val snapshot = JsonObject(configuration.jsonObject + ("files" to buildJsonArray {
+                add(buildJsonObject { put("id", "project"); put("path", "/project/.omp/config.yml") })
+            }))
+            transport.respond(transport.request("snapshot"), snapshot)
+            transport.respond(transport.request("modelsSnapshot"), catalogueResult)
+            awaitState { !it.modelsLoading }
+            val document = repository.readDocument("project")
+            assertFailsWith<IllegalArgumentException> { repository.saveDocument(document, "temperature: 0.5\n") }
+            transport.assertNoRequest()
+        }
+    }
+
+    private suspend fun fixture(home: String = "/root", initialConfig: String? = null, loadInitially: Boolean = true,
+        projectPath: String? = null, mounts: List<ContainerMount> = emptyList(), block: suspend Fixture.() -> Unit) {
+        val fixture = Fixture(home, initialConfig, loadInitially, projectPath, mounts)
         try { fixture.block() } finally { fixture.close() }
     }
 
-    private class Fixture(home: String, initialConfig: String?) : AutoCloseable {
+    private class Fixture(home: String, initialConfig: String?, loadInitially: Boolean, private val projectPath: String?, mounts: List<ContainerMount>) : AutoCloseable {
         private val directory = Files.createTempDirectory("wawlink-management-").toFile()
         private val rootfs = directory.resolve("rootfs").apply { mkdirs() }
         val guestAgentDir = "${home.trimEnd('/')}/.omp/agent"
@@ -476,7 +611,7 @@ class OmpAgentManagementRepositoryTest {
         private val processes = Channel<Transport>(Channel.UNLIMITED)
         private val transports = CopyOnWriteArrayList<Transport>()
         val opening = Channel<Unit>(Channel.UNLIMITED)
-        private val containerState = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("fixture", "验证", rootfs.path), running = true)))
+        private val containerState = MutableStateFlow(listOf(ContainerInfo(ContainerConfig("fixture", "验证", rootfs.path, mounts = mounts, environment = mapOf("HOME" to home)), running = true)))
         val failureGenerations = CopyOnWriteArrayList<Long>()
         val uncaught = CopyOnWriteArrayList<Throwable>()
         val runtimeFailures = CopyOnWriteArrayList<String>()
@@ -484,22 +619,26 @@ class OmpAgentManagementRepositoryTest {
         private val runtime = object : ContainerRuntime by local {
             override val containers = containerState
             override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                OmpGuestFilesFixture.launch(arguments, rootfs, environment)?.let { return it }
                 launches += arguments
                 opening.send(Unit)
                 return processes.receive()
             }
+            override suspend fun openRunningProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process =
+                openProcess(id, arguments, cwd, environment)
         }
+        private val guestFiles = OmpGuestFiles(runtime, "fixture")
         val repository = OmpAgentManagementRepository(
-            runtime, AgentConfigurationContext("fixture", "验证"),
-            { ompAgentDirectory(rootfs, agentDirectory) }, { guestAgentDir },
-            { _, _ -> error("Global configuration must not resolve workspace mounts") },
+            runtime, AgentConfigurationContext("fixture", "验证", projectPath = projectPath),
+            guestFiles, { guestAgentDir },
             owner, { _, _ -> }, { _, _ -> }, { emptyMap() }, {}, { generation, message -> failureGenerations += generation; runtimeFailures += message },
+            loadInitially = loadInitially,
         )
         fun stopContainer() {
             containerState.value = containerState.value.map { it.copy(running = false, stopGeneration = it.stopGeneration + 1) }
         }
         fun restartContainer() {
-            containerState.value = containerState.value.map { it.copy(running = true) }
+            containerState.value = containerState.value.map { it.copy(running = true, runGeneration = it.runGeneration + 1) }
         }
         suspend fun launchTransport(): Transport = Transport().also { transport ->
             transports += transport
@@ -509,7 +648,7 @@ class OmpAgentManagementRepositoryTest {
             val transport = launchTransport()
             val init = transport.request("init")
             assertEquals(guestAgentDir, init["args"]!!.jsonObject["agentDir"]!!.jsonPrimitive.content)
-            assertEquals(JsonNull, init["args"]!!.jsonObject["workspace"])
+            assertEquals(projectPath?.let(::JsonPrimitive) ?: JsonNull, init["args"]!!.jsonObject["workspace"])
             transport.respond(init, JsonPrimitive(true))
             return transport
         }
@@ -517,6 +656,7 @@ class OmpAgentManagementRepositoryTest {
         suspend fun awaitState(predicate: (dev.wawlink.protocol.AgentManagementState) -> Boolean) = withTimeout(5_000) { repository.state.first(predicate) }
         override fun close() {
             repository.close()
+            guestFiles.close()
             owner.cancel()
             transports.forEach(Transport::destroy)
             processes.close()
@@ -546,6 +686,12 @@ class OmpAgentManagementRepositoryTest {
         }
         suspend fun request(operation: String): JsonObject = withTimeout(5_000) {
             requests.receive().also { assertEquals(operation, it["op"]!!.jsonPrimitive.content) }
+        }
+        @Synchronized fun host(operation: String, arguments: JsonObject) {
+            emit(buildJsonObject { put("event", "host"); put("id", "host-test"); put("op", operation); put("args", arguments) })
+        }
+        suspend fun hostResponse(): JsonObject = withTimeout(5_000) {
+            requests.receive().also { assertEquals(true, it["hostResponse"]!!.jsonPrimitive.boolean) }
         }
         fun assertNoRequest() { assertTrue(requests.tryReceive().isFailure, "Unexpected management request after failure") }
         @Synchronized fun respond(request: JsonObject, result: JsonElement = JsonNull, error: String? = null) {

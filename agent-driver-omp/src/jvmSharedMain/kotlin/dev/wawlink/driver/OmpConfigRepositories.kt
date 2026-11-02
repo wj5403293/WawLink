@@ -9,20 +9,14 @@ import dev.wawlink.protocol.ProviderConfig
 import dev.wawlink.protocol.ProviderConfigRepository
 import dev.wawlink.protocol.SettingCategory
 import dev.wawlink.protocol.ThinkingLevel
-import dev.wawlink.runtime.ContainerConfig
-import dev.wawlink.runtime.ContainerEngineType
-import dev.wawlink.runtime.prepareContainerHostDirectory
-import dev.wawlink.runtime.prepareContainerHostFile
-import java.io.File
 import java.io.StringWriter
 import java.net.HttpURLConnection
 import java.net.URI
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import java.nio.file.attribute.PosixFilePermission
+import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -66,99 +60,87 @@ private val providerApis = mapOf(
 )
 private val thinkingEfforts = listOf("minimal", "low", "medium", "high", "xhigh", "max")
 
-/** Only container-rootfs configuration is accepted; never resolve the host's ~/.omp. */
-internal fun ompAgentDirectory(rootfs: File, directory: File): File {
-    val base = rootfs.absoluteFile.normalize()
-    val dir = directory.absoluteFile.normalize()
-    require(dir.name == "agent" && dir.parentFile?.name == ".omp") {
-        "OMP configuration directory must end with /.omp/agent"
+/** Configuration locations are explicit normalized guest paths, never host filesystem paths. */
+internal fun ompAgentDirectory(directory: String): String {
+    require(directory.startsWith('/') && directory.split('/').drop(1).all { it.isNotEmpty() && it != "." && it != ".." } &&
+        directory.endsWith("/.omp/agent")) { "OMP configuration directory must be an absolute normalized /.omp/agent guest path" }
+    return directory
+}
+
+internal fun ompAgentDirectory(files: OmpFileSession, directory: String): String = ompAgentDirectory(directory).also {
+    require(it == files.agentDirectory) { "OMP configuration directory must match the selected container home" }
+}
+
+private fun configFile(directory: String, name: String): String = "$directory/$name"
+
+private suspend fun mainConfigFile(files: OmpFileSession, directory: String): String = configurationFile(files, directory, "config")
+private suspend fun modelsConfigFile(files: OmpFileSession, directory: String): String = configurationFile(files, directory, "models")
+private suspend fun configurationFile(files: OmpFileSession, directory: String, name: String): String {
+    val yml = configFile(directory, "$name.yml")
+    val yaml = configFile(directory, "$name.yaml")
+    return if (files.stat(yml) != null || files.stat(yaml) == null) yml else yaml
+}
+
+internal fun contentVersion(content: String?): String {
+    if (content == null) return ""
+    val digest = MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8))
+    val hex = "0123456789abcdef"
+    return buildString(digest.size * 2) {
+        for (byte in digest) { val value = byte.toInt() and 0xff; append(hex[value ushr 4]); append(hex[value and 15]) }
     }
-    val canonicalRoot = base.canonicalFile
-    require(canonicalRoot.parentFile != null && dir.toPath().startsWith(base.toPath()) &&
-        dir.canonicalFile.toPath().startsWith(canonicalRoot.toPath())) {
-        "OMP configuration directory escapes its container rootfs"
-    }
-    return dir
 }
 
-private fun configFile(directory: File, name: String): File = File(directory, name).also {
-    require(it.canonicalFile.parentFile == directory.canonicalFile) { "Configuration symlink escapes the container agent directory: $name" }
+private data class ConfigDocument(val path: String, val content: String?) {
+    fun yaml(): OmpYaml = OmpYaml.parse(content.orEmpty(), path)
 }
 
-private fun mainConfigFile(directory: File): File {
-    val yml = configFile(directory, "config.yml")
-    val yaml = configFile(directory, "config.yaml")
-    return if (yml.exists() || !yaml.exists()) yml else yaml
+private suspend fun readConfigDocument(files: OmpFileSession, path: String): ConfigDocument = ConfigDocument(path, files.readText(path))
+
+private suspend fun <T> withConfigurationIo(files: OmpGuestFiles, block: suspend (Long) -> T): T {
+    val stopGeneration = files.stopGeneration // Capture before dispatch; queued work must not undo an explicit stop.
+    return withContext(Dispatchers.IO) { block(stopGeneration) }
 }
 
-private fun modelsConfigFile(directory: File): File {
-    val yml = configFile(directory, "models.yml")
-    val yaml = configFile(directory, "models.yaml")
-    return if (yml.exists() || !yaml.exists()) yml else yaml
-}
-
-internal fun prepareOmpHostDirectory(directory: File, configuration: ContainerConfig?) {
-    if (configuration != null) prepareContainerHostDirectory(configuration, directory)
-    else Files.createDirectories(directory.toPath())
-}
-
-internal fun repoAtomicWrite(file: File, content: String, configuration: ContainerConfig? = null) {
-    prepareOmpHostDirectory(file.parentFile, configuration)
-    val temporary = Files.createTempFile(file.parentFile.toPath(), ".${file.name}.", ".tmp")
+/** Render every candidate before committing; rollback only our exact writes, in the same guest generation. */
+private suspend fun repoAtomicWriteBatch(files: OmpFileSession, documents: Map<ConfigDocument, String>) {
+    val committed = ArrayList<Pair<ConfigDocument, String>>(documents.size)
     try {
-        try {
-            Files.setPosixFilePermissions(temporary, setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE))
-        } catch (_: UnsupportedOperationException) {
-            // Android filesystems need not implement POSIX permission attributes.
+        for ((document, content) in documents) {
+            val version = contentVersion(document.content)
+            if (document.content == content) {
+                if (files.version(document.path) != version) throw OmpGuestFileException("CONFLICT", document.path)
+                continue
+            }
+            files.writeText(document.path, content, expectedVersion = version, createOnly = document.content == null)
+            committed.add(document to content)
         }
-        if (configuration != null) prepareContainerHostFile(configuration, temporary.toFile())
-        java.io.FileOutputStream(temporary.toFile()).use { stream ->
-            stream.write(content.toByteArray(Charsets.UTF_8))
-            stream.fd.sync()
-        }
-        try {
-            Files.move(temporary, file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-            Files.move(temporary, file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
-    } finally {
-        Files.deleteIfExists(temporary)
-    }
-}
-
-/** Render every candidate before committing; restore originals if a later replacement fails. */
-private fun repoAtomicWriteBatch(documents: Map<File, String>, configuration: ContainerConfig?) {
-    val previous = documents.keys.associateWith { if (it.exists()) it.readText(Charsets.UTF_8) else null }
-    val committed = ArrayList<File>(documents.size)
-    try {
-        for ((file, content) in documents) { repoAtomicWrite(file, content, configuration); committed.add(file) }
     } catch (failure: Exception) {
-        for (file in committed.asReversed()) {
-            try {
-                previous[file]?.let { repoAtomicWrite(file, it, configuration) } ?: check(!file.exists() || file.delete()) { "Cannot restore newly created configuration file" }
-            } catch (restore: Exception) { failure.addSuppressed(restore) }
+        withContext(NonCancellable) {
+            for ((document, content) in committed.asReversed()) {
+                try {
+                    val version = contentVersion(content)
+                    if (document.content == null) files.request("delete", mapOf("path" to document.path, "expectedVersion" to version))
+                    else files.writeText(document.path, document.content, expectedVersion = version)
+                } catch (restore: Exception) { failure.addSuppressed(restore) }
+            }
         }
         throw failure
     }
 }
 
 /** Re-emit legacy pretty-flow documents before Bun reads them; credentials and YAML nodes stay intact. */
-internal suspend fun prepareOmpConfiguration(rootfs: () -> File, configuration: ContainerConfig? = null, directory: () -> File) = ompConfigMutex.withLock {
-    val dir = ompAgentDirectory(rootfs(), directory())
-    for (file in listOf(modelsConfigFile(dir), mainConfigFile(dir))) normalizeOmpConfigurationFile(file, configuration)
-}
-
-internal fun normalizeOmpConfigurationFile(file: File, configuration: ContainerConfig? = null) {
-    try { if (file.exists()) OmpYaml(file).write(file, configuration) }
-    catch (_: Exception) { throw IllegalArgumentException("配置文件格式无效，请修复原始配置") }
+internal suspend fun prepareOmpConfiguration(files: OmpFileSession, directory: String) = ompConfigMutex.withLock {
+    val dir = ompAgentDirectory(files, directory)
+    val documents = linkedMapOf<ConfigDocument, String>()
+    for (path in listOf(modelsConfigFile(files, dir), mainConfigFile(files, dir))) {
+        val document = readConfigDocument(files, path)
+        if (document.content != null) documents[document] = document.yaml().render()
+    }
+    repoAtomicWriteBatch(files, documents)
 }
 
 /** Mutate composed YAML nodes, not a load/dump map: comments, tags, unknown keys and scalar styles survive. */
 internal class OmpYaml private constructor(private val yaml: Yaml, val root: MappingNode) {
-    constructor(file: File) : this(newYaml(), file)
-    private constructor(yaml: Yaml, file: File) : this(yaml, if (file.exists()) {
-        file.reader(Charsets.UTF_8).use { reader -> compose(yaml, reader, file.name) }
-    } else mapping())
 
     fun node(vararg path: String): Node? {
         var current: Node = root
@@ -225,10 +207,6 @@ internal class OmpYaml private constructor(private val yaml: Yaml, val root: Map
         val parent = if (path.size == 1) root else node(*path.dropLast(1).toTypedArray()) as? MappingNode ?: return
         set(parent, path.last(), null)
     }
-    fun write(file: File, configuration: ContainerConfig? = null) {
-        val content = StringWriter().also { yaml.serialize(root, it) }.toString()
-        if (!file.exists() || file.readText(Charsets.UTF_8) != content) repoAtomicWrite(file, content, configuration)
-    }
     fun represent(value: Any): Node = yaml.represent(value)
     fun render(): String = StringWriter().also { yaml.serialize(root, it) }.toString()
     fun values(): Map<String, Any?> = value(root).asStringMap()
@@ -280,11 +258,10 @@ private fun Map<String, Any?>.cost(): ModelCost? = this["cost"]?.asStringMap()?.
 
 /** 18.12.6 stores OAuth in its own SQLite store. We never rewrite auth.json or auth database rows. */
 internal class OmpProviderRepository(
-    private val rootfs: () -> File,
-    private val directory: () -> File,
+    private val files: OmpGuestFiles,
+    private val directory: () -> String,
     scope: CoroutineScope,
     private val catalog: KnownModelCatalog = KnownModelCatalog.shared,
-    private val configuration: () -> ContainerConfig? = { null },
     private val onChanged: suspend (String?, Any?) -> Unit,
 ) : ProviderConfigRepository, AutoCloseable {
     private val job = SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])
@@ -294,12 +271,17 @@ internal class OmpProviderRepository(
     private val mutableError = MutableStateFlow<String?>(null)
     override val error: StateFlow<String?> = mutableError.asStateFlow()
     private var generation: List<String?>? = null
+    private val initialStopGeneration = files.stopGeneration
 
     init {
         worker.launch {
+            var activate = true
             while (isActive) {
                 try {
-                    val changed = ompConfigMutex.withLock { refresh() }
+                    val initial = activate
+                    activate = false // Construction is the one explicit activation; later polls never start a stopped container.
+                    val session = files.session(expectedStopGeneration = if (initial) initialStopGeneration else null, runningOnly = !initial)
+                    val changed = ompConfigMutex.withLock { refresh(session) }
                     if (changed) onChanged(null, null)
                 } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     mutableError.value = e.message ?: "无法读取容器提供商配置"
@@ -309,19 +291,21 @@ internal class OmpProviderRepository(
         }
     }
 
-    private fun refresh(): Boolean {
-        val dir = ompAgentDirectory(rootfs(), directory())
-        val modelsFile = modelsConfigFile(dir)
-        val config = mainConfigFile(dir)
-        val namesFile = configFile(dir, "wawlink-provider-ui.json")
-        val budgetsFile = configFile(dir, "wawlink-model-budgets.json")
-        val next = listOf(dir.path, modelsFile.takeIf { it.exists() }?.readText(), config.takeIf { it.exists() }?.readText(), namesFile.takeIf { it.exists() }?.readText(), budgetsFile.takeIf { it.exists() }?.readText())
-        if (generation == next) return false
-        val models = OmpYaml(modelsFile).value("providers").asStringMap()
-        val settings = OmpYaml(config)
+    private suspend fun refresh(session: OmpFileSession): Boolean {
+        val dir = ompAgentDirectory(session, directory())
+        val modelsFile = modelsConfigFile(session, dir)
+        val config = mainConfigFile(session, dir)
+        val modelsText = session.readText(modelsFile)
+        val configText = session.readText(config)
+        val metadataText = session.readText(configFile(dir, "wawlink-provider-ui.json"))
+        val budgetsText = session.readText(configFile(dir, "wawlink-model-budgets.json"))
+        val next = listOf(dir, modelsFile, config, modelsText, configText, metadataText, budgetsText)
+        if (generation == next) { mutableError.value = null; return false }
+        val models = OmpYaml.parse(modelsText.orEmpty(), modelsFile).value("providers").asStringMap()
+        val settings = OmpYaml.parse(configText.orEmpty(), config)
         val disabled = (settings.value("disabledProviders") as? List<*>)?.filterIsInstance<String>().orEmpty()
-        val metadata = namesFile.takeIf { it.exists() }?.let { Json.parseToJsonElement(it.readText()).jsonObject }.orEmpty()
-        val budgets = ModelPayloadExtension.readBudgets(dir)
+        val metadata = metadataText?.let { Json.parseToJsonElement(it).jsonObject }.orEmpty()
+        val budgets = ModelPayloadExtension.parseBudgets(budgetsText)
         val result = models.mapNotNull { (id, raw) ->
             val provider = raw.asStringMap()
             val modelMaps = (provider["models"] as? List<*>)?.map { it.asStringMap() }.orEmpty()
@@ -363,7 +347,7 @@ internal class OmpProviderRepository(
         return changed
     }
 
-    override suspend fun saveProvider(provider: ProviderConfig) = withContext(Dispatchers.IO) {
+    override suspend fun saveProvider(provider: ProviderConfig) = withConfigurationIo(files) { stopGeneration ->
         require(provider.id.isNotBlank()) { "提供商 ID 不能为空" }
         require(provider.models.map { it.id }.distinct().size == provider.models.size && provider.models.all { it.id.isNotBlank() }) { "模型 ID 必须非空且唯一" }
         provider.models.forEach { model ->
@@ -378,10 +362,11 @@ internal class OmpProviderRepository(
                 require(budget >= 1024 && budget < model.maxTokens && model.thinkingLevel != ThinkingLevel.NONE && model.reasoning != false) { "思考预算必须至少为 1024、小于模型输出上限，且启用思考" }
             }
         }
+        val session = files.session(expectedStopGeneration = stopGeneration)
         ompConfigMutex.withLock {
-            val dir = ompAgentDirectory(rootfs(), directory())
-            val file = modelsConfigFile(dir)
-            val yaml = OmpYaml(file) // Reload immediately before editing; never save an old StateFlow snapshot.
+            val dir = ompAgentDirectory(session, directory())
+            val file = readConfigDocument(session, modelsConfigFile(session, dir))
+            val yaml = file.yaml() // Reload immediately before editing; never save an old StateFlow snapshot.
             if (yaml.node("providers") == null) yaml.set(listOf("providers"), emptyMap<String, Any>())
             val all = yaml.node("providers") as? MappingNode ?: error("models.yml providers 必须是映射")
             val existing = all.entry(provider.id)?.valueNode
@@ -445,54 +430,55 @@ internal class OmpProviderRepository(
             }
             yaml.set(node, "models", SequenceNode(Tag.SEQ, modelNodes, DumperOptions.FlowStyle.BLOCK))
             yaml.set(all, provider.id, node)
-            val settingsFile = mainConfigFile(dir)
-            val config = OmpYaml(settingsFile)
+            val settingsFile = readConfigDocument(session, mainConfigFile(session, dir))
+            val config = settingsFile.yaml()
             val disabled = (config.value("disabledProviders") as? List<*>)?.toMutableList() ?: mutableListOf()
             disabled.removeAll { it == provider.id }
             if (!provider.enabled) disabled.add(provider.id)
             config.set(listOf("disabledProviders"), disabled)
-            val metadataFile = configFile(dir, "wawlink-provider-ui.json")
-            val metadata = metadataFile.takeIf { it.exists() }?.let { Json.parseToJsonElement(it.readText()).jsonObject.toMutableMap() } ?: mutableMapOf()
+            val metadataFile = readConfigDocument(session, configFile(dir, "wawlink-provider-ui.json"))
+            val metadata = metadataFile.content?.let { Json.parseToJsonElement(it).jsonObject.toMutableMap() } ?: mutableMapOf()
             val oldMetadata = (metadata[provider.id] as? JsonObject).orEmpty()
             val modelDefaults = JsonObject(provider.models.filter { it.thinkingLevel == ThinkingLevel.NONE && it.reasoning != false }
                 .associate { it.id to JsonPrimitive(it.thinkingLevel.name) })
             metadata[provider.id] = JsonObject(oldMetadata + mapOf("name" to JsonPrimitive(provider.name), "modelDefaults" to modelDefaults))
-            val budgetsFile = configFile(dir, "wawlink-model-budgets.json")
-            val budgetsContent = renderProviderBudgets(dir, provider.id, provider.models)
-            repoAtomicWriteBatch(linkedMapOf(file to yaml.render(), settingsFile to config.render(), metadataFile to (JsonObject(metadata).toString() + "\n"), budgetsFile to budgetsContent), configuration())
-            refresh()
+            val budgetsFile = readConfigDocument(session, configFile(dir, "wawlink-model-budgets.json"))
+            val budgetsContent = renderProviderBudgets(budgetsFile, provider.id, provider.models)
+            repoAtomicWriteBatch(session, linkedMapOf(file to yaml.render(), settingsFile to config.render(), metadataFile to (JsonObject(metadata).toString() + "\n"), budgetsFile to budgetsContent))
+            refresh(session)
         }
         onChanged(null, null)
     }
 
-    override suspend fun deleteProvider(providerId: String) = withContext(Dispatchers.IO) {
+    override suspend fun deleteProvider(providerId: String) = withConfigurationIo(files) { stopGeneration ->
+        val session = files.session(expectedStopGeneration = stopGeneration)
         ompConfigMutex.withLock {
-            val dir = ompAgentDirectory(rootfs(), directory())
-            val file = modelsConfigFile(dir)
-            val yaml = OmpYaml(file)
+            val dir = ompAgentDirectory(session, directory())
+            val file = readConfigDocument(session, modelsConfigFile(session, dir))
+            val yaml = file.yaml()
             (yaml.node("providers") as? MappingNode)?.let { yaml.set(it, providerId, null) }
             val documents = linkedMapOf(file to yaml.render())
-            val settingsFile = mainConfigFile(dir)
-            val config = OmpYaml(settingsFile)
+            val settingsFile = readConfigDocument(session, mainConfigFile(session, dir))
+            val config = settingsFile.yaml()
             val disabled = (config.value("disabledProviders") as? List<*>)?.filter { it != providerId }
             if (disabled != null) { config.set(listOf("disabledProviders"), disabled); documents[settingsFile] = config.render() }
-            val metadataFile = configFile(dir, "wawlink-provider-ui.json")
-            if (metadataFile.exists()) {
-                val metadata = Json.parseToJsonElement(metadataFile.readText()).jsonObject.toMutableMap()
+            val metadataFile = readConfigDocument(session, configFile(dir, "wawlink-provider-ui.json"))
+            if (metadataFile.content != null) {
+                val metadata = Json.parseToJsonElement(metadataFile.content).jsonObject.toMutableMap()
                 metadata.remove(providerId)
                 documents[metadataFile] = JsonObject(metadata).toString() + "\n"
             }
             // Deliberately leave upstream-managed OAuth/account credentials intact.
-            documents[configFile(dir, "wawlink-model-budgets.json")] = renderProviderBudgets(dir, providerId, emptyList())
-            repoAtomicWriteBatch(documents, configuration())
-            refresh()
+            val budgetsFile = readConfigDocument(session, configFile(dir, "wawlink-model-budgets.json"))
+            documents[budgetsFile] = renderProviderBudgets(budgetsFile, providerId, emptyList())
+            repoAtomicWriteBatch(session, documents)
+            refresh(session)
         }
         onChanged(null, null)
     }
 
-    private fun renderProviderBudgets(dir: File, providerId: String, models: List<ModelConfig>): String {
-        val file = configFile(dir, "wawlink-model-budgets.json")
-        val values = file.takeIf { it.exists() }?.let { Json.parseToJsonElement(it.readText()).jsonObject.toMutableMap() } ?: mutableMapOf()
+    private fun renderProviderBudgets(file: ConfigDocument, providerId: String, models: List<ModelConfig>): String {
+        val values = file.content?.let { Json.parseToJsonElement(it).jsonObject.toMutableMap() } ?: mutableMapOf()
         values.keys.removeAll { it.startsWith("$providerId/") }
         models.forEach { model -> model.thinkingBudget?.let { values["$providerId/${model.id}"] = JsonPrimitive(it) } }
         return JsonObject(values).toString() + "\n"
@@ -606,10 +592,9 @@ internal class OmpProviderRepository(
 }
 
 internal class OmpSettingsRepository(
-    private val rootfs: () -> File,
-    private val directory: () -> File,
+    private val files: OmpGuestFiles,
+    private val directory: () -> String,
     scope: CoroutineScope,
-    private val configuration: () -> ContainerConfig? = { null },
     private val onChanged: suspend (String?, Any?) -> Unit,
 ) : AgentSettingsRepository, AutoCloseable {
     private val job = SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])
@@ -619,12 +604,17 @@ internal class OmpSettingsRepository(
     private val mutableError = MutableStateFlow<String?>(null)
     override val error: StateFlow<String?> = mutableError.asStateFlow()
     private var generation: Pair<String, String?>? = null
+    private val initialStopGeneration = files.stopGeneration
 
     init {
         worker.launch {
+            var activate = true
             while (isActive) {
                 try {
-                    val changes = ompConfigMutex.withLock { refresh() }
+                    val initial = activate
+                    activate = false
+                    val session = files.session(expectedStopGeneration = if (initial) initialStopGeneration else null, runningOnly = !initial)
+                    val changes = ompConfigMutex.withLock { refresh(session) }
                     for ((id, value) in changes) onChanged(id, value)
                 } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     mutableError.value = e.message ?: "无法读取容器代理配置"
@@ -634,12 +624,13 @@ internal class OmpSettingsRepository(
         }
     }
 
-    private fun refresh(): List<Pair<String, Any?>> {
-        val dir = ompAgentDirectory(rootfs(), directory())
-        val file = mainConfigFile(dir)
-        val next = file.path to file.takeIf { it.exists() }?.readText()
-        if (generation == next) return emptyList()
-        val yaml = OmpYaml(file)
+    private suspend fun refresh(session: OmpFileSession): List<Pair<String, Any?>> {
+        val dir = ompAgentDirectory(session, directory())
+        val file = mainConfigFile(session, dir)
+        val text = session.readText(file)
+        val next = file to text
+        if (generation == next) { mutableError.value = null; return emptyList() }
+        val yaml = OmpYaml.parse(text.orEmpty(), file)
         val values = yaml.value(yaml.root).asStringMap()
         val categories = OmpSettingsSchema.effective { id ->
             var value: Any? = values
@@ -668,13 +659,14 @@ internal class OmpSettingsRepository(
             OmpSettingsSchema.items.keys.forEach { yaml.remove(it.split('.')) }
         }
     }
-    private suspend fun editSettings(ids: List<String>, edit: (OmpYaml) -> Unit) = withContext(Dispatchers.IO) {
+    private suspend fun editSettings(ids: List<String>, edit: (OmpYaml) -> Unit) = withConfigurationIo(files) { stopGeneration ->
+        val session = files.session(expectedStopGeneration = stopGeneration)
         val effective = ompConfigMutex.withLock {
-            val file = mainConfigFile(ompAgentDirectory(rootfs(), directory()))
-            val yaml = OmpYaml(file)
+            val file = readConfigDocument(session, mainConfigFile(session, ompAgentDirectory(session, directory())))
+            val yaml = file.yaml()
             edit(yaml)
-            yaml.write(file, configuration())
-            refresh()
+            repoAtomicWriteBatch(session, mapOf(file to yaml.render()))
+            refresh(session)
             val values = mutableCategories.value.flatMap { it.groups }.flatMap { it.items }.associate { it.id to it.value }
             ids.map { it to values[it] }
         }

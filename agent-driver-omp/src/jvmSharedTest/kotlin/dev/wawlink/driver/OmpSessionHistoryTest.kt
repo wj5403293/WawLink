@@ -72,7 +72,7 @@ class OmpSessionHistoryTest {
         }
     }
 
-    @Test fun chrootForkAdoptionAndRelocationKeepCopiedHistoryAndArtifactsShared() = runBlocking {
+    @Test fun chrootForkAdoptionAndRelocationKeepCopiedHistoryAndArtifactsPrivate() = runBlocking {
         withHistory(includeSlot = true, user = "operator", guestHome = "/home/operator", engine = ContainerEngineType.CHROOT) { pool, root, source, body ->
             val artifact = File(source.parentFile, "${source.nameWithoutExtension}/nested/result.txt").apply { parentFile.mkdirs(); writeText("原生附件") }
             pool.fork("source", "branch", "fixture", "/branch", "分支")
@@ -85,7 +85,7 @@ class OmpSessionHistoryTest {
                 val directory = historyDirectory(root, id, "/home/operator")
                 inspect(File(directory, source.name), body)
                 directory.walkTopDown().forEach { file ->
-                    val expected = if (file.isDirectory) "2770" else "660"
+                    val expected = if (file.isDirectory) "700" else "600"
                     assertEquals(expected.toInt(8), (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0xfff)
                     assertTrue(file.canRead() && file.canWrite())
                 }
@@ -148,13 +148,14 @@ class OmpSessionHistoryTest {
         val home = "/srv/team/custom-home"
         withHistory(includeSlot = true, user = "1000", homeOverride = home, guestHome = home, mountTarget = "/srv/mounted-profile") { pool, root, source, _ ->
             val mount = File(root, "srv/mounted-profile")
-            // Registration records mounts without creating their targets; no guest process is started here.
+            // The guest worker must reject a mount alias even outside the lexical HOME path.
             val homeDirectory = File(root, home.trimStart('/'))
             Files.createSymbolicLink(mount.toPath(), homeDirectory.toPath())
             assertTrue(Files.isSameFile(mount.toPath(), homeDirectory.toPath()), "挂载别名必须真实解析到容器 HOME")
             val original = source.readBytes()
-            kotlin.test.assertFailsWith<IllegalArgumentException> { pool.fork("source", "blocked", "fixture", "/workspace", "符号链接挂载") }
-            kotlin.test.assertFailsWith<IllegalArgumentException> { pool.settings("fixture").updateSetting("temperature", 0.4) }
+            val failure = kotlin.test.assertFailsWith<OmpGuestFileException> { pool.fork("source", "blocked", "fixture", "/workspace", "符号链接挂载") }
+            assertEquals("EPERM", failure.code)
+            kotlin.test.assertFailsWith<OmpGuestFileException> { pool.settings("fixture").updateSetting("temperature", 0.4) }
             assertContentEquals(original, source.readBytes())
             assertTrue(!historyDirectory(root, "blocked", home).exists())
         }
@@ -221,8 +222,17 @@ class OmpSessionHistoryTest {
                 }.toString())
             }
             pool = OmpProcessPool(object : ContainerRuntime by runtime {
-                override val containers = if (engine == ContainerEngineType.CHROOT) kotlinx.coroutines.flow.MutableStateFlow(runtime.containers.value.map { it.copy(config = it.config.copy(engine = engine)) }) else runtime.containers
-                override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = error("History operations must not start a container process")
+                override val containers = kotlinx.coroutines.flow.MutableStateFlow(runtime.containers.value.map { it.copy(config = it.config.copy(engine = engine), running = true) })
+                override suspend fun register(config: ContainerConfig) {
+                    runtime.register(config)
+                    containers.value = runtime.containers.value.map { it.copy(config = it.config.copy(engine = engine), running = true) }
+                }
+                override suspend fun openRunningProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process = openProcess(id, arguments, cwd, environment)
+                override suspend fun openProcess(id: String, arguments: List<String>, cwd: String, environment: Map<String, String>): Process {
+                    val rootfs = File(containers.value.first { it.config.id == id }.config.rootfsPath)
+                    return OmpGuestFilesFixture.launch(arguments, rootfs, environment)
+                        ?: error("History operations must not start a native OMP process")
+                }
             }, data)
             pool.session("source", "fixture", "/workspace", "原始会话")
             test(pool, root, source, body)
