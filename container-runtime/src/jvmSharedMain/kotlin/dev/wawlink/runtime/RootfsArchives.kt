@@ -17,6 +17,7 @@ import java.nio.file.attribute.PosixFilePermission
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
+import org.apache.commons.compress.archivers.tar.TarConstants
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 
@@ -72,13 +73,22 @@ internal object RootfsArchives {
         val hardlinks = mutableListOf<Pair<Path, Path>>()
         val symlinks = mutableListOf<Pair<Path, String>>()
         val directoryModes = mutableListOf<Pair<Path, Int>>()
+        val owners = linkedMapOf<Path, LogicalOwner>()
         var bytes = 0L
         val buffer = ByteArray(128 * 1024)
         TarArchiveInputStream(unpackStream(archive)).use { tar ->
             while (true) {
                 val entry = tar.nextTarEntry ?: break
                 val target = member(root, entry.name)
-                if (target == root) continue
+                require(tar.canReadEntryData(entry)) { "归档包含不支持的文件格式：${entry.name}" }
+                val owner = LogicalOwner(entry.longUserId, entry.longGroupId, entry.mode and 0xFFF)
+                require(owner.uid >= 0 && owner.gid >= 0) { "归档包含非法 UID/GID：${entry.name}" }
+                if (target == root) {
+                    require(entry.isDirectory) { "归档根路径不是目录" }
+                    owners[root] = owner
+                    directoryModes += root to owner.mode
+                    continue
+                }
                 noLinkParents(root, target.parent)
                 Files.createDirectories(target.parent)
                 require(!Files.exists(target, NOFOLLOW_LINKS) || (entry.isDirectory && Files.isDirectory(target, NOFOLLOW_LINKS))) {
@@ -88,13 +98,15 @@ internal object RootfsArchives {
                     entry.isDirectory -> {
                         Files.createDirectories(target)
                         directoryModes += target to entry.mode
+                        owners[target] = owner
                     }
                     entry.isSymbolicLink -> {
                         require('\u0000' !in entry.linkName && entry.linkName.isNotEmpty() && (File.separatorChar != '\\' || '\\' !in entry.linkName)) { "非法符号链接：${entry.name}" }
                         symlinks += target to entry.linkName
+                        owners[target] = owner
                     }
                     entry.isLink -> hardlinks += target to member(root, entry.linkName.removePrefix("./"))
-                    entry.isFile -> {
+                    entry.isFile && !entry.isFIFO && !entry.isCharacterDevice && !entry.isBlockDevice -> {
                         Files.newOutputStream(target).use { output ->
                             while (true) {
                                 val read = tar.read(buffer)
@@ -106,6 +118,7 @@ internal object RootfsArchives {
                         }
                         setMode(target, entry.mode)
                         if (entry.lastModifiedDate.time > 0) target.toFile().setLastModified(entry.lastModifiedDate.time)
+                        owners[target] = owner
                     }
                     // /dev is provided by the engine; never create privileged device nodes on the host.
                     (entry.isCharacterDevice || entry.isBlockDevice || entry.isFIFO) && root.relativize(target).firstOrNull()?.toString() == "dev" -> Unit
@@ -135,6 +148,9 @@ internal object RootfsArchives {
                     try { Files.copy(linked, target, NOFOLLOW_LINKS, COPY_ATTRIBUTES) }
                     catch (copyFailure: Exception) { copyFailure.addSuppressed(linkFailure); throw copyFailure }
                 }
+                val owner = requireNotNull(owners[linked]) { "硬链接缺少目标元数据：$linked" }
+                owners[target] = owner
+                if (hardlinkFailure != null) setMode(target, owner.mode)
                 iterator.remove()
                 resolved = true
             }
@@ -169,72 +185,120 @@ internal object RootfsArchives {
         symlinks.forEach { (original, _) ->
             require(relocated(original).toFile().canonicalFile.toPath().startsWith(root)) { "符号链接链逃逸 rootfs：$original" }
         }
-        directoryModes.asReversed().forEach { (path, mode) ->
+        directoryModes.asReversed().distinctBy { it.first }.forEach { (path, mode) ->
+            if (wrapperRoot != null && path == root) return@forEach
             val target = relocated(path)
-            if (target != root) setMode(target, mode)
+            setMode(target, mode)
+        }
+        val entries = owners.entries.filterNot { wrapperRoot != null && it.key == root }.associate { (path, owner) ->
+            val target = relocated(path)
+            val name = root.relativize(target).toString().replace(File.separatorChar, '/')
+            (if (name.isEmpty()) "/" else "/$name") to owner
+        }
+        RootfsOwnership.save(destination, OwnershipManifest(entries))
+    }
+
+    private fun setMode(path: Path, mode: Int) {
+        Files.setAttribute(path, "unix:mode", mode and 0xFFF, NOFOLLOW_LINKS)
+    }
+
+    private fun outputTar(archive: File): TarArchiveOutputStream {
+        require(!Files.isSymbolicLink(archive.toPath())) { "导出目标不能是符号链接" }
+        archive.parentFile?.mkdirs()
+        return TarArchiveOutputStream(ZstdOutputStream(archive.outputStream(), 6)).apply {
+            setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
+            setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_POSIX)
         }
     }
 
-    private val permissionBits = PosixFilePermission.values()
-
-    private fun setMode(path: Path, mode: Int) {
-        val permissions = java.util.EnumSet.noneOf(PosixFilePermission::class.java)
-        permissionBits.forEachIndexed { index, permission -> if (mode and (1 shl (8 - index)) != 0) permissions.add(permission) }
-        Files.setPosixFilePermissions(path, permissions)
+    private fun omitted(name: String, exclude: (String) -> Boolean): Boolean {
+        if (name.substringBefore('/') in runtimeMounts) return true
+        var end = name.indexOf('/')
+        while (end >= 0) {
+            if (exclude(name.substring(0, end))) return true
+            end = name.indexOf('/', end + 1)
+        }
+        return exclude(name)
     }
 
-    fun export(rootfs: File, archive: File, exclude: (String) -> Boolean = { false }) {
+    private fun TarArchiveEntry.ownership(owner: LogicalOwner) {
+        setUserId(owner.uid)
+        setGroupId(owner.gid)
+        userName = ""
+        groupName = ""
+        mode = owner.mode and 0xFFF
+    }
+
+    /** Guest ownership comes from the sidecar; physical modes remain authoritative after guest chmod. */
+    fun export(
+        rootfs: File, archive: File,
+        configuredUser: String = "root", configuredHome: String? = null,
+        exclude: (String) -> Boolean = { false },
+    ) {
         val root = rootfs.toPath().toRealPath()
         require(!archive.canonicalFile.toPath().startsWith(root)) { "导出文件不能位于容器 rootfs 内（包括符号链接目录）" }
-        require(!Files.isSymbolicLink(archive.toPath())) { "导出目标不能是符号链接" }
+        val manifest = RootfsOwnership.load(rootfs)
+        val passwd = root.resolve("etc/passwd")
+        val rules = RootfsOwnershipRules(if (runCatching {
+            noLinkParents(root, passwd)
+            Files.isRegularFile(passwd, NOFOLLOW_LINKS)
+        }.getOrDefault(false)) passwd.toFile().readText() else "", configuredUser, configuredHome)
+        val hardlinks = mutableMapOf<Any, Pair<String, LogicalOwner>>()
         val buffer = ByteArray(128 * 1024)
-        archive.parentFile?.mkdirs()
-        TarArchiveOutputStream(ZstdOutputStream(archive.outputStream(), 6)).use { tar ->
-            tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
-            tar.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_POSIX)
+        outputTar(archive).use { tar ->
             Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
                 override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    if (dir == root) return FileVisitResult.CONTINUE
                     val name = root.relativize(dir).toString().replace(File.separatorChar, '/')
-                    if (exclude(name)) return FileVisitResult.SKIP_SUBTREE
-                    writeEntry(dir, "$name/", attrs)
-                    return if (name in runtimeMounts) FileVisitResult.SKIP_SUBTREE else FileVisitResult.CONTINUE
+                    if (dir != root && omitted(name, exclude)) return FileVisitResult.SKIP_SUBTREE
+                    writeEntry(dir, if (dir == root) "./" else "$name/", attrs)
+                    return FileVisitResult.CONTINUE
                 }
                 override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
                     val name = root.relativize(file).toString().replace(File.separatorChar, '/')
-                    if (!exclude(name)) writeEntry(file, name, attrs)
+                    if (!omitted(name, exclude)) writeEntry(file, name, attrs)
                     return FileVisitResult.CONTINUE
                 }
                 override fun visitFileFailed(file: Path, failure: java.io.IOException): FileVisitResult {
-                    if (exclude(root.relativize(file).toString().replace(File.separatorChar, '/'))) return FileVisitResult.SKIP_SUBTREE
-                    if (root.relativize(file).toString() in runtimeMounts) return FileVisitResult.SKIP_SUBTREE
+                    val name = root.relativize(file).toString().replace(File.separatorChar, '/')
+                    if (omitted(name, exclude)) return FileVisitResult.SKIP_SUBTREE
                     throw failure
                 }
                 private fun writeEntry(path: Path, name: String, attrs: BasicFileAttributes) {
+                    if (!attrs.isSymbolicLink && !attrs.isRegularFile && !attrs.isDirectory) return
+                    val guestPath = if (path == root) "/" else "/${name.trimEnd('/')}"
+                    val actual = Files.readAttributes(path, "unix:uid,gid,mode", NOFOLLOW_LINKS)
+                    val mode = (actual.getValue("mode") as Number).toInt() and 0xFFF
+                    val uid = (actual.getValue("uid") as Number).toLong() and 0xFFFFFFFFL
+                    val gid = (actual.getValue("gid") as Number).toLong() and 0xFFFFFFFFL
+                    val recorded = manifest?.entries?.get(guestPath)
+                    var owner = (recorded ?: if (uid != ChrootHostIdentity.uid.toLong()) {
+                        LogicalOwner(uid, gid, mode)
+                    } else rules.infer(guestPath, mode, attrs.isDirectory, attrs.isSymbolicLink)).copy(
+                        mode = if (attrs.isSymbolicLink) recorded?.mode ?: mode else mode,
+                    )
+                    val previous = if (attrs.isRegularFile) attrs.fileKey()?.let(hardlinks::get) else null
                     val entry = when {
-                        attrs.isSymbolicLink -> TarArchiveEntry(name, org.apache.commons.compress.archivers.tar.TarConstants.LF_SYMLINK).apply {
+                        attrs.isSymbolicLink -> TarArchiveEntry(name, TarConstants.LF_SYMLINK).apply {
                             linkName = Files.readSymbolicLink(path).toString()
                         }
-                        attrs.isRegularFile || attrs.isDirectory -> TarArchiveEntry(path.toFile(), name)
-                        else -> return // Sockets/FIFOs are live process state, not a rootfs image.
-                    }
-                    if (!attrs.isSymbolicLink) {
-                        val permissions = Files.getPosixFilePermissions(path, NOFOLLOW_LINKS)
-                        var mode = 0
-                        for (index in permissionBits.indices) {
-                            if (permissionBits[index] in permissions) mode = mode or (1 shl (8 - index))
+                        previous != null -> TarArchiveEntry(name, TarConstants.LF_LINK).apply {
+                            linkName = previous.first
+                            owner = previous.second
                         }
-                        entry.mode = mode
+                        else -> TarArchiveEntry(name).apply { if (attrs.isRegularFile) size = attrs.size() }
                     }
-                    entry.userId = 0
-                    entry.groupId = 0
+                    entry.lastModifiedTime = attrs.lastModifiedTime()
+                    entry.ownership(owner)
                     tar.putArchiveEntry(entry)
-                    if (attrs.isRegularFile) Files.newInputStream(path).use { input ->
-                        while (true) {
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            tar.write(buffer, 0, count)
+                    if (attrs.isRegularFile && previous == null) {
+                        Files.newInputStream(path).use { input ->
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                tar.write(buffer, 0, count)
+                            }
                         }
+                        attrs.fileKey()?.let { hardlinks[it] = name to owner }
                     }
                     tar.closeArchiveEntry()
                 }
@@ -243,8 +307,130 @@ internal object RootfsArchives {
         }
     }
 
+    /** Transcodes the privileged producer's tar without copying or reading private rootfs paths as App. */
+    fun exportFromTar(archive: File, input: InputStream, exclude: (String) -> Boolean = { false }) {
+        val root = java.nio.file.Paths.get("/wawlink-archive")
+        val entries = linkedMapOf<Path, TarArchiveEntry>()
+        val owners = mutableMapOf<Path, LogicalOwner>()
+        val deferred = linkedMapOf<Path, Path>()
+        val skipped = mutableSetOf<Path>()
+        val symlinks = mutableMapOf<Path, String>()
+        val buffer = ByteArray(128 * 1024)
+        fun name(path: Path): String = root.relativize(path).toString().replace(File.separatorChar, '/')
+        outputTar(archive).use { output ->
+            TarArchiveInputStream(input).use { tar ->
+                while (true) {
+                    val entry = tar.nextTarEntry ?: break
+                    require(tar.canReadEntryData(entry)) { "归档包含不支持的文件格式：${entry.name}" }
+                    val path = member(root, entry.name)
+                    require(path != root || entry.isDirectory) { "归档根路径不是目录" }
+                    val previous = entries.put(path, entry)
+                    require(previous == null || previous.isDirectory && entry.isDirectory) { "归档包含重复或冲突路径：${entry.name}" }
+                    val normalized = name(path)
+                    val owner = LogicalOwner(entry.longUserId, entry.longGroupId, entry.mode and 0xFFF)
+                    require(owner.uid >= 0 && owner.gid >= 0) { "归档包含非法 UID/GID：${entry.name}" }
+                    if (entry.isSymbolicLink) {
+                        val link = entry.linkName
+                        require('\u0000' !in link && link.isNotEmpty() && (File.separatorChar != '\\' || '\\' !in link)) { "非法符号链接：${entry.name}" }
+                        val target = if (link.startsWith('/')) root.resolve(link.trimStart('/')) else path.parent.resolve(link)
+                        require(target.normalize().startsWith(root)) { "符号链接逃逸 rootfs：${entry.name}" }
+                        symlinks[path] = link
+                    }
+                    val linked = if (entry.isLink) member(root, entry.linkName.removePrefix("./")) else null
+                    val regular = entry.isFile && !entry.isFIFO && !entry.isCharacterDevice && !entry.isBlockDevice
+                    val supported = entry.isDirectory || regular || entry.isSymbolicLink || entry.isLink
+                    if (omitted(normalized, exclude) || !supported) {
+                        skipped.add(path)
+                        continue
+                    }
+                    if (entry.isLink) {
+                        deferred[path] = requireNotNull(linked)
+                        continue
+                    }
+                    val outputName = if (path == root) "./" else normalized
+                    val outputEntry = when {
+                        entry.isSymbolicLink -> TarArchiveEntry(outputName, TarConstants.LF_SYMLINK).apply { linkName = entry.linkName }
+                        entry.isDirectory -> TarArchiveEntry(outputName.trimEnd('/') + "/")
+                        else -> TarArchiveEntry(outputName).apply { size = entry.realSize }
+                    }
+                    outputEntry.lastModifiedTime = entry.lastModifiedTime
+                    outputEntry.ownership(owner)
+                    owners[path] = owner
+                    output.putArchiveEntry(outputEntry)
+                    if (regular) {
+                        while (true) {
+                            val count = tar.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                    output.closeArchiveEntry()
+                }
+            }
+            // Validate the virtual tree too: no member may be nested under an archive-created link/file.
+            entries.keys.forEach { path ->
+                var parent = path.parent
+                while (parent != null && parent.startsWith(root)) {
+                    require(entries[parent]?.isDirectory != false) { "归档尝试通过非目录写入：$path" }
+                    parent = parent.parent
+                }
+            }
+            symlinks.keys.forEach { path ->
+                val pending = java.util.ArrayDeque<String>()
+                root.relativize(path).forEach { pending.addLast(it.toString()) }
+                var target = root
+                var followed = 0
+                while (pending.isNotEmpty()) {
+                    when (val part = pending.removeFirst()) {
+                        "", "." -> Unit
+                        ".." -> {
+                            require(target != root) { "符号链接链逃逸 rootfs：$path" }
+                            target = target.parent
+                        }
+                        else -> {
+                            target = target.resolve(part)
+                            val linked = symlinks[target] ?: continue
+                            require(++followed <= 40) { "归档包含循环或过深符号链接：$path" }
+                            target = if (linked.startsWith('/')) root else target.parent
+                            linked.split('/').asReversed().forEach(pending::addFirst)
+                        }
+                    }
+                }
+            }
+            while (deferred.isNotEmpty()) {
+                var resolved = false
+                val iterator = deferred.iterator()
+                while (iterator.hasNext()) {
+                    val (path, linked) = iterator.next()
+                    if (linked in skipped || omitted(name(linked), exclude)) {
+                        skipped.add(path)
+                    } else {
+                        val target = entries[linked]
+                        require(target == null || target.isFile || target.isLink) { "硬链接目标不是普通文件：$linked" }
+                        val owner = owners[linked] ?: continue
+                        val entry = TarArchiveEntry(name(path), TarConstants.LF_LINK).apply {
+                            linkName = name(linked)
+                            lastModifiedTime = entries.getValue(path).lastModifiedTime
+                        }
+                        entry.ownership(owner)
+                        owners[path] = owner
+                        output.putArchiveEntry(entry)
+                        output.closeArchiveEntry()
+                    }
+                    iterator.remove()
+                    resolved = true
+                }
+                require(resolved) { "归档包含循环或缺失目标的硬链接" }
+            }
+            output.finish()
+        }
+    }
+
     fun deleteTree(file: File) {
-        if (!Files.exists(file.toPath(), NOFOLLOW_LINKS)) return
+        if (!Files.exists(file.toPath(), NOFOLLOW_LINKS)) {
+            RootfsOwnership.deleteManifest(file)
+            return
+        }
         Files.walkFileTree(file.toPath(), object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                 val permissions = Files.getPosixFilePermissions(dir, NOFOLLOW_LINKS)
@@ -258,6 +444,7 @@ internal object RootfsArchives {
                 return FileVisitResult.CONTINUE
             }
         })
+        RootfsOwnership.deleteManifest(file)
     }
 
     fun size(rootfs: File, excluded: Set<String> = emptySet()): Long {

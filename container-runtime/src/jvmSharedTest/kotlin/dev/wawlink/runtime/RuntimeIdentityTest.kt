@@ -60,19 +60,6 @@ class RuntimeIdentityTest {
         assertEquals(permissions, Files.getPosixFilePermissions(group.toPath()))
     }
 
-    @Test fun chrootAddsOnlySelectedAccountToCommonGroupAndIsIdempotent() = fixture { _, root ->
-        val group = File(root, "etc/group").apply { writeText("root:x:0:\napp_shared:x:10234:existing\nusers:x:1000:alice\n") }
-        RuntimeIdentity.update(root, setOf(10234), member = "alice")
-        assertEquals("root:x:0:\napp_shared:x:10234:existing,alice\nusers:x:1000:alice\n", group.readText())
-        val stamp = FileTime.fromMillis(1_600_000_000_000)
-        Files.setLastModifiedTime(group.toPath(), stamp)
-        RuntimeIdentity.update(root, setOf(10234), member = "alice")
-        assertEquals(stamp, Files.getLastModifiedTime(group.toPath()))
-        RuntimeIdentity.update(root, setOf(10235), member = "alice")
-        assertTrue(group.readText().endsWith("host_gid_10235:x:10235:alice\n"))
-        assertFailsWith<IllegalArgumentException> { RuntimeIdentity.update(root, setOf(10234), member = "alice,root") }
-    }
-
     @Test fun rejectsGroupDatabaseEscapingRoot() = fixture { directory, root ->
         val outside = File(directory, "outside-group").apply { writeText("untouched\n") }
         Files.createSymbolicLink(File(root, "etc/group").toPath(), outside.toPath())

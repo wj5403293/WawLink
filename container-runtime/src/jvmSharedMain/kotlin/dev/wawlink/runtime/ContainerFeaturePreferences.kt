@@ -29,16 +29,14 @@ class ContainerFeaturePreferences(private val runtime: ContainerRuntime) {
         val expected = expectedDocument?.let { previous ->
             MessageDigest.getInstance("SHA-256").digest(textBytes(previous)).joinToString("") { "%02x".format(it.toInt() and 255) }
         }
-        val shared = runtime.containers.value.firstOrNull { it.config.id == containerId }?.config?.engine == ContainerEngineType.CHROOT
         featureCommand(runtime, containerId, guard + """
-            umask ${if (shared) "0007" else "0077"}
+            umask 0077
             if [ ! -e "${'$'}dir" ]; then mkdir -- "${'$'}dir"; fi
             checked_directory
             cd -P -- "${'$'}dir"
             dir=${'$'}PWD
             file="${'$'}dir/feature-cards.json"
-            # Keep the inherited App shared group; change only this management directory.
-            ${if (shared) "chmod 2770 ." else "mode=\$(stat -c %a .); [ \"\$((0\$mode & 0700))\" = 448 ] || chmod u+rwx ."}
+            mode=${'$'}(stat -c %a .); [ "${'$'}((0${'$'}mode & 0700))" = 448 ] || chmod u+rwx .
             temporary=${'$'}(mktemp "${'$'}dir/.feature-cards-XXXXXXXX")
             trap 'rm -f -- "${'$'}temporary"' 0
             trap 'exit 1' HUP INT TERM
@@ -52,7 +50,7 @@ class ContainerFeaturePreferences(private val runtime: ContainerRuntime) {
             """.trimIndent()}
             # Never chmod the old document: atomic replacement must leave hardlink aliases intact.
             [ ! -L "${'$'}temporary" ] && [ -f "${'$'}temporary" ] && [ "${'$'}(stat -c %h -- "${'$'}temporary")" = 1 ] || fail '功能卡片设置暂存文件无效'
-            chmod ${if (shared) "660" else "600"} -- "${'$'}temporary"
+            chmod 600 -- "${'$'}temporary"
             mv -fT -- "${'$'}temporary" "${'$'}file"
         """.trimIndent(), stdinBytes = next)
     }

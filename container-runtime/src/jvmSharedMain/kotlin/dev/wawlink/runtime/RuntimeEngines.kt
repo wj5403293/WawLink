@@ -10,17 +10,18 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 internal fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+internal const val OWNERSHIP_SCAN_MARKER = "# WAWLINK_OWNERSHIP_SCAN"
 
 internal object HostCommands {
-    fun run(arguments: List<String>, timeout: Long = 45): String = run(ProcessBuilder(arguments), timeout)
-    fun run(builder: ProcessBuilder, timeout: Long = 45): String {
+    fun run(arguments: List<String>, timeout: Long = 45, maxOutputBytes: Int = 4 * 1024 * 1024): String = run(ProcessBuilder(arguments), timeout, maxOutputBytes)
+    fun run(builder: ProcessBuilder, timeout: Long = 45, maxOutputBytes: Int = 4 * 1024 * 1024): String {
         val command = builder.command().firstOrNull().orEmpty()
         val process = try { builder.redirectErrorStream(true).start() }
         catch (failure: IOException) { throw IllegalStateException("无法启动系统命令 $command：${failure.message}", failure) }
-        return collect(process, command, timeout)
+        return collect(process, command, timeout, maxOutputBytes)
     }
 
-    internal fun collect(process: Process, command: String, timeout: Long): String {
+    internal fun collect(process: Process, command: String, timeout: Long, maxOutputBytes: Int = 4 * 1024 * 1024): String {
         val output = ByteArrayOutputStream()
         val stopping = AtomicBoolean()
         val readFailure = AtomicReference<Throwable?>()
@@ -34,16 +35,18 @@ internal object HostCommands {
                         if (available > 0) {
                             val count = input.read(buffer, 0, minOf(buffer.size, available))
                             if (count < 0) break
-                            val retained = minOf(count, 4 * 1024 * 1024 - output.size())
-                            if (retained > 0) output.write(buffer, 0, retained)
+                            if (output.size() + count > maxOutputBytes) {
+                                readFailure.set(IllegalStateException("系统命令输出超过上限：$command")); stopping.set(true); process.destroyForcibly(); break
+                            }
+                            output.write(buffer, 0, count)
                         } else if (!process.isAlive) break
                         else Thread.sleep(5)
                     }
                 }
             } catch (failure: Throwable) {
-                val expected = stopping.get() || failure is IOException && runCatching { !process.isAlive }.getOrDefault(false)
-                if (!expected) {
-                    readFailure.set(failure)
+                // A live-pipe failure is primary; do not let the cleanup SIGKILL (137) hide it.
+                if (!stopping.get()) {
+                    readFailure.compareAndSet(null, failure)
                     runCatching { process.destroyForcibly() }
                 }
             }
@@ -84,15 +87,27 @@ internal object HostCommands {
 
 private data class LoginIdentity(val uid: String, val gid: String, val name: String, val home: String)
 
-private fun loginIdentity(config: ContainerConfig): LoginIdentity {
+private fun passwdText(config: ContainerConfig, rootCommand: ((String) -> String)?): String {
+    val lexicalRoot = File(config.rootfsPath).absoluteFile.normalize()
+    val passwd = File(lexicalRoot, "etc/passwd").toPath().normalize()
+    require(passwd.startsWith(lexicalRoot.toPath()) && passwd != lexicalRoot.toPath()) { "用户数据库路径越界" }
+    if (rootCommand == null) {
+        val readable = passwd.toFile()
+        require(!Files.isSymbolicLink(readable.toPath()) && Files.isRegularFile(readable.toPath(), NOFOLLOW_LINKS)) { "用户数据库不是普通文件" }
+        return readable.readText()
+    }
+    return rootCommand("set -eu\ncd ${shellQuote(lexicalRoot.path)}\n[ ! -L . ] && [ -d . ]\n[ ! -L ./etc ] && [ ! -L ./etc/passwd ] && [ -f ./etc/passwd ]\ncat ./etc/passwd")
+}
+
+private fun loginIdentity(config: ContainerConfig, rootCommand: ((String) -> String)? = null): LoginIdentity {
     if (config.user == "root" || config.user == "0") return LoginIdentity("0", "0", "root", "/root")
     val root = File(config.rootfsPath).canonicalFile.toPath()
     val passwd = File(config.rootfsPath, "etc/passwd")
     require(passwd.canonicalFile.toPath().startsWith(root)) { "用户数据库路径越界" }
-    require(Files.isRegularFile(passwd.canonicalFile.toPath(), NOFOLLOW_LINKS)) { "用户数据库不是普通文件" }
-    val parts = passwd.useLines { lines -> lines.map { it.split(':') }.firstOrNull {
+    val text = passwdText(config, rootCommand)
+    val parts = text.lineSequence().map { it.split(':') }.firstOrNull {
         it.size >= 7 && (it[0] == config.user || it[2] == config.user)
-    } } ?: error("容器用户“${config.user}”不存在，请先在容器内创建该用户")
+    } ?: error("容器用户“${config.user}”不存在，请先在容器内创建该用户")
     require(parts[2].matches(Regex("[0-9]+")) && parts[3].matches(Regex("[0-9]+"))) { "容器用户 UID/GID 无效" }
     require(parts[5].startsWith('/')) { "容器用户主目录无效" }
     return LoginIdentity(parts[2], parts[3], parts[0], parts[5])
@@ -102,12 +117,13 @@ private fun loginHome(config: ContainerConfig, user: LoginIdentity): String = (c
     require(it.startsWith('/') && !it.startsWith("//") && '\u0000' !in it && it.split('/').none { part -> part == "." || part == ".." }) { "容器 HOME 必须是有效的绝对路径" }
 }
 
-/** Resolves the configured account and HOME override offline, exactly as the engine launcher does. */
-fun containerHome(config: ContainerConfig): String = loginHome(config, loginIdentity(config))
+/** Resolves the configured account and HOME override; Root callers may read a private passwd safely. */
+fun containerHome(config: ContainerConfig, rootCommand: ((String) -> String)?): String = loginHome(config, loginIdentity(config, rootCommand))
+fun containerHome(config: ContainerConfig): String = containerHome(config, null)
 
 internal class RuntimeEngines(
     private val paths: RuntimePaths,
-    private val runRootCommand: (String) -> String = { HostCommands.run(listOf("su", "-c", it)) },
+    private val runRootCommand: ((String) -> String)? = null,
 ) {
     private val ownedMounts = mutableMapOf<String, MutableList<File>>()
     private val prootCapabilities = mutableMapOf<String, String>()
@@ -128,13 +144,18 @@ internal class RuntimeEngines(
         "${directory.path}:${native.path}"
     }
 
-    fun validateRoot(config: ContainerConfig): File {
+    fun validateRoot(config: ContainerConfig, rootCommand: ((String) -> String)? = null): File {
         val root = File(config.rootfsPath)
-        require(root.isAbsolute && root.isDirectory && !Files.isSymbolicLink(root.toPath())) { "rootfs 必须是存在的绝对目录，且不能是符号链接" }
+        require(root.isAbsolute && !Files.isSymbolicLink(root.toPath())) { "rootfs 必须是存在的绝对目录，且不能是符号链接" }
         val canonical = root.canonicalFile
         require(canonical.path !in setOf("/", "/home", "/root", "/usr", "/etc", "/var", "/tmp", "/dev", "/proc", "/sys", "/data", "/data/data", "/data/user", "/data/user/0")) { "拒绝将宿主系统目录作为 rootfs" }
         require(!paths.dataDir.canonicalFile.toPath().startsWith(canonical.toPath())) { "rootfs 不能包含应用数据目录" }
-        require(File(root, "etc").isDirectory && File(root, "bin/sh").exists()) { "rootfs 不完整：缺少 /etc 或 /bin/sh" }
+        if (rootCommand == null) {
+            require(root.isDirectory) { "rootfs 必须是存在的绝对目录，且不能是符号链接" }
+            require(File(root, "etc").isDirectory && File(root, "bin/sh").exists()) { "rootfs 不完整：缺少 /etc 或 /bin/sh" }
+        } else {
+            rootCommand("set -eu\n[ ! -L ${shellQuote(root.path)} ] && [ -d ${shellQuote(root.path)} ]\n[ -d ${shellQuote(File(root, "etc").path)} ] && [ -f ${shellQuote(File(root, "bin/sh").path)} ] || { echo 'rootfs 不完整：缺少 /etc 或 /bin/sh' >&2; exit 1; }")
+        }
         return canonical
     }
 
@@ -142,13 +163,20 @@ internal class RuntimeEngines(
     fun home(config: ContainerConfig): String = containerHome(config)
 
     fun validate(config: ContainerConfig) {
-        val root = validateRoot(config)
+        val rootRunner: ((String) -> String)? = if (config.engine == ContainerEngineType.CHROOT) this::rootCommand else null
+        rootRunner?.let { RootfsOwnership.preflight(it) }
+        val root = validateRoot(config, rootRunner)
         require(config.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))) { "容器 ID 只能包含字母、数字、下划线和短横线" }
         require(config.name.isNotBlank()) { "容器名称不能为空" }
         require(config.shell.startsWith('/') && '\u0000' !in config.shell) { "Shell 必须使用容器内绝对路径" }
-        val selectedShell = File(root, config.shell.trimStart('/')).canonicalFile
-        require(selectedShell.toPath().startsWith(root.toPath()) && selectedShell.isFile && selectedShell.canExecute()) { "选定 Shell 不存在或不可执行：${config.shell}；请先安装它或改用 /bin/sh" }
-        home(config)
+        if (rootRunner == null) {
+            val selectedShell = File(root, config.shell.trimStart('/')).canonicalFile
+            require(selectedShell.toPath().startsWith(root.toPath()) && selectedShell.isFile && selectedShell.canExecute()) { "选定 Shell 不存在或不可执行：${config.shell}；请先安装它或改用 /bin/sh" }
+        } else {
+            val candidate = "./" + config.shell.trimStart('/')
+            rootRunner("set -eu\ncd ${shellQuote(root.path)}\nfile=${shellQuote(candidate)}\n[ -f \"${'$'}file\" ] && [ -x \"${'$'}file\" ]\nresolved=\$(readlink -f -- \"${'$'}file\")\ncase \"${'$'}resolved\" in ${shellQuote(root.path)}/*) ;; *) echo '选定 Shell 越出 Rootfs' >&2; exit 1;; esac")
+        }
+        containerHome(config, rootRunner)
         config.environment.forEach { (key, value) ->
             require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && '\u0000' !in value) { "环境变量格式无效：$key" }
         }
@@ -160,7 +188,7 @@ internal class RuntimeEngines(
             require(mount.target.startsWith('/') && !mount.target.startsWith("//") && mount.target != "/" && mount.target.split('/').none { it == ".." || it == "." } && '\u0000' !in mount.target && ':' !in mount.target && ':' !in mount.source) { "挂载路径无效：${mount.target}" }
             require(mount.target.trimEnd('/') !in setOf("/dev", "/proc", "/sys") && !listOf("/dev/", "/proc/", "/sys/").any(mount.target::startsWith)) { "自定义挂载不能覆盖系统挂载点" }
             if (!mount.readWrite && config.engine != ContainerEngineType.CHROOT) error("PRoot/proroot 无法保证只读挂载；请改用已获 Root 权限的 chroot，或移除此挂载")
-            guestTarget(root, mount.target, source.isDirectory)
+            guestTarget(root, mount.target, source.isDirectory, rootRunner)
         }
         when (config.engine) {
             ContainerEngineType.PROROOT -> {
@@ -186,8 +214,6 @@ internal class RuntimeEngines(
             ContainerEngineType.CHROOT -> {
                 require(!config.sysvipc && !config.fakeKernel) { "chroot 使用真实系统 IPC/内核，不能启用伪装选项" }
                 require(guestArch(config.arch) == hostArch()) { "chroot 不能直接运行异构架构；请改用 PRoot + QEMU" }
-                val result = rootCommand("id")
-                require(Regex("(?:^|\\s)uid=0(?:\\D|$)").containsMatchIn(result)) { "未获得 Root 权限，请授权 su 或切换其他引擎" }
                 rootCommand("command -v mountpoint >/dev/null && command -v mount >/dev/null && command -v umount >/dev/null && command -v chroot >/dev/null || { echo 'Root 环境缺少 mountpoint/mount/umount/chroot 命令' >&2; exit 127; }")
             }
         }
@@ -208,21 +234,43 @@ internal class RuntimeEngines(
     }
     private fun proot(): String = if (paths.isAndroid) nativeBinary("libproot.so") else paths.hostProot
 
-    private fun guestTarget(root: File, target: String, directory: Boolean): File {
+    private fun guestTarget(root: File, target: String, directory: Boolean, rootCommand: ((String) -> String)? = null): File {
         val relative = target.trimStart('/')
         val file = File(root, relative)
         val normalized = file.toPath().toAbsolutePath().normalize()
         require(normalized.startsWith(root.toPath()) && normalized != root.toPath()) { "挂载目标越界：$target" }
-        require(file.canonicalFile.toPath().startsWith(root.toPath())) { "挂载目标通过符号链接逃逸：$target" }
-        val actual = file.canonicalFile
-        if (directory) { require(actual.isDirectory || actual.mkdirs()) { "无法创建挂载目录：$target" } }
-        else { actual.parentFile.mkdirs(); if (!actual.exists()) actual.createNewFile(); require(actual.isFile) { "文件挂载目标不是文件：$target" } }
-        return actual
+        if (rootCommand == null) {
+            require(file.canonicalFile.toPath().startsWith(root.toPath())) { "挂载目标通过符号链接逃逸：$target" }
+            val actual = file.canonicalFile
+            if (directory) { require(actual.isDirectory || actual.mkdirs()) { "无法创建挂载目录：$target" } }
+            else { actual.parentFile.mkdirs(); if (!actual.exists()) actual.createNewFile(); require(actual.isFile) { "文件挂载目标不是文件：$target" } }
+            return actual
+        }
+        val components = relative.split('/').filter(String::isNotEmpty)
+        val script = buildString {
+            append("set -eu\ncd ").append(shellQuote(root.path)).append("\ncurrent=.\n")
+            components.forEach { component ->
+                append("next=\"${'$'}current\"/").append(shellQuote(component)).append("\n")
+                append("if [ -e \"${'$'}next\" ] || [ -L \"${'$'}next\" ]; then [ ! -L \"${'$'}next\" ] && [ -d \"${'$'}next\" ] || exit 1; else mkdir \"${'$'}next\"; fi\n")
+                append("current=\"${'$'}next\"\n")
+            }
+            if (directory) append("[ -d \"${'$'}current\" ] && [ ! -L \"${'$'}current\" ]\n")
+            else append("[ -f \"${'$'}current\" ] && [ ! -L \"${'$'}current\" ]\n")
+        }
+        rootCommand(script)
+        return file
     }
 
     fun prepare(config: ContainerConfig) {
         validate(config)
-        val root = validateRoot(config)
+        RootfsOwnership.requireStable(config)
+        val ownership = RootfsOwnership.load(File(config.rootfsPath))
+        val expected = RootfsOwnership.mapped(config.engine)
+        if ((config.engine == ContainerEngineType.CHROOT && ownership == null) ||
+            (ownership != null && ownership.physical != expected)) {
+            RootfsOwnership.migrate(config, config, ::rootCommand)
+        }
+        val root = validateRoot(config, if (config.engine == ContainerEngineType.CHROOT) this::rootCommand else null)
         if (config.engine != ContainerEngineType.CHROOT) {
             prepareMappedOwnership(config, root, home(config))
             return
@@ -248,23 +296,24 @@ internal class RuntimeEngines(
             }
         }
         try {
-            val proc = guestTarget(root, "/proc", true)
+            val proc = guestTarget(root, "/proc", true, this::rootCommand)
             mount(proc, "mount -t proc proc ${shellQuote(proc.path)}")
-            val sys = guestTarget(root, "/sys", true)
+            val sys = guestTarget(root, "/sys", true, this::rootCommand)
             mount(sys, "mount -t sysfs sysfs ${shellQuote(sys.path)}")
-            val dev = guestTarget(root, "/dev", true)
+            val dev = guestTarget(root, "/dev", true, this::rootCommand)
             mount(dev, "mount -o bind /dev ${shellQuote(dev.path)}")
             val pts = File(dev, "pts")
-            require(pts.isDirectory) { "宿主 /dev/pts 不存在，无法挂载终端设备" }
-            mount(pts, "mount -t devpts devpts ${shellQuote(pts.path)}")
+            rootCommand("[ -d /dev/pts ]")
+            val ptsTarget = guestTarget(root, "/dev/pts", true, this::rootCommand)
+            mount(ptsTarget, "mount -t devpts devpts ${shellQuote(ptsTarget.path)}")
             config.mounts.forEach { binding ->
                 val source = File(binding.source).canonicalFile
-                val target = guestTarget(root, binding.target, source.isDirectory)
+                val target = guestTarget(root, binding.target, source.isDirectory, this::rootCommand)
                 mount(target, "mount -o bind ${shellQuote(source.path)} ${shellQuote(target.path)}", source.takeUnless { binding.readWrite })
             }
             rootCommand(owned.joinToString(" && ") { "mountpoint -q ${shellQuote(it.path)}" } + " || { echo 'su 挂载命名空间不共享，无法安全运行 chroot' >&2; exit 1; }")
-            val user = loginIdentity(config)
-            prepareChrootOwnership(config, root, user.uid, user.gid, user.name, loginHome(config, user), ::rootCommand)
+            val user = loginIdentity(config, this::rootCommand)
+            prepareChrootOwnership(config, root, user.uid, user.gid, loginHome(config, user), ::rootCommand)
         } catch (failure: Throwable) {
             try { unmount(config.id) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
             throw failure
@@ -287,8 +336,10 @@ internal class RuntimeEngines(
     fun builder(config: ContainerConfig, arguments: List<String>, cwd: String, environment: Map<String, String>, mergeError: Boolean, rootPidFile: File? = null): ProcessBuilder {
         require(arguments.isNotEmpty() && arguments.none { '\u0000' in it }) { "容器启动参数无效" }
         require(cwd.startsWith('/') && '\u0000' !in cwd && !cwd.split('/').contains("..")) { "工作目录必须是容器内绝对路径" }
-        val root = validateRoot(config)
-        val user = loginIdentity(config)
+        val rootRunner: ((String) -> String)? = if (config.engine == ContainerEngineType.CHROOT) this::rootCommand else null
+        rootRunner?.let { RootfsOwnership.preflight(it) }
+        val root = validateRoot(config, rootRunner)
+        val user = loginIdentity(config, rootRunner)
         val env = linkedMapOf("HOME" to loginHome(config, user), "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         env.putAll(config.environment)
         environment.forEach { (key, value) -> require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]*")) && '\u0000' !in value) { "进程环境变量无效：$key" }; env[key] = value }
@@ -320,8 +371,7 @@ internal class RuntimeEngines(
                 addAll(guest)
             }
             ContainerEngineType.CHROOT -> {
-                val sharedGroupCheck = if (user.uid == "0") "" else "case \" \$(id -G) \" in *\" ${ChrootHostIdentity.gid} \"*) ;; *) echo 'chroot 登录身份缺少宿主共享组' >&2; exit 125;; esac; "
-                val identityGuest = listOf("/bin/sh", "-c", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; umask 0007; " + sharedGroupCheck + "exec \"\$@\"", "wawlink") + guest
+                val identityGuest = listOf("/bin/sh", "-c", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; umask 0077; exec \"\$@\"", "wawlink") + guest
                 val inner = if (user.uid == "0") identityGuest else listOf("/bin/su", "-s", "/bin/sh", user.name, "-c", "exec " + identityGuest.joinToString(" ", transform = ::shellQuote))
                 val identityFile = requireNotNull(rootPidFile) { "chroot 启动缺少安全 PID 握手文件" }
                 val acknowledgement = shellQuote(identityFile.path + ".ack")
@@ -403,6 +453,9 @@ internal class RuntimeEngines(
         """.trimIndent()).lineSequence().filter { it.isNotBlank() }.toList()
     }
 
-    fun rootCommand(command: String): String = try { runRootCommand(command) }
-    catch (failure: Throwable) { throw IllegalStateException("chroot Root 命令执行失败：${failure.message}", failure) }
+    fun rootCommand(command: String): String = try {
+        if (runRootCommand != null) runRootCommand.invoke(command)
+        else if (command.startsWith(OWNERSHIP_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = 300, maxOutputBytes = 256 * 1024 * 1024)
+        else HostCommands.run(listOf("su", "-c", command))
+    } catch (failure: Throwable) { throw IllegalStateException("chroot Root 命令执行失败：${failure.message}", failure) }
 }

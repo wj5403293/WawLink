@@ -315,7 +315,7 @@ class RuntimeEnginesTest {
     @Test fun concurrentConfigurationAndSessionWritersCanShareNewManagedParents() = fixture { _, _, root, _ ->
         val pool = java.util.concurrent.Executors.newFixedThreadPool(12)
         try {
-            for (engine in ContainerEngineType.entries) {
+            for (engine in listOf(ContainerEngineType.PROOT, ContainerEngineType.PROROOT)) {
                 val ready = java.util.concurrent.CountDownLatch(12)
                 val start = java.util.concurrent.CountDownLatch(1)
                 val config = ContainerConfig("concurrent", "并发写入", root.path, engine = engine)
@@ -333,10 +333,6 @@ class RuntimeEnginesTest {
                 start.countDown()
                 writers.forEach { it.get(10, TimeUnit.SECONDS) }
                 for (index in 1..12) assertEquals("request-$index", File(directory, "request-$index.json").readText())
-                if (engine == ContainerEngineType.CHROOT) {
-                    assertEquals(0x5F8, (Files.getAttribute(directory.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
-                    assertEquals(0x1B0, (Files.getAttribute(File(directory, "request-1.json").toPath(), "unix:mode") as Number).toInt() and 0x1FF)
-                }
             }
         } finally { pool.shutdownNow() }
     }

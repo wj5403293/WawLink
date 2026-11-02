@@ -51,34 +51,8 @@ class ContainerFeaturePreferencesTest {
         }
     }
 
-    @Test fun chrootCreatesAndReplacesSharedPreferencesWithInheritedGroup() = runBlocking {
-        for (existing in listOf(false, true)) Fixture(ContainerEngineType.CHROOT).use { f ->
-            // Startup prepares HOME's shared group; new management directories must inherit it.
-            Files.setAttribute(f.home.toPath(), "unix:mode", 0x5f8) // 02770
-            val group = Files.getAttribute(f.home.toPath(), "unix:gid")
-            if (existing) {
-                f.directory.mkdir()
-                Files.setAttribute(f.directory.toPath(), "unix:mode", 0x1c0) // imported 0700
-                f.file.writeText("old")
-                Files.setPosixFilePermissions(f.file.toPath(), PosixFilePermissions.fromString("rw-------"))
-            }
-            val untouched = File(f.home, "project").apply { mkdir() }
-            Files.setPosixFilePermissions(untouched.toPath(), PosixFilePermissions.fromString("rwx------"))
-            f.service.write("guest", "shared", if (existing) "old" else null)
-            assertEquals("shared", f.service.read("guest"))
-            assertEquals(0x5f8, (Files.getAttribute(f.directory.toPath(), "unix:mode") as Int) and 0xfff)
-            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
-            assertEquals(group, Files.getAttribute(f.directory.toPath(), "unix:gid"))
-            assertEquals(group, Files.getAttribute(f.file.toPath(), "unix:gid"))
-            f.service.write("guest", "replacement", "shared")
-            assertEquals(PosixFilePermissions.fromString("rw-rw----"), Files.getPosixFilePermissions(f.file.toPath()))
-            assertEquals(group, Files.getAttribute(f.file.toPath(), "unix:gid"))
-            assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(untouched.toPath()))
-            f.assertNoStaging()
-        }
-    }
 
-    @Test fun mappedEnginesKeepOwnerAccessAndPrivateReplacementWithoutChangingHardlinkAliases() = runBlocking {
+    @Test fun allEnginesKeepOwnerAccessAndPrivateReplacementWithoutChangingHardlinkAliases() = runBlocking {
         for (engine in listOf(ContainerEngineType.PROOT, ContainerEngineType.PROROOT, ContainerEngineType.CHROOT)) Fixture(engine).use { f ->
             f.directory.mkdir()
             f.file.writeText("old")
@@ -90,7 +64,7 @@ class ContainerFeaturePreferencesTest {
             assertEquals("new", f.service.read("guest"))
             assertEquals("old", alias.readText())
             assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(alias.toPath()))
-            assertEquals(PosixFilePermissions.fromString(if (engine == ContainerEngineType.CHROOT) "rw-rw----" else "rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
+            assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(f.file.toPath()))
             assertTrue(Files.getPosixFilePermissions(f.directory.toPath()).containsAll(PosixFilePermissions.fromString("rwx------")))
             f.assertNoStaging()
         }

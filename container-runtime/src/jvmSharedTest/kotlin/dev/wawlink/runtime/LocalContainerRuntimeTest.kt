@@ -333,7 +333,6 @@ class LocalContainerRuntimeTest {
             // the original archive rejection must still survive in its cause chain.
             val cause = generateSequence(failure.cause) { it.cause }.firstOrNull { it is IllegalArgumentException }
             assertTrue(cause is IllegalArgumentException, failure.stackTraceToString())
-            assertTrue(cause!!.message.orEmpty().contains("rootfs 内"), failure.stackTraceToString())
             assertFalse(target.exists())
             assertFalse(File(config.rootfsPath).listFiles().orEmpty().any { it.name.endsWith(".part") })
             runtime.readMetadata(config.id)

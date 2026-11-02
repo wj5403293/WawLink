@@ -161,4 +161,27 @@ class RootfsExportSanitizationTest {
             assertFalse(directory.listFiles().orEmpty().any { it.name.endsWith(".part") })
         } finally { runtime.close() }
     } }
+
+    @Test fun fullExportKeepsConfiguredHomeOwnershipWithoutChangingSourceModes() = fixture { directory -> runBlocking {
+        val root = File(directory, "rootfs").apply { mkdirs() }
+        put(root, "bin/sh", "test shell")
+        put(root, "etc/passwd", "root:x:0:0::/root:/bin/sh\nalice:x:1001:1002::/home/alice:/bin/sh\n")
+        val config = ContainerConfig("source", "source", root.canonicalPath, user = "alice", environment = mapOf("HOME" to "/srv/custom"))
+        File(root, "srv/custom").mkdirs()
+        val runtime = LocalContainerRuntime(RuntimePaths(File(directory, "data")), { _, _ -> 0L })
+        try {
+            runtime.register(config)
+            put(root, "srv/custom/.ssh/private", "preserve these bytes and permissions")
+            val secret = File(root, "srv/custom/.ssh/private").toPath()
+            Files.setAttribute(secret, "unix:mode", 511)
+            val archive = File(directory, "full.tar.zst")
+            runtime.exportRootfs(config.id, archive.path)
+            assertEquals(511, (Files.getAttribute(secret, "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and 0xFFF)
+            assertEquals("preserve these bytes and permissions", secret.toFile().readText())
+            val restored = File(directory, "restored")
+            RootfsArchives.extract(archive, restored)
+            assertEquals(LogicalOwner(1001, 1002, 511), RootfsOwnership.load(restored)!!.entries["/srv/custom/.ssh/private"])
+            assertEquals("preserve these bytes and permissions", File(restored, "srv/custom/.ssh/private").readText())
+        } finally { runtime.close() }
+    } }
 }

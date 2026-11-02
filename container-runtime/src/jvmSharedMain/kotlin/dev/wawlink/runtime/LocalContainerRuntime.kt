@@ -57,11 +57,15 @@ private data class SavedRuntime(
 class LocalContainerRuntime internal constructor(
     val paths: RuntimePaths,
     private val measureRootfs: (File, Set<String>) -> Long,
+    private val startRootProcess: (String) -> Process = { ProcessBuilder("su", "-c", it).start() },
+    runRootCommand: ((String) -> String)?,
 ) : ContainerRuntime {
     constructor(paths: RuntimePaths) : this(paths, RootfsArchives::size)
+    internal constructor(paths: RuntimePaths, measureRootfs: (File, Set<String>) -> Long) :
+        this(paths, measureRootfs, runRootCommand = null)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
-    private val engines = RuntimeEngines(paths)
+    private val engines = RuntimeEngines(paths, runRootCommand)
     private val metadataStore = ContainerMetadataStore(engines)
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val stateFile = File(paths.dataDir, "containers.json")
@@ -146,6 +150,9 @@ class LocalContainerRuntime internal constructor(
     private fun ensureOpen() = check(!closed && !closing) { "容器运行时已关闭" }
     private fun config(id: String): ContainerConfig = configurations[id] ?: error("找不到容器：$id")
     private fun sizeOf(config: ContainerConfig): Long {
+        if (config.engine == ContainerEngineType.CHROOT) {
+            return RootfsOwnership.snapshot(config, engines::rootCommand).asSequence().filter { it.kind == 0x8000 }.sumOf { it.size }
+        }
         val root = File(config.rootfsPath).canonicalFile
         val rootPath = root.toPath()
         val excluded = config.mounts.mapNotNull { mount ->
@@ -244,7 +251,7 @@ class LocalContainerRuntime internal constructor(
                 val target = mount.target.trimEnd('/')
                 target == "/etc" || target == "/etc/resolv.conf"
             }
-            if (!overridden) RuntimeDns.update(engines.validateRoot(config), content)
+            if (!overridden) RuntimeDns.update(engines.validateRoot(config), content, config, engines::rootCommand)
             if (dnsErrors.remove(config.id) != null) publish()
         } catch (failure: Exception) {
             if (failure is CancellationException) throw failure
@@ -278,6 +285,17 @@ class LocalContainerRuntime internal constructor(
             val previous = configurations.toMap()
             try {
                 configurations[config.id] = config.copy(rootfsPath = root.path, isDefault = config.isDefault || configurations.isEmpty())
+                if (config.engine == ContainerEngineType.CHROOT) {
+                    val manifest = RootfsOwnership.load(root)
+                    if (manifest == null || manifest.physical != ContainerEngineType.CHROOT || manifest.pending != null) {
+                        val context = currentCoroutineContext()
+                        RootfsOwnership.migrate(config, config, engines::rootCommand) {
+                            context.ensureActive()
+                            if (owner?.isActive == false) throw CancellationException("容器注册已取消")
+                        }
+                    }
+                }
+                RootfsOwnership.requireStable(config)
                 val snapshot = refreshMetadata(configurations.getValue(config.id))
                 if (initialTitle != null && snapshot != null && snapshot.revision == null) {
                     val saved = metadataStore.save(config, ContainerMetadata(title = initialTitle), null)
@@ -309,13 +327,14 @@ class LocalContainerRuntime internal constructor(
         currentCoroutineContext().ensureActive()
         ensureAvailable(id)
         val config = config(id)
+        RootfsOwnership.requireStable(config)
         paths.resolvConf?.value?.let { updateDns(config, it) }
         if (keepers[id]?.let { !it.stopping && it.process.isAlive } == true) return
         if (keepers.containsKey(id)) stopLocked(id, intentional = false)
         try {
             engines.prepare(config)
             if (config.engine == ContainerEngineType.PROOT || config.engine == ContainerEngineType.PROROOT) {
-                RuntimeIdentity.update(engines.validateRoot(config), RuntimeIdentity.hostSupplementaryGroupIds(File("/proc/self/status").readText(Charsets.UTF_8)))
+                RuntimeIdentity.update(engines.validateRoot(config), RuntimeIdentity.hostSupplementaryGroupIds(File("/proc/self/status").readText(Charsets.UTF_8)), config = config)
             }
             val workspace = File(config.rootfsPath, "workspace")
             require(workspace.canonicalFile.toPath().startsWith(File(config.rootfsPath).canonicalFile.toPath())) { "工作区路径越界" }
@@ -390,24 +409,67 @@ class LocalContainerRuntime internal constructor(
     }
 
     override suspend fun update(config: ContainerConfig) = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            ensureOpen()
-            ensureAvailable(config.id)
+        val migration = mutex.withLock {
+            ensureOpen(); ensureAvailable(config.id)
             if (config.isDefault) ensureDefaultAvailable(config.id)
             val previous = config(config.id)
             require(File(previous.rootfsPath).canonicalPath == File(config.rootfsPath).canonicalPath) { "请通过导入/克隆更换 rootfs，不能直接修改路径" }
             engines.validate(config)
+            val manifest = RootfsOwnership.load(File(config.rootfsPath))
+            val needed = RootfsOwnership.mapped(previous.engine) != RootfsOwnership.mapped(config.engine) ||
+                manifest?.pending != null || (manifest != null && manifest.physical != RootfsOwnership.mapped(config.engine))
+            if (needed) RootfsOwnership.preflight(engines::rootCommand)
+            needed
+        }
+        if (migration) {
+            var committedGeneration: Long? = null
+            withStoppedRootfs(config.id, restore = false) { previous ->
+                val operation = mutex.withLock { rootfsOperations.getValue(config.id) }
+                val context = currentCoroutineContext()
+                RootfsOwnership.migrate(previous, config, engines::rootCommand) {
+                    context.ensureActive()
+                    check(!closing && !closed && !wasInterrupted(config.id, operation.stopGeneration)) { "容器已停止或关闭；属主迁移已保留，可重新保存目标引擎继续" }
+                }
+                withContext(NonCancellable) { mutex.withLock {
+                    ensureOpen()
+                    check(configurations[config.id] === previous && stopGenerations[config.id] == operation.stopGeneration) { "容器操作已过期，未提交目标引擎配置" }
+                    commitConfiguration(config, previous)
+                    operation.config = configurations.getValue(config.id)
+                    committedGeneration = operation.stopGeneration
+                } }
+                // The lease releases admission before a new engine process is started.
+                operation.runGeneration != null
+            }.let { wasRunning ->
+                if (wasRunning) mutex.withLock {
+                    currentCoroutineContext().ensureActive()
+                    if (!closing && !closed && configurations[config.id]?.engine == config.engine &&
+                        stopGenerations[config.id] == committedGeneration) startLocked(config.id)
+                }
+            }
+        } else mutex.withLock {
+            ensureOpen(); ensureAvailable(config.id)
+            val previous = config(config.id)
             val running = keepers[config.id]?.process?.isAlive == true
             if (running) stopLocked(config.id)
+            commitConfiguration(config, previous)
+            if (running) startLocked(config.id)
+        }
+    }
+
+    private fun commitConfiguration(config: ContainerConfig, previous: ContainerConfig) {
+        val before = configurations.toMap()
+        try {
             if (config.isDefault) configurations.replaceAll { _, value -> if (value.isDefault) value.copy(isDefault = false) else value }
             configurations[config.id] = config.copy(metadata = previous.metadata)
             if (configurations.values.none { it.isDefault }) configurations[config.id] = configurations.getValue(config.id).copy(isDefault = true)
-            refreshMetadata(configurations.getValue(config.id))
             persist()
-            scheduleSize(configurations.getValue(config.id))
-            publish()
-            if (running) startLocked(config.id)
+        } catch (failure: Throwable) {
+            configurations.clear(); configurations.putAll(before)
+            throw failure
         }
+        refreshMetadata(configurations.getValue(config.id))
+        scheduleSize(configurations.getValue(config.id))
+        publish()
     }
 
     override suspend fun setDefault(id: String) = withContext(Dispatchers.IO) { mutex.withLock {
@@ -425,7 +487,12 @@ class LocalContainerRuntime internal constructor(
         stopLocked(id)
         val root = File(existing.rootfsPath).canonicalFile
         // Registered developer/user-owned external trees are never recursively deleted.
-        if (root.toPath().startsWith(rootfsDir.canonicalFile.toPath()) && root != rootfsDir.canonicalFile) RootfsArchives.deleteTree(root)
+        if (root.toPath().startsWith(rootfsDir.canonicalFile.toPath()) && root != rootfsDir.canonicalFile) {
+            val ownership = RootfsOwnership.load(root)
+            if (ownership?.physical == ContainerEngineType.CHROOT || ownership?.pending != null || existing.engine == ContainerEngineType.CHROOT) {
+                RootfsOwnership.deleteRootfs(existing, engines::rootCommand)
+            } else RootfsArchives.deleteTree(root)
+        }
         configurations.remove(id)
         errors.remove(id)
         dnsErrors.remove(id)
@@ -449,16 +516,21 @@ class LocalContainerRuntime internal constructor(
             var registered = false
             var failure: Throwable? = null
             try {
-                RootfsArchives.export(File(original.rootfsPath), archive)
+                exportOwnedRootfs(original, archive, engines::rootCommand, startRootProcess = startRootProcess)
                 currentCoroutineContext().ensureActive()
                 RootfsArchives.extract(archive, target)
                 currentCoroutineContext().ensureActive()
                 val copiedConfig = original.copy(id = newId, name = name, rootfsPath = target.canonicalPath, isDefault = false)
-                val previous = metadataStore.read(copiedConfig)
-                val metadata = metadataStore.save(copiedConfig, previous.value.copy(title = name), previous.revision)
+                val stagingConfig = copiedConfig.copy(engine = ContainerEngineType.PROOT)
+                val previous = metadataStore.read(stagingConfig)
+                val metadata = metadataStore.save(stagingConfig, previous.value.copy(title = name), previous.revision)
                 val copied = copiedConfig.copy(metadata = metadata.value)
                 val size = sizeOf(copied)
                 currentCoroutineContext().ensureActive()
+                if (copied.engine == ContainerEngineType.CHROOT) {
+                    val context = currentCoroutineContext()
+                    RootfsOwnership.migrate(stagingConfig, copied, engines::rootCommand) { context.ensureActive() }
+                }
                 // Finish the commit/ownership handoff even if cancellation arrives after persist.
                 withContext(NonCancellable) {
                     register(copied, initialTitle = null, measuredSize = size, reservation = id, owner = owner).also { registered = true }
@@ -468,7 +540,7 @@ class LocalContainerRuntime internal constructor(
                 var cleanupFailure = failure
                 try { Files.deleteIfExists(archive.toPath()) }
                 catch (cleanup: Throwable) { if (cleanupFailure == null) cleanupFailure = cleanup else cleanupFailure.addSuppressed(cleanup) }
-                if (!registered) try { RootfsArchives.deleteTree(target) }
+                if (!registered) try { discardOwnedRootfs(target) }
                 catch (cleanup: Throwable) { if (cleanupFailure == null) cleanupFailure = cleanup else cleanupFailure.addSuppressed(cleanup) }
                 if (failure == null && cleanupFailure != null) throw cleanupFailure
             }
@@ -483,7 +555,7 @@ class LocalContainerRuntime internal constructor(
     )
 
     /** Busy containers reject new work, except explicit stop; the action never holds mutex. */
-    internal suspend fun <T> withStoppedRootfs(id: String, reservedId: String? = null, action: suspend (ContainerConfig) -> T): T {
+    internal suspend fun <T> withStoppedRootfs(id: String, reservedId: String? = null, restore: Boolean = true, action: suspend (ContainerConfig) -> T): T {
         val owner = currentCoroutineContext()[Job]
         val operation = mutex.withLock {
             currentCoroutineContext().ensureActive()
@@ -511,7 +583,7 @@ class LocalContainerRuntime internal constructor(
                     val current = rootfsOperations[id] === operation
                     if (current) rootfsOperations.remove(id)
                     operation.reservedId?.let { if (rootfsOperations[it] === operation) rootfsOperations.remove(it) }
-                    val restore = current && !closed && !closing && owner?.isActive != false && failure !is CancellationException &&
+                    val restore = restore && current && !closed && !closing && owner?.isActive != false && failure !is CancellationException &&
                         operation.runGeneration != null && configurations[id] === operation.config &&
                         stopGenerations[id] == operation.stopGeneration && runGenerations[id] == null
                     if (restore) {
@@ -563,6 +635,18 @@ class LocalContainerRuntime internal constructor(
         }
     }
 
+    private fun discardOwnedRootfs(root: File) {
+        val manifest = RootfsOwnership.load(root)
+        if (manifest?.physical == ContainerEngineType.CHROOT || manifest?.pending != null) {
+            RootfsOwnership.deleteRootfs(ContainerConfig("discard", "discard", root.absolutePath, engine = ContainerEngineType.CHROOT), engines::rootCommand)
+        } else RootfsArchives.deleteTree(root)
+    }
+
+    private fun discardImport(staged: StagedImport) {
+        discardOwnedRootfs(staged.root)
+        RootfsArchives.deleteTree(staged.directory)
+    }
+
     private suspend fun prepareRootfsImport(source: String, name: String, engine: ContainerEngineType, expectedSha256: String?): RootfsImportInspection {
         val requestedName = name.trim()
         ContainerMetadataStore.validate(ContainerMetadata(title = requestedName))
@@ -591,7 +675,7 @@ class LocalContainerRuntime internal constructor(
                 link2symlink = paths.isAndroid, shell = if (File(staged.root, "bin/bash").let { it.isFile && it.canExecute() }) "/bin/bash" else "/bin/sh")
             engines.validateRoot(candidate)
             // Invalid portable metadata remains repairable, as for ordinary offline registration.
-            val metadata = try { metadataStore.read(candidate).value } catch (_: Exception) { ContainerMetadata() }
+            val metadata = try { metadataStore.read(candidate.copy(engine = ContainerEngineType.PROOT)).value } catch (_: Exception) { ContainerMetadata() }
             val inspection = RootfsImportInspection(id, requestedName, metadata)
             currentCoroutineContext().ensureActive()
             Files.deleteIfExists(staged.archive.toPath())
@@ -610,7 +694,7 @@ class LocalContainerRuntime internal constructor(
         } finally {
             if (!prepared) withContext(NonCancellable) {
                 mutex.withLock { rootfsImports.remove(id) }
-                RootfsArchives.deleteTree(staged.directory)
+                discardImport(staged)
                 if (staged.discarded || staged.owner?.isActive == false) finishDeployment(id)
             }
         }
@@ -620,7 +704,7 @@ class LocalContainerRuntime internal constructor(
         val staged = mutex.withLock {
             rootfsImports.remove(inspectionId)?.also { it.discarded = true; it.owner?.cancel(CancellationException("导入已取消")) }
         }
-        if (staged != null && staged.owner == null) RootfsArchives.deleteTree(staged.directory)
+        if (staged != null && staged.owner == null) discardImport(staged)
         finishDeployment(inspectionId)
     }
 
@@ -648,12 +732,27 @@ class LocalContainerRuntime internal constructor(
                         ensureOpen(); check(!staged.discarded)
                         require(rootfsImportConflicts(requestedName, staged.inspection!!.metadata.title, configurations.values.toList()).any { it.id == original.id }) { "所选容器不再与导入名称冲突" }
                     }
+                    RootfsOwnership.requireStable(original)
                     engines.validateRoot(original)
                     engines.validateRoot(candidate.copy(engine = original.engine))
                     require(candidate.arch == engines.guestArch(original.arch)) { "更新归档的 ELF 架构与原容器配置不兼容" }
-                    val overlay = RootfsOverlay(candidate, original)
+                    val privileged = original.engine == ContainerEngineType.CHROOT
+                    val snapshot = if (privileged) RootfsOwnership.snapshot(original, engines::rootCommand) else null
+                    val homes = snapshot?.let { RootfsOwnership.exportHomes(original, it, engines::rootCommand) }
+                    val home = if (privileged) RootfsOwnership.managedHome(original, engines::rootCommand) else containerHome(original)
+                    val overlay = RootfsOverlay(candidate, original, snapshot, homes, home)
                     currentCoroutineContext().ensureActive()
-                    overlay.apply()
+                    val mapped = original.copy(engine = ContainerEngineType.PROOT)
+                    if (privileged) RootfsOwnership.migrate(original, mapped, engines::rootCommand)
+                    var overlayFailure: Throwable? = null
+                    try { overlay.apply() }
+                    catch (failure: Throwable) { overlayFailure = failure; throw failure }
+                    finally {
+                        if (privileged) try {
+                            // Restore only ownership, never start a guest after cancellation or manual stop.
+                            withContext(NonCancellable) { RootfsOwnership.migrate(mapped, original, engines::rootCommand) }
+                        } catch (failure: Throwable) { if (overlayFailure != null) overlayFailure.addSuppressed(failure) else throw failure }
+                    }
                     val measured = sizeOf(original)
                     currentCoroutineContext().ensureActive()
                     mutex.withLock {
@@ -670,26 +769,37 @@ class LocalContainerRuntime internal constructor(
                     }
                 }
             } else {
-                val snapshot = try { metadataStore.read(candidate) } catch (failure: Exception) {
+                val stored = RootfsOwnership.load(staged.root)
+                if (stored?.pending != null) {
+                    val context = currentCoroutineContext()
+                    RootfsOwnership.migrate(candidate, candidate, engines::rootCommand) { context.ensureActive() }
+                }
+                val physical = RootfsOwnership.load(staged.root)?.physical
+                val stagingConfig = candidate.copy(engine = physical ?: ContainerEngineType.PROOT)
+                val snapshot = try { metadataStore.read(stagingConfig) } catch (failure: Exception) {
                     if (mode == RootfsImportMode.RENAME) throw failure
                     null
                 }
                 if (snapshot != null) {
                     val title = if (mode == RootfsImportMode.RENAME) requestedName else staged.inspection!!.metadata.title.ifBlank { requestedName }
-                    if (snapshot.value.title != title || snapshot.revision == null) metadataStore.save(candidate, snapshot.value.copy(title = title), snapshot.revision)
+                    if (snapshot.value.title != title || snapshot.revision == null) metadataStore.save(stagingConfig, snapshot.value.copy(title = title), snapshot.revision)
                 }
                 val measured = sizeOf(candidate)
                 currentCoroutineContext().ensureActive()
                 val destination = File(rootfsDir, inspectionId)
                 var registered = false
                 Files.move(staged.root.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                RootfsOwnership.moveManifest(staged.root, destination)
                 try {
                     withContext(NonCancellable) {
                         register(candidate.copy(name = requestedName, rootfsPath = destination.canonicalPath), initialTitle = null, measuredSize = measured, owner = owner,
                             importNames = requestedName to if (mode == RootfsImportMode.RENAME) "" else staged.inspection!!.metadata.title).also { registered = true }
                     }
                 } finally {
-                    if (!registered) Files.move(destination.toPath(), staged.root.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                    if (!registered) {
+                        Files.move(destination.toPath(), staged.root.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                        RootfsOwnership.moveManifest(destination, staged.root)
+                    }
                 }
             }
             committed = true
@@ -707,7 +817,7 @@ class LocalContainerRuntime internal constructor(
                         true
                     } else false
                 }
-                if (cleanup) { RootfsArchives.deleteTree(staged.directory); finishDeployment(inspectionId) }
+                if (cleanup) { discardImport(staged); finishDeployment(inspectionId) }
             }
         }
     }
@@ -742,7 +852,10 @@ class LocalContainerRuntime internal constructor(
             register(config, initialTitle = name)
             finishDeployment(id)
             return containers.value.first { it.config.id == id }.config
-        } catch (failure: Throwable) { RootfsArchives.deleteTree(target); throw failure }
+        } catch (failure: Throwable) {
+            try { discardOwnedRootfs(target) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+            throw failure
+        }
         finally { archive.delete() }
     }
 
@@ -769,13 +882,7 @@ class LocalContainerRuntime internal constructor(
         withStoppedRootfs(id) { config ->
             var failure: Throwable? = null
             try {
-                val rootfs = File(config.rootfsPath)
-                if (sanitization.isSanitized) {
-                    val filter = RootfsSanitizer(sanitizedExportHomes(config), sanitization)
-                    RootfsArchives.export(rootfs, temporary, filter::shouldSkip)
-                } else {
-                    RootfsArchives.export(rootfs, temporary)
-                }
+                exportOwnedRootfs(config, temporary, engines::rootCommand, sanitization = sanitization, startRootProcess = startRootProcess)
                 currentCoroutineContext().ensureActive()
                 Files.move(temporary.toPath(), target.toPath())
                 Unit
@@ -1060,7 +1167,7 @@ class LocalContainerRuntime internal constructor(
             rootfsImports.values.toList().forEach { staged ->
                 staged.discarded = true
                 staged.owner?.cancel(CancellationException("容器运行时已关闭"))
-                if (staged.owner == null) try { RootfsArchives.deleteTree(staged.directory) } catch (failure: Throwable) { failures += failure }
+                if (staged.owner == null) try { discardImport(staged) } catch (failure: Throwable) { failures += failure }
                 finishDeployment(staged.id)
             }
             rootfsImports.clear()

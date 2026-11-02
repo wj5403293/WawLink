@@ -132,7 +132,7 @@ class RootfsImportTest {
     @Test fun updateProtectsExactUserRangesAcrossBothHomeSetsAndKeepsLocalAdditions() = fixture { directory, runtime -> runBlocking {
         val hostMount = File(directory, "host-mount").apply { mkdirs() }
         val initial = root(directory, "existing", "Existing")
-        val target = initial.copy(user = "alice", shell = "/bin/sh", engine = ContainerEngineType.CHROOT,
+        val target = initial.copy(user = "alice", shell = "/bin/sh", engine = ContainerEngineType.PROROOT,
             distro = "local-distro", version = "local-version", arch = "amd64", autoSleep = false,
             mounts = listOf(ContainerMount(hostMount.path, "/mnt/host")), environment = mapOf("HOME" to "/srv/custom", "KEEP" to "value"))
         val targetRoot = File(target.rootfsPath)

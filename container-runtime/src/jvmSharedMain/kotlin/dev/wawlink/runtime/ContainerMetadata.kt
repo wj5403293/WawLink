@@ -1,16 +1,8 @@
 package dev.wawlink.runtime
 
-import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
-import java.nio.file.Files
-import java.nio.file.LinkOption.NOFOLLOW_LINKS
-import java.nio.file.NoSuchFileException
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
-import java.nio.file.attribute.BasicFileAttributes
-import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.zip.CRC32
@@ -37,12 +29,12 @@ internal class ContainerMetadataStore(private val engines: RuntimeEngines) {
         val snapshot get() = ContainerMetadataSnapshot(value, revision)
     }
 
-    fun read(config: ContainerConfig): ContainerMetadataSnapshot = document(location(config)).snapshot
+    fun read(config: ContainerConfig): ContainerMetadataSnapshot = document(config, location(config)).snapshot
 
     fun save(config: ContainerConfig, metadata: ContainerMetadata, expectedRevision: String?): ContainerMetadataSnapshot {
         validate(metadata, editing = true)
         val file = location(config)
-        val previous = document(file)
+        val previous = document(config, file)
         check(previous.revision == expectedRevision) { CONFLICT }
         val fields = previous.fields.toMutableMap().apply {
             put("title", JsonPrimitive(metadata.title))
@@ -52,86 +44,22 @@ internal class ContainerMetadataStore(private val engines: RuntimeEngines) {
         }
         val content = json.encodeToString(JsonObject(fields)).toByteArray(Charsets.UTF_8)
         require(content.size <= MAX_DOCUMENT_BYTES) { "容器信息文件过大" }
-        prepareContainerHostDirectory(config, file.parent.toFile())
-        val destination = location(config, create = true)
-        check(destination == file && document(destination).revision == expectedRevision) { CONFLICT }
-        val temporary = Files.createTempFile(destination.parent, ".container.", ".tmp")
-        try {
-            try {
-                val permissions = if (previous.revision != null) Files.getPosixFilePermissions(destination, NOFOLLOW_LINKS)
-                    else PosixFilePermissions.fromString("rw-r--r--")
-                Files.setPosixFilePermissions(temporary, permissions)
-            } catch (_: UnsupportedOperationException) {
-                // Keep the same non-POSIX filesystem support as the other offline runtime writers.
-            }
-            prepareContainerHostFile(config, temporary.toFile())
-            FileOutputStream(temporary.toFile()).use { output -> output.write(content); output.fd.sync() }
-            check(location(config) == destination && document(destination).revision == expectedRevision) { CONFLICT }
-            // No non-atomic fallback: an unsupported filesystem must leave the old document intact.
-            Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } finally {
-            Files.deleteIfExists(temporary)
-        }
+        RootfsHostFiles(config, engines::rootCommand).write(file.toFile(), content, expectedRevision)
         return ContainerMetadataSnapshot(metadata, revision(content))
     }
 
-    private fun location(config: ContainerConfig, create: Boolean = false): Path {
+    private fun location(config: ContainerConfig): Path {
         val root = engines.validateRoot(config).toPath()
         val homeName = engines.home(config)
-        val requestedHome = root.resolve(homeName.trimStart('/')).normalize()
-        val home = requestedHome.toFile().canonicalFile.toPath()
+        require(homeName != "/") { "容器 HOME 越界" }
+        val home = root.resolve(homeName.trimStart('/')).normalize()
         require(home.startsWith(root) && home != root) { "容器 HOME 越界" }
-        val directory = home.resolve(".wawlink")
-        val file = directory.resolve("container.json")
-        val excluded = listOf("dev", "proc", "sys", "host-rootfs").map(root::resolve) + config.mounts.map { mount ->
-            require(mount.target.startsWith('/') && mount.target.split('/').none { it == "." || it == ".." } && '\u0000' !in mount.target) { "挂载目标无效" }
-            root.resolve(mount.target.trimStart('/')).normalize()
-        }
-        for (boundary in excluded) {
-            val actual = boundary.toFile().canonicalFile.toPath()
-            require(!requestedHome.startsWith(boundary) && !home.startsWith(actual) && !file.startsWith(boundary) && !file.startsWith(actual)) { "容器信息不能位于系统或宿主挂载目录中" }
-        }
-        require(!Files.isSymbolicLink(directory) && !Files.isSymbolicLink(file)) { ".wawlink 和 container.json 不能是符号链接" }
-        require(directory.toFile().canonicalFile.toPath() == directory) { "容器信息目录路径越界" }
-        var current = root
-        for (part in root.relativize(home)) {
-            current = current.resolve(part)
-            val attributes = attributes(current)
-            if (attributes != null) require(attributes.isDirectory) { "容器 HOME 路径不是目录" }
-            else if (create) Files.createDirectory(current)
-        }
-        val directoryAttributes = attributes(directory)
-        if (directoryAttributes != null) require(directoryAttributes.isDirectory && !directoryAttributes.isSymbolicLink) { ".wawlink 不是普通目录" }
-        else if (create) Files.createDirectory(directory)
-        val fileAttributes = attributes(file)
-        if (fileAttributes != null) {
-            require(fileAttributes.isRegularFile && !fileAttributes.isSymbolicLink) { "container.json 不是普通文件" }
-            try {
-                require((Files.getAttribute(file, "unix:nlink", NOFOLLOW_LINKS) as Number).toLong() == 1L) { "container.json 不能是硬链接" }
-            } catch (_: UnsupportedOperationException) {
-                // Some non-POSIX providers cannot report hard-link counts.
-            }
-        }
-        return file
+        return home.resolve(".wawlink/container.json")
     }
 
-    private fun attributes(path: Path): BasicFileAttributes? = try {
-        Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
-    } catch (_: NoSuchFileException) {
-        null
-    }
-
-    private fun document(file: Path): Document {
-        val attributes = attributes(file) ?: return Document(ContainerMetadata(), JsonObject(emptyMap()), null)
-        require(attributes.isRegularFile && !attributes.isSymbolicLink) { "container.json 不是普通文件" }
-        val bytes = Files.newByteChannel(file, StandardOpenOption.READ, NOFOLLOW_LINKS).use { channel ->
-            val length = channel.size()
-            require(length <= MAX_DOCUMENT_BYTES) { "容器信息文件过大" }
-            val buffer = ByteBuffer.allocate(length.toInt())
-            while (buffer.hasRemaining() && channel.read(buffer) >= 0) Unit
-            require(!buffer.hasRemaining() && channel.read(ByteBuffer.allocate(1)) == -1) { "读取期间容器信息已变更，请重试" }
-            buffer.array()
-        }
+    private fun document(config: ContainerConfig, file: Path): Document {
+        val bytes = RootfsHostFiles(config, engines::rootCommand).read(file.toFile(), MAX_DOCUMENT_BYTES)
+            ?: return Document(ContainerMetadata(), JsonObject(emptyMap()), null)
         val text = Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString()
         checkMetadataNesting(text)

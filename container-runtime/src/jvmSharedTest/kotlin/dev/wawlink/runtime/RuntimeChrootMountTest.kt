@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -31,7 +32,7 @@ class RuntimeChrootMountTest {
             require(binary.canExecute()) { "WAWLINK_TEST_HOST_TOOLS must name an executable Toybox/BusyBox binary" }
             File(directory, "host tools").apply {
                 mkdir()
-                for (applet in listOf("readlink", "stat", "chown", "chgrp", "chmod", "mkdir", "mv", "ln", "id", "printf", "find")) {
+                for (applet in listOf("readlink", "stat", "chown", "chgrp", "chmod", "mkdir", "mv", "ln", "id", "printf", "find", "xargs", "mktemp", "cp", "rm", "rmdir", "sha256sum", "base64", "tr", "cat")) {
                     Files.createSymbolicLink(File(this, applet).toPath(), binary.toPath())
                 }
                 Files.createSymbolicLink(File(this, "sh").toPath(), File(shell).canonicalFile.toPath())
@@ -84,10 +85,14 @@ class RuntimeChrootMountTest {
 
         init {
             File(root, "etc").mkdirs()
+            File(root, "etc/passwd").writeText("root:x:0:0::/root:/bin/sh\n")
             File(root, "bin").mkdirs()
             File(root, "bin/sh").apply { writeText("fixture only; never executed\n"); setExecutable(true) }
             // A real /dev bind exposes pts. The fake bind must not touch the host /dev.
             File(root, "dev/pts").mkdirs()
+            // Mount/managed-path tests explicitly simulate privileged UID operations; full-root
+            // conversion is covered separately, not silently skipped by impersonating real Root.
+            RootfsOwnership.save(root, OwnershipManifest(emptyMap(), physical = ContainerEngineType.CHROOT))
         }
 
         fun tool(name: String): String = File(tools ?: File("/bin"), name).path
@@ -251,13 +256,13 @@ class RuntimeChrootMountTest {
     @Test fun uidFailureIsDistinctFromAnActualRootCommandFailure() = fixture { fixture ->
         with(fixture) {
             uid = "1000"
-            val denied = assertFailsWith<IllegalArgumentException> { engines.prepare(config) }
-            assertEquals("未获得 Root 权限，请授权 su 或切换其他引擎", denied.message)
+            val denied = assertFailsWith<IllegalStateException> { engines.prepare(config) }
+            assertTrue(denied.message.orEmpty().contains("su 未返回真实 UID 0"))
             assertTrue(calls("mount").isEmpty())
             failure = "id"
             val command = assertFailsWith<IllegalStateException> { engines.prepare(config) }
-            assertEquals("chroot Root 命令执行失败：系统命令失败（1）：su: permission denied", command.message)
-            assertEquals("系统命令失败（1）：su: permission denied", command.cause?.message)
+            assertTrue(command.message.orEmpty().contains("su: permission denied"))
+            assertTrue(generateSequence<Throwable>(command) { it.cause }.any { it.message == "系统命令失败（1）：su: permission denied" })
             assertTrue(calls("mount").isEmpty())
         }
     }
@@ -271,18 +276,19 @@ class RuntimeChrootMountTest {
         }
     }
 
-    @Test fun nonrootPrepareRepairsOfflineFilesInEffectiveHomeAndRetainsHostGroupMembership() = fixture { fixture ->
+    @Test fun nonrootPrepareRepairsOfflineFilesWithoutAddingAppGroupMembership() = fixture { fixture ->
         with(fixture) {
             File(root, "etc/passwd").writeText("alice:x:1001:1002::/home/alice:/bin/sh\n")
             val group = File(root, "etc/group").apply { writeText("users:x:1002:existing\nshared:x:${ChrootHostIdentity.gid}:another\n") }
             val home = File(root, "srv/custom home")
             val offline = File(home, ".wawlink/container.json").apply { parentFile.mkdirs(); writeText("offline metadata") }
+            Files.setAttribute(home.toPath(), "unix:mode", 0x1E9) // Existing guest-selected 0751.
             val selected = config.copy(user = "1001", environment = mapOf("HOME" to "/srv/custom home"))
             engines.prepare(selected)
             assertEquals("offline metadata", offline.readText())
-            assertEquals(0x5F8, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            assertEquals(0x1E9, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
             assertTrue(File(home, ".omp").isDirectory)
-            assertTrue(group.readText().contains("shared:x:${ChrootHostIdentity.gid}:another,alice\n"))
+            assertTrue(group.readText().contains("shared:x:${ChrootHostIdentity.gid}:another\n"))
             assertTrue(group.readText().contains("users:x:1002:existing\n"))
             assertFalse(File(root, "home/alice").exists(), "HOME 覆盖不得修改账户原目录")
             engines.unmount(config.id)
@@ -302,7 +308,7 @@ class RuntimeChrootMountTest {
         }
     }
 
-    @Test fun repairsRealModesAndKeepsLinksAndMountedSubtreesUntouched() = fixture { fixture ->
+    @Test fun startupPreservesGuestModesAndKeepsLinksAndMountedSubtreesUntouched() = fixture { fixture ->
         with(fixture) {
             val home = File(root, "home/alice").apply { mkdirs() }
             val metadata = File(home, ".wawlink/container.json").apply { parentFile.mkdirs(); writeText("metadata") }
@@ -321,13 +327,15 @@ class RuntimeChrootMountTest {
             Files.setAttribute(script.toPath(), "unix:mode", 0x1E9) // 0751
             Files.setAttribute(privateFile.toPath(), "unix:mode", 0x180)
             Files.setAttribute(privateFile.parentFile.toPath(), "unix:mode", 0x1C0)
+            Files.setAttribute(home.toPath(), "unix:mode", 0x1E9)
+            Files.setAttribute(configFile.parentFile.toPath(), "unix:mode", 0x1E8)
             val protectedMode = Files.getAttribute(protected.toPath(), "unix:mode")
             val uid = ChrootHostIdentity.uid.toString()
             val gid = ChrootHostIdentity.gid.toString()
             val command = chrootOwnershipScript(root, home, workspace, uid, gid, listOf(mounted))
             run(command)
-            assertEquals(0x5F8, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
-            assertEquals(0x180, (Files.getAttribute(configFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals(0x1E9, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            assertEquals(0x100, (Files.getAttribute(configFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals("settings", configFile.readText())
             assertEquals(0x180, (Files.getAttribute(privateFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals(0x1C0, (Files.getAttribute(privateFile.parentFile.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
@@ -336,11 +344,11 @@ class RuntimeChrootMountTest {
             assertEquals(outsideMode, Files.getAttribute(outside.toPath(), "unix:mode"))
             assertEquals(protectedMode, Files.getAttribute(protected.toPath(), "unix:mode"))
             assertEquals("untouched", outside.readText())
-            assertEquals(0x1C0, (Files.getAttribute(configFile.parentFile.toPath(), "unix:mode") as Number).toInt() and 0xFFF,
-                "OMP 数据由客体身份访问，不再向宿主共享组开放")
+            assertEquals(0x1E8, (Files.getAttribute(configFile.parentFile.toPath(), "unix:mode") as Number).toInt() and 0xFFF,
+                "启动不覆盖客体自行设置的模式")
         }
     }
-    @Test fun privilegedPreparationAdoptsManagedDataFromNeitherHostNorLoginUid() = fixture { fixture ->
+    @Test fun privilegedPreparationPreservesModesWhenAdoptingManagedData() = fixture { fixture ->
         with(fixture) {
             val home = File(root, "home/imported").apply { mkdirs() }
             val preferences = File(home, ".wawlink/feature-cards.json").apply { parentFile.mkdirs(); writeText("layout") }
@@ -348,6 +356,7 @@ class RuntimeChrootMountTest {
             val skill = File(home, ".omp/agent/skills/wawlink-functions/SKILL.md").apply { parentFile.mkdirs(); writeText("Skill") }
             val record = File(skill.parentFile, ".wawlink-builtin.sha256").apply { writeText("record") }
             for (file in listOf(preferences, settings, skill, record)) Files.setAttribute(file.toPath(), "unix:mode", 0x100)
+            Files.setAttribute(home.toPath(), "unix:mode", 0x1E9)
             val actual = ChrootHostIdentity.uid
             val login = if (actual == 30000) "30001" else "30000"
             val foreign = if (actual == 30003) 30004 else 30003
@@ -361,23 +370,27 @@ class RuntimeChrootMountTest {
                 fi
             """.trimIndent())
             run(chrootOwnershipScript(root, home, null, login, "30002", emptyList()), privileged = true)
-            assertEquals(0x5F8, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
-            for (file in listOf(preferences, settings, skill)) {
-                assertEquals(if (file == preferences) 0x1B0 else 0x180, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
-                file.appendText("\nshared")
+            assertEquals(0x1E9, (Files.getAttribute(home.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            for (file in listOf(preferences, settings, skill, record)) {
+                assertEquals(0x100, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             }
-            assertEquals("native settings\nshared", settings.readText())
-            assertEquals(0x180, (Files.getAttribute(record.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals("native settings", settings.readText())
             assertEquals("record", record.readText())
         }
     }
 
-    @Test fun ownershipChangesRestoreSetgidFromFreshMetadataBeforeLaterWrites() = fixture { fixture ->
+    @Test fun ownershipChangesRestoreGuestSetgidClearedByChownBeforeLaterOfflineWrites() = fixture { fixture ->
         with(fixture) {
             val home = File(root, "home/imported").apply { mkdirs() }
             val channel = File(home, ".wawlink").apply { mkdirs() }
             for (folder in listOf(home, channel)) Files.setAttribute(folder.toPath(), "unix:mode", 0x5F8)
             val login = if (ChrootHostIdentity.uid == 30000) "30001" else "30000"
+            File(root, "etc/passwd").writeText("root:x:0:0::/root:/bin/sh\nalice:x:$login:30002::/home/imported:/bin/sh\n")
+            val selected = config.copy(user = "alice")
+            RootfsOwnership.save(root, OwnershipManifest(mapOf(
+                "/home/imported" to LogicalOwner(login.toLong(), 30002, 0x5F8),
+                "/home/imported/.wawlink" to LogicalOwner(login.toLong(), 30002, 0x5F8),
+            ), physical = ContainerEngineType.CHROOT))
             // Model kernels/filesystems clearing setgid on chown, independent of test runner privileges.
             intercept("chown", """
                 [ "${'$'}1" != -h ] || shift
@@ -394,12 +407,19 @@ class RuntimeChrootMountTest {
             }
             val session = File(channel, "later-session").apply { mkdir() }
             assertEquals(0x400, (Files.getAttribute(session.toPath(), "unix:mode") as Number).toInt() and 0x400,
-                "启动后新目录必须继承 setgid，而非只在启动扫描时修复已有目录")
+                "客体明确设置的 setgid 不由后续启动擅自删除")
             val request = Files.createTempFile(session.toPath(), "request-", ".tmp").toFile()
-            prepareContainerHostDirectory(config, session)
-            prepareContainerHostFile(config, request)
             request.writeText("later request")
+            val sessionMode = (Files.getAttribute(session.toPath(), "unix:mode") as Number).toInt() and 0xFFF
+            val requestMode = (Files.getAttribute(request.toPath(), "unix:mode") as Number).toInt() and 0xFFF
+            // Explicit UID-operation simulation, not a real Root integration test.
+            val simulatedRoot: (String) -> String = { command -> run("id() { printf '0\\n'; };\n" + command, privileged = true) }
+            prepareContainerHostDirectory(selected, session, simulatedRoot)
+            prepareContainerHostFile(selected, request, simulatedRoot)
             assertEquals("later request", request.readText())
+            val committed = RootfsOwnership.load(root)!!.entries
+            assertEquals(LogicalOwner(login.toLong(), 30002, sessionMode), committed["/home/imported/.wawlink/later-session"])
+            assertEquals(LogicalOwner(login.toLong(), 30002, requestMode), committed["/home/imported/.wawlink/later-session/${request.name}"])
         }
     }
 
@@ -418,11 +438,13 @@ class RuntimeChrootMountTest {
             val managed = File(home, ".omp/agent/config.yml").apply { writeText("native settings") }
             val mounted = File(home, ".omp/agent/wawlink/mounted").apply { mkdirs() }
             val protected = File(mounted, "keep").apply { writeText("mounted"); Files.setAttribute(toPath(), "unix:mode", 0x100) }
+            Files.setAttribute(workspace.toPath(), "unix:mode", 0x1E9)
+            Files.setAttribute(managed.toPath(), "unix:mode", 0x1A0)
             val uid = ChrootHostIdentity.uid.toString()
             val gid = ChrootHostIdentity.gid.toString()
             run(chrootOwnershipScript(root, home, workspace, uid, gid, listOf(mounted)))
-            assertEquals(0x5F8, (Files.getAttribute(workspace.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
-            assertEquals(0x180, (Files.getAttribute(managed.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
+            assertEquals(0x1E9, (Files.getAttribute(workspace.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            assertEquals(0x1A0, (Files.getAttribute(managed.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals("native settings", managed.readText())
             for (file in files + protected) assertEquals(0x100, (Files.getAttribute(file.toPath(), "unix:mode") as Number).toInt() and 0x1FF, file.path)
             for (folder in folders) assertEquals(0x1C0, (Files.getAttribute(folder.toPath(), "unix:mode") as Number).toInt() and 0x1FF, folder.path)
@@ -435,13 +457,13 @@ class RuntimeChrootMountTest {
     @Test fun replacingFileAfterIdentityCaptureCannotRepairAnotherInode() = fixture { fixture ->
         with(fixture) {
             val home = File(root, "home/alice").apply { mkdirs() }
-            val configFile = File(home, ".omp/config.yml").apply { parentFile.mkdirs(); writeText("original") }
+            val configFile = File(home, ".wawlink/container.json").apply { parentFile.mkdirs(); writeText("original") }
             val original = File(directory, "original")
             val replacement = File(directory, "replacement").apply { writeText("replacement") }
             Files.setAttribute(configFile.toPath(), "unix:mode", 0x100)
             Files.setAttribute(replacement.toPath(), "unix:mode", 0x100)
             intercept("stat", """
-                if [ "${'$'}1" = -c ] && [ "${'$'}2" = '%d %i %h %u %g %a' ] && [ "${'$'}3" = ./config.yml ] && [ "${'$'}PWD" = ${shellQuote(configFile.parent)} ] && [ ! -e ${shellQuote(original.path)} ]; then
+                if [ "${'$'}1" = -c ] && [ "${'$'}2" = '%d %i %h %u %g %a' ] && [ "${'$'}3" = ./container.json ] && [ "${'$'}PWD" = ${shellQuote(configFile.parent)} ] && [ ! -e ${shellQuote(original.path)} ]; then
                     ${shellQuote(tool("stat"))} "${'$'}@" || exit
                     ${shellQuote(tool("mv"))} ${shellQuote(configFile.path)} ${shellQuote(original.path)}
                     ${shellQuote(tool("mv"))} ${shellQuote(replacement.path)} ${shellQuote(configFile.path)}
@@ -463,6 +485,7 @@ class RuntimeChrootMountTest {
         with(fixture) {
             val home = File(root, "home/alice").apply { mkdirs() }
             val agent = File(home, ".omp/agent").apply { mkdirs() }
+            Files.setAttribute(agent.toPath(), "unix:mode", 0x1E9)
             File(agent, "config.yml").writeText("original")
             val moved = File(home, ".omp/moved")
             val outside = File(directory, "outside").apply { mkdirs() }
@@ -478,11 +501,11 @@ class RuntimeChrootMountTest {
                 }
             """.trimIndent()
             val command = prefix + "\n" + chrootOwnershipScript(root, home, null,
-                ChrootHostIdentity.uid.toString(), ChrootHostIdentity.gid.toString(), emptyList())
-            assertFailsWith<IllegalStateException> { run(command) }
+                "30000", "30002", emptyList())
+            assertFailsWith<IllegalStateException> { run(command, privileged = true) }
             assertEquals(0x1C0, (Files.getAttribute(outside.toPath(), "unix:mode") as Number).toInt() and 0x1FF)
             assertEquals("untouched", File(outside, "keep").readText())
-            assertEquals(0x1C0, (Files.getAttribute(moved.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            assertEquals(0x1E9, (Files.getAttribute(moved.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
         }
     }
 
@@ -506,16 +529,16 @@ class RuntimeChrootMountTest {
             Files.createSymbolicLink(File(root, "home").toPath(), outside.toPath())
             for (engine in ContainerEngineType.entries) {
                 val selected = config.copy(engine = engine)
-                assertFailsWith<IllegalArgumentException> { prepareContainerHostDirectory(selected, File(root, "home/.omp/agent")) }
+                assertFails { prepareContainerHostDirectory(selected, File(root, "home/.omp/agent"), engines::rootCommand) }
                 assertTrue(outside.listFiles().orEmpty().isEmpty())
-                assertFailsWith<IllegalArgumentException> { prepareContainerHostDirectory(selected, target) }
+                assertFails { prepareContainerHostDirectory(selected, target, engines::rootCommand) }
             }
             val home = File(root, "root").apply { mkdirs() }
             val alias = File(home, "hardlink")
             val sourceFile = File(directory, "file").apply { writeText("unchanged") }
             Files.createLink(alias.toPath(), sourceFile.toPath())
             for (engine in ContainerEngineType.entries) {
-                assertFailsWith<IllegalArgumentException> { prepareContainerHostFile(config.copy(engine = engine), alias) }
+                assertFails { prepareContainerHostFile(config.copy(engine = engine), alias, engines::rootCommand) }
             }
             assertEquals("unchanged", sourceFile.readText())
         }
@@ -535,7 +558,12 @@ class RuntimeChrootMountTest {
             }
             id() {
                 if [ "${'$'}MOCK_FAILURE" = id ]; then echo 'su: permission denied' >&2; return 1; fi
-                printf 'uid=%s(mock) gid=0(mock)\n' "${'$'}MOCK_UID"
+                case "${'$'}{1-}" in
+                    -u) printf '%s\n' "${'$'}MOCK_UID";;
+                    -g) printf '0\n';;
+                    '') printf 'uid=%s(mock) gid=0(mock)\n' "${'$'}MOCK_UID";;
+                    *) command id "${'$'}@";;
+                esac
             }
             mountpoint() { [ "${'$'}#" = 2 ] && [ "${'$'}1" = -q ] && find_mount "${'$'}2"; }
             chroot() { echo 'test must never execute chroot' >&2; return 99; }
@@ -581,7 +609,7 @@ class RuntimeChrootMountTest {
                 if [ "${'$'}#" = 1 ] && [ "${'$'}1" = /proc/self/mountinfo ]; then
                     printf '%s\n' "${'$'}MOCK_MOUNTINFO"
                 else
-                    echo 'unexpected cat invocation' >&2; return 64
+                    command cat "${'$'}@"
                 fi
             }
         """.trimIndent()

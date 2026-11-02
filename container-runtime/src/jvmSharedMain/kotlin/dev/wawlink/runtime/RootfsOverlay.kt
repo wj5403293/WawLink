@@ -8,22 +8,30 @@ import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.BasicFileAttributes
-import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
 /** Validates the entire overlay before writing. IO failures during commit are not a transaction. */
-internal class RootfsOverlay(source: ContainerConfig, target: ContainerConfig) {
+internal class RootfsOverlay(
+    private val source: ContainerConfig,
+    private val target: ContainerConfig,
+    targetSnapshot: List<RootfsOwnership.Entry>? = null,
+    targetHomes: Set<String>? = null,
+    targetHome: String? = null,
+) {
     private val sourceRoot = File(source.rootfsPath).toPath().toRealPath()
     private val root = File(target.rootfsPath).toPath().toRealPath()
+    private var snapshot = targetSnapshot?.associateBy { it.path }
+    private val sourceOwners = RootfsOwnership.load(File(source.rootfsPath))?.entries.orEmpty()
     private val retainedIdentity = target.copy(rootfsPath = source.rootfsPath)
-    private val homes = sanitizedExportHomes(source, requirePasswd = false) + sanitizedExportHomes(target, requirePasswd = false) +
+    private val homes = sanitizedExportHomes(source, requirePasswd = false) + (targetHomes ?: sanitizedExportHomes(target, requirePasswd = false)) +
         sanitizedExportHomes(retainedIdentity, requirePasswd = false)
     private val sanitizer = RootfsSanitizer(homes, RootfsExportSanitization(true, true, true, true), includeCaches = false)
     private val boundaries = (listOf("/workspace") + target.mounts.map { it.target }).flatMap { name ->
         require(name.startsWith('/') && !name.startsWith("//") && '\u0000' !in name && name.split('/').none { it == "." || it == ".." }) { "受保护目录路径无效：$name" }
-        val relative = name.trim('/'); val actual = root.resolve(relative).toFile().canonicalFile.toPath()
+        val relative = name.trim('/'); val actual = snapshot?.let { root.resolve(RootfsOwnership.resolveGuest("/$relative", it).trimStart('/')) }
+            ?: root.resolve(relative).toFile().canonicalFile.toPath()
         require(actual.startsWith(root)) { "受保护目录路径越界：$name" }
         listOf(relative, root.relativize(actual).toString())
     }.toSet()
@@ -31,6 +39,10 @@ internal class RootfsOverlay(source: ContainerConfig, target: ContainerConfig) {
     private val entries = mutableListOf<Entry>()
 
     private fun relative(path: Path) = root.relativize(path).toString().replace(File.separatorChar, '/')
+    private fun metadata(path: Path) = snapshot?.get(if (path == root) "/" else "/" + relative(path))
+    private fun exists(path: Path) = if (snapshot != null) metadata(path) != null else Files.exists(path, NOFOLLOW_LINKS)
+    private fun isLink(path: Path) = if (snapshot != null) metadata(path)?.symbolicLink == true else Files.isSymbolicLink(path)
+    private fun isDirectory(path: Path) = if (snapshot != null) metadata(path)?.directory == true else Files.isDirectory(path, NOFOLLOW_LINKS)
     private fun protected(name: String) = sanitizer.shouldSkip(name) || boundaries.any { it.isEmpty() || name == it || name.startsWith("$it/") }
     private fun ancestor(name: String) = sanitizer.protectsDescendant(name) || boundaries.any { it.startsWith("$name/") }
 
@@ -38,15 +50,15 @@ internal class RootfsOverlay(source: ContainerConfig, target: ContainerConfig) {
     private fun mergedLink(path: Path): Path? {
         val name = relative(path)
         when (name) { "bin", "sbin", "lib", "lib32", "lib64", "libx32" -> Unit; else -> return null }
-        val link = Files.readSymbolicLink(path)
+        val link = snapshot?.let { Path.of(requireNotNull(metadata(path)?.linkTarget)) } ?: Files.readSymbolicLink(path)
         if (link.isAbsolute) return null
         val resolved = path.parent.resolve(link).normalize()
         if (resolved != root.resolve("usr/$name")) return null
         var parent = root
         for (part in root.relativize(resolved)) {
             parent = parent.resolve(part)
-            require(!Files.isSymbolicLink(parent)) { "合并 usr 目录包含不安全链接：$parent" }
-            require(!Files.exists(parent, NOFOLLOW_LINKS) || Files.isDirectory(parent, NOFOLLOW_LINKS)) { "合并 usr 目标不是目录：$parent" }
+            require(!isLink(parent)) { "合并 usr 目录包含不安全链接：$parent" }
+            require(!exists(parent) || isDirectory(parent)) { "合并 usr 目标不是目录：$parent" }
         }
         return resolved
     }
@@ -56,9 +68,9 @@ internal class RootfsOverlay(source: ContainerConfig, target: ContainerConfig) {
         name.forEachIndexed { index, part ->
             current = current.resolve(part)
             val parent = index < name.nameCount - 1
-            if (Files.isSymbolicLink(current) && (parent || directory)) {
+            if (isLink(current) && (parent || directory)) {
                 current = mergedLink(current) ?: error("更新不能通过目标符号链接写入：$current")
-            } else if (parent && Files.exists(current, NOFOLLOW_LINKS) && !Files.isDirectory(current, NOFOLLOW_LINKS)) {
+            } else if (parent && exists(current) && !isDirectory(current)) {
                 // A source directory can replace a non-directory parent, but it must itself be planned.
                 require(entries.any { it.destination == current && it.directory }) { "更新目标父路径不是目录：$current" }
             }
@@ -68,12 +80,17 @@ internal class RootfsOverlay(source: ContainerConfig, target: ContainerConfig) {
 
     init {
         require(!Files.isSymbolicLink(File(target.rootfsPath).toPath())) { "更新 rootfs 不能是符号链接" }
-        require(containerHome(retainedIdentity) == containerHome(target)) { "更新不能改变当前用户的有效 HOME，请保留归档中的原用户主目录或先显式配置 HOME" }
+        require(containerHome(retainedIdentity) == (targetHome ?: containerHome(target))) { "更新不能改变当前用户的有效 HOME，请保留归档中的原用户主目录或先显式配置 HOME" }
         require(target.shell.startsWith('/') && '\u0000' !in target.shell && target.shell.split('/').none { it == "." || it == ".." }) { "容器 Shell 路径无效" }
         val requestedShell = sourceRoot.resolve(target.shell.trimStart('/'))
         val shellRoot = if (!protected(target.shell.trimStart('/')) && Files.exists(requestedShell, NOFOLLOW_LINKS)) sourceRoot else root
-        val shell = shellRoot.resolve(target.shell.trimStart('/')).toFile().canonicalFile.toPath()
-        require(shell.startsWith(shellRoot) && Files.isRegularFile(shell, NOFOLLOW_LINKS) && Files.isExecutable(shell)) { "更新后选定 Shell 不存在或不可执行：${target.shell}" }
+        if (shellRoot == root && snapshot != null) {
+            val shell = metadata(root.resolve(RootfsOwnership.resolveGuest(target.shell, requireNotNull(snapshot)).trimStart('/')))
+            require(shell?.kind == 0x8000 && shell.mode and 0x49 != 0) { "更新后选定 Shell 不存在或不可执行：${target.shell}" }
+        } else {
+            val shell = shellRoot.resolve(target.shell.trimStart('/')).toFile().canonicalFile.toPath()
+            require(shell.startsWith(shellRoot) && Files.isRegularFile(shell, NOFOLLOW_LINKS) && Files.isExecutable(shell)) { "更新后选定 Shell 不存在或不可执行：${target.shell}" }
+        }
         Files.walkFileTree(sourceRoot, object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                 if (dir == sourceRoot) return FileVisitResult.CONTINUE
@@ -93,10 +110,13 @@ internal class RootfsOverlay(source: ContainerConfig, target: ContainerConfig) {
                 if (protected(actual)) return FileVisitResult.CONTINUE
                 require(!ancestor(logical) && !ancestor(actual)) { "更新不能替换受保护目录的祖先：$logical" }
                 require(attrs.isRegularFile || attrs.isSymbolicLink) { "更新包含不支持的文件：$logical" }
-                if (Files.isDirectory(destination, NOFOLLOW_LINKS)) {
-                    Files.newDirectoryStream(destination).use { children ->
-                        require(!children.iterator().hasNext()) { "更新不能删除本地目录内容：$logical" }
-                    }
+                if (isDirectory(destination)) {
+                    val existing = snapshot
+                    val nonempty = if (existing != null) {
+                        val prefix = "/" + actual + "/"
+                        existing.keys.any { it.startsWith(prefix) }
+                    } else Files.newDirectoryStream(destination).use { it.iterator().hasNext() }
+                    require(!nonempty) { "更新不能删除本地目录内容：$logical" }
                 }
                 entries += Entry(file, destination, false, false)
                 return FileVisitResult.CONTINUE
@@ -108,22 +128,35 @@ internal class RootfsOverlay(source: ContainerConfig, target: ContainerConfig) {
     }
 
     suspend fun apply() {
-        val permissions = mutableMapOf<Path, Set<java.nio.file.attribute.PosixFilePermission>>()
+        // Privileged preflight used metadata only; commit now runs on the stopped App-owned tree.
+        snapshot = null
+        val original = RootfsOwnership.load(root.toFile()) ?: OwnershipManifest(emptyMap(), origin = "heuristic-v1")
+        val owners = LinkedHashMap(original.entries)
+        val permissions = mutableMapOf<Path, Int>()
+        var changed = false
+        var failure: Throwable? = null
         try {
             for (entry in entries) {
                 currentCoroutineContext().ensureActive()
                 val destination = entry.destination
-                // Recheck immediately before IO as well; preflight itself performs no writes.
                 require(this.destination(sourceRoot.relativize(entry.source), entry.directory) == destination) { "更新期间目标路径已变更" }
+                val sourceName = "/" + sourceRoot.relativize(entry.source).toString().replace(File.separatorChar, '/')
+                val sourceMode = (Files.getAttribute(entry.source, "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and 0xFFF
+                val sourceOwner = sourceOwners[sourceName]?.copy(mode = sourceMode)
+                    ?: RootfsOwnership.managedOwner(source, sourceName, sourceMode, entry.directory)
+                val name = "/" + relative(destination)
                 if (entry.directory) {
-                    if (!Files.isDirectory(destination, NOFOLLOW_LINKS)) {
+                    val existed = Files.isDirectory(destination, NOFOLLOW_LINKS)
+                    if (!existed) {
                         Files.deleteIfExists(destination)
                         Files.createDirectory(destination)
                     }
-                    // Children can be installed even when archive directory permissions are read-only.
-                    val previous = Files.getPosixFilePermissions(destination, NOFOLLOW_LINKS)
+                    val previous = (Files.getAttribute(destination, "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and 0xFFF
                     permissions[destination] = previous
-                    Files.setPosixFilePermissions(destination, previous + PosixFilePermissions.fromString("rwx------"))
+                    Files.setAttribute(destination, "unix:mode", previous or 0x1C0, NOFOLLOW_LINKS)
+                    owners[name] = if (entry.preserveAccess && existed) {
+                        (owners[name] ?: RootfsOwnership.managedOwner(target, name, previous, true)).copy(mode = previous)
+                    } else sourceOwner
                 } else {
                     val temporary = destination.parent.resolve(".wawlink-import-${UUID.randomUUID()}")
                     try {
@@ -133,22 +166,31 @@ internal class RootfsOverlay(source: ContainerConfig, target: ContainerConfig) {
                                 .setTimes(Files.getLastModifiedTime(entry.source, NOFOLLOW_LINKS), null, null)
                         } else {
                             Files.copy(entry.source, temporary, StandardCopyOption.COPY_ATTRIBUTES, NOFOLLOW_LINKS)
+                            Files.setAttribute(temporary, "unix:mode", sourceMode, NOFOLLOW_LINKS)
                         }
-                        if (Files.isDirectory(destination, NOFOLLOW_LINKS)) Files.delete(destination) // Preflight allowed empty directories only.
+                        if (Files.isDirectory(destination, NOFOLLOW_LINKS)) Files.delete(destination)
                         Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                        owners[name] = sourceOwner
                     } finally { Files.deleteIfExists(temporary) }
                 }
+                changed = true
             }
             for (entry in entries.asReversed()) {
-                if (!entry.directory) continue
-                if (!entry.preserveAccess) {
-                    Files.setPosixFilePermissions(entry.destination, Files.getPosixFilePermissions(entry.source, NOFOLLOW_LINKS))
-                    Files.setLastModifiedTime(entry.destination, Files.getLastModifiedTime(entry.source, NOFOLLOW_LINKS))
-                    permissions.remove(entry.destination)
-                }
+                if (!entry.directory || entry.preserveAccess) continue
+                Files.setAttribute(entry.destination, "unix:mode", owners.getValue("/" + relative(entry.destination)).mode, NOFOLLOW_LINKS)
+                Files.setLastModifiedTime(entry.destination, Files.getLastModifiedTime(entry.source, NOFOLLOW_LINKS))
+                permissions.remove(entry.destination)
             }
-        } finally {
-            permissions.forEach { (path, mode) -> Files.setPosixFilePermissions(path, mode) }
+        } catch (caught: Throwable) { failure = caught; throw caught }
+        finally {
+            var cleanupFailure: Throwable? = null
+            permissions.forEach { (path, mode) ->
+                try { Files.setAttribute(path, "unix:mode", mode, NOFOLLOW_LINKS) }
+                catch (caught: Throwable) { if (cleanupFailure == null) cleanupFailure = caught else cleanupFailure!!.addSuppressed(caught) }
+            }
+            if (changed) try { RootfsOwnership.save(root.toFile(), original.copy(entries = owners)) }
+            catch (caught: Throwable) { if (cleanupFailure == null) cleanupFailure = caught else cleanupFailure!!.addSuppressed(caught) }
+            cleanupFailure?.let { if (failure != null) failure.addSuppressed(it) else throw it }
         }
     }
 }
