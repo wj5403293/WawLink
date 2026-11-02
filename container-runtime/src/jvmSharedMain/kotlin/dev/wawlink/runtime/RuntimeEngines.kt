@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 internal fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 internal const val OWNERSHIP_SCAN_MARKER = "# WAWLINK_OWNERSHIP_SCAN"
+internal const val ROOTFS_OWNERSHIP_MIGRATION_MARKER = "# WAWLINK_OWNERSHIP_MIGRATION"
+internal const val ROOT_PERMISSION_CHECK_MARKER = "# WAWLINK_ROOT_PERMISSION_CHECK"
 
 internal object HostCommands {
     fun run(arguments: List<String>, timeout: Long = 45, maxOutputBytes: Int = 4 * 1024 * 1024): String = run(ProcessBuilder(arguments), timeout, maxOutputBytes)
@@ -261,22 +263,25 @@ internal class RuntimeEngines(
         return file
     }
 
-    fun prepare(config: ContainerConfig) {
+    fun prepare(config: ContainerConfig, onProgress: (String, Float?) -> Unit = { _, _ -> }) {
+        onProgress("检查容器引擎与运行身份", null)
         validate(config)
         RootfsOwnership.requireStable(config)
         val ownership = RootfsOwnership.load(File(config.rootfsPath))
         val expected = RootfsOwnership.mapped(config.engine)
         if ((config.engine == ContainerEngineType.CHROOT && ownership == null) ||
             (ownership != null && ownership.physical != expected)) {
-            RootfsOwnership.migrate(config, config, ::rootCommand)
+            RootfsOwnership.migrate(config, config, ::rootCommand, onProgress)
         }
         val root = validateRoot(config, if (config.engine == ContainerEngineType.CHROOT) this::rootCommand else null)
+        onProgress("准备容器管理目录", null)
         if (config.engine != ContainerEngineType.CHROOT) {
             prepareMappedOwnership(config, root, home(config))
             return
         }
         val owned = ownedMounts.getOrPut(config.id) { mutableListOf() }
         fun mount(target: File, command: String, readOnlySource: File? = null) {
+            onProgress("挂载 ${root.toPath().relativize(target.toPath())}", null)
             val quoted = shellQuote(target.path)
             if (target in owned) {
                 if (rootCommand("if mountpoint -q $quoted; then echo mounted; fi").trim() == "mounted") return
@@ -312,6 +317,7 @@ internal class RuntimeEngines(
                 mount(target, "mount -o bind ${shellQuote(source.path)} ${shellQuote(target.path)}", source.takeUnless { binding.readWrite })
             }
             rootCommand(owned.joinToString(" && ") { "mountpoint -q ${shellQuote(it.path)}" } + " || { echo 'su 挂载命名空间不共享，无法安全运行 chroot' >&2; exit 1; }")
+            onProgress("准备容器登录权限", null)
             val user = loginIdentity(config, this::rootCommand)
             prepareChrootOwnership(config, root, user.uid, user.gid, loginHome(config, user), ::rootCommand)
         } catch (failure: Throwable) {
@@ -453,10 +459,29 @@ internal class RuntimeEngines(
         """.trimIndent()).lineSequence().filter { it.isNotBlank() }.toList()
     }
 
-    fun rootCommand(command: String): String = try {
-        if (runRootCommand != null) runRootCommand.invoke(command)
-        else if (command.startsWith(OWNERSHIP_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = 300, maxOutputBytes = 256 * 1024 * 1024)
-        else if (command.startsWith(ROOTFS_SIZE_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = 300, maxOutputBytes = 256 * 1024 * 1024)
-        else HostCommands.run(listOf("su", "-c", command))
-    } catch (failure: Throwable) { throw IllegalStateException("chroot Root 命令执行失败：${failure.message}", failure) }
+    private fun rootCommandStage(command: String): Pair<String, Long> {
+        val timeout = if (command.startsWith(OWNERSHIP_SCAN_MARKER) || command.startsWith(ROOTFS_SIZE_SCAN_MARKER)) 300L else 45L
+        val stage = when {
+            command.startsWith(OWNERSHIP_SCAN_MARKER) -> "属主扫描"
+            command.startsWith(ROOTFS_SIZE_SCAN_MARKER) -> "Rootfs体积扫描"
+            command.startsWith(ROOTFS_OWNERSHIP_MIGRATION_MARKER) -> "属主迁移"
+            command.startsWith(ROOT_PERMISSION_CHECK_MARKER) -> "Root权限检查"
+            command.contains("/proc/self/mountinfo") || command.contains("mountpoint") || command.contains("mount ") || command.contains("umount ") -> "挂载"
+            else -> "其他 Root 操作"
+        }
+        return stage to timeout
+    }
+
+    fun rootCommand(command: String): String {
+        val (stage, timeout) = rootCommandStage(command)
+        return try {
+            if (runRootCommand != null) runRootCommand.invoke(command)
+            else if (command.startsWith(OWNERSHIP_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = timeout, maxOutputBytes = 256 * 1024 * 1024)
+            else if (command.startsWith(ROOTFS_SIZE_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = timeout, maxOutputBytes = 256 * 1024 * 1024)
+            else HostCommands.run(listOf("su", "-c", command), timeout = timeout)
+        } catch (failure: Throwable) {
+            val reason = failure.message?.takeIf { it.isNotBlank() } ?: failure::class.simpleName.orEmpty()
+            throw IllegalStateException("chroot Root 命令执行失败：阶段=$stage；超时=${timeout}秒；原因=$reason", failure)
+        }
+    }
 }

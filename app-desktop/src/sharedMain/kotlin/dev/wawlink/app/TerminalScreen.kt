@@ -10,6 +10,7 @@ import dev.wawlink.runtime.ContainerConfig
 import dev.wawlink.runtime.TerminalSession
 import dev.wawlink.runtime.wasInterrupted
 import dev.wawlink.ui.AgentTopBar
+import dev.wawlink.ui.ErrorMessage
 import kotlinx.coroutines.*
 
 /** A separate destination: no chat renderer, command input field, or bottom sheet. */
@@ -52,7 +53,7 @@ internal fun TerminalScreen(app: AppCoordinator, config: ContainerConfig, onBack
                     if (!alive) Text("终端进程已退出，返回后可重新打开。", Modifier.fillMaxWidth().padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     TerminalSurface(connected, Modifier.weight(1f).fillMaxWidth())
                 } else if (error != null) {
-                    Text("无法启动终端：$error", Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error)
+                    ErrorMessage("无法启动终端：$error", Modifier.padding(20.dp))
                 } else if (interrupted) {
                     Text("终端进程已退出，返回后可重新打开。", Modifier.fillMaxWidth().padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {

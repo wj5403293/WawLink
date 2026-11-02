@@ -224,7 +224,7 @@ internal fun ContainerFilesScreen(app: AppCoordinator, host: HostFiles, config: 
                 LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = if (selecting) 12.dp else if (filterOpen) 164.dp else 96.dp)) {
                     failure?.let { reason -> item {
                         Column(Modifier.padding(16.dp)) {
-                            Text(reason, color = MaterialTheme.colorScheme.error)
+                            ErrorMessage(reason)
                             TextButton({ failure = null; refresh++ }, enabled = !busy) { Text("重试") }
                         }
                     } }
@@ -412,7 +412,7 @@ internal fun ContainerFileLinkSheet(app: AppCoordinator, host: HostFiles, config
         val info = file
         AgentActionRow(info?.name ?: "容器文件", source, info?.let(::containerFileIcon) ?: "description")
         operation?.let { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(it, Modifier.padding(16.dp)) }
-        failure?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
+        failure?.let { ErrorMessage(it, Modifier.padding(16.dp)) }
         if (info?.directory == true) {
             AgentActionRow("打开", icon = "folder_open", enabled = operation == null, onClick = { onOpenDirectory(source) })
             AgentActionRow("打包下载", icon = "folder_zip", enabled = operation == null && info.readable, onClick = {
@@ -432,8 +432,8 @@ internal fun ContainerFileLinkSheet(app: AppCoordinator, host: HostFiles, config
                 run("正在下载原文件") { actions.download(listOf(source)) }
             })
         }
-        if (info != null && !info.supported) Text("不支持打开符号链接或特殊文件", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
-        else if (info != null && !info.readable) Text("文件不可读取，请检查当前容器用户权限", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
+        if (info != null && !info.supported) ErrorMessage("不支持打开符号链接或特殊文件", Modifier.padding(16.dp))
+        else if (info != null && !info.readable) ErrorMessage("文件不可读取，请检查当前容器用户权限", Modifier.padding(16.dp))
         if (failure != null && operation == null) AgentActionRow("重试", icon = "refresh", onClick = { val failed = retry; if (failed != null) failed() else refresh++ })
     }
     text?.let { content ->

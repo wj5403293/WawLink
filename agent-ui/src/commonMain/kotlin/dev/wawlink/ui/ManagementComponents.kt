@@ -204,7 +204,8 @@ internal fun ManagementHint(text: String, icon: String = "info", error: Boolean 
     val color = if (error) LocalAgentColors.current.error else LocalAgentColors.current.onSurfaceVariant
     Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Symbol(icon, Modifier.padding(top = 2.dp), size = 20.dp, tint = color)
-        Text(text, fontSize = 16.sp, color = color)
+        if (error) ErrorMessage(text, Modifier.weight(1f), color = color, fontSize = 16.sp)
+        else Text(text, Modifier.weight(1f), fontSize = 16.sp, color = color)
     }
 }
 @Composable
@@ -212,7 +213,8 @@ internal fun ManagementBanner(text: String, icon: String = "info", error: Boolea
     val c = LocalAgentColors.current
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).background(when { error -> c.errorContainer; warning -> c.warnContainer; else -> c.surfaceContainer }, RoundedCornerShape(24.dp)).padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         Symbol(icon, tint = when { error -> c.error; warning -> c.warn; else -> c.primary })
-        Text(text, fontSize = 17.sp, color = if (error) c.error else c.onSurface)
+        if (error) ErrorMessage(text, Modifier.weight(1f), color = c.error, fontSize = 17.sp)
+        else Text(text, Modifier.weight(1f), fontSize = 17.sp, color = c.onSurface)
     }
 }
 @Composable
@@ -293,7 +295,10 @@ internal fun ManagementSaveBar(dirty: Boolean, saving: Boolean, onSave: () -> Un
         Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF303030), contentColor = Color(0xFFF2F2F2), shadowElevation = 6.dp) {
             Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (saving) CircularProgressIndicator(Modifier.size(22.dp), color = Color(0xFFA8C7FA), strokeWidth = 2.dp) else Symbol(if (error == null) "edit" else "error", size = 22.dp)
-                Text(if (saving) "正在保存" else if (error != null) "保存失败" else "有未保存的修改", Modifier.weight(1f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (error != null) Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Text("保存失败", fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    ErrorDetailsButton(error, error)
+                } else Text(if (saving) "正在保存" else "有未保存的修改", Modifier.weight(1f), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 TextButton({ onDiscard(); actions.clearError() }, enabled = !saving) { Text("放弃", color = Color(0xFFA8C7FA)) }
                 Button(onSave, enabled = !saving && canSave, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA8C7FA), contentColor = Color(0xFF062E6F))) { Text(if (error != null) "重试" else "保存") }
             }

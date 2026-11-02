@@ -413,10 +413,7 @@ private fun ChatErrorBanner(errorText: String, modelId: String, onDismiss: () ->
         Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)) {
             Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Symbol("error", modifier = Modifier.padding(top = 12.dp), tint = c.error, size = 22.dp)
-                SelectionContainer(Modifier.weight(1f).padding(top = 12.dp, bottom = 8.dp)) {
-                    Text(errorText, color = c.material.onErrorContainer, fontSize = 15.sp, lineHeight = 21.sp,
-                        maxLines = 5, overflow = TextOverflow.Ellipsis)
-                }
+                ErrorMessage(errorText, Modifier.weight(1f).padding(top = 12.dp, bottom = 8.dp), color = c.material.onErrorContainer, fontSize = 15.sp, lineHeight = 21.sp, details = errorText)
                 AgentIconButton("close", "关闭报错", onDismiss)
             }
             if (actions.isNotEmpty()) FlowRow(Modifier.fillMaxWidth().padding(start = 32.dp),

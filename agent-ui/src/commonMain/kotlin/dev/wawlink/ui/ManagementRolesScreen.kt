@@ -159,7 +159,8 @@ fun ManagementRolesScreen(repository: AgentManagementRepository, onBack: () -> U
                         val tag = configurationMap(tags[role.id])
                         ManagementRow(role.name, listOfNotNull(role.model ?: role.error ?: "自动选择", role.source?.let(::managementSourceLabel), if (tag["hidden"] == true) "在选择器中隐藏" else null).joinToString(" · "),
                             icon = "label", onClick = { open(role.id) }, index = index, count = roles.size, error = role.error != null,
-                            lead = { RoleColorSwatch(tag["color"] as? String ?: "") })
+                            lead = { RoleColorSwatch(tag["color"] as? String ?: "") },
+                            trailing = if (role.error != null) ({ ErrorDetailsButton(role.error!!, role.error!!) }) else null)
                     }
                 }
             }

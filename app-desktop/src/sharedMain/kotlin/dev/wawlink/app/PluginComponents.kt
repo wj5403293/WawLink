@@ -27,6 +27,7 @@ import dev.wawlink.ui.EmphAccelEasing
 import dev.wawlink.ui.EmphDecelEasing
 import dev.wawlink.ui.EmphEasing
 import dev.wawlink.ui.Symbol
+import dev.wawlink.ui.ErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -159,7 +160,10 @@ internal fun PluginRow(title: String, subtitle: String = "", icon: String = "ext
         }
         Column(Modifier.weight(1f)) {
             Text(title, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (enabled) c.onSurface else c.onSurfaceVariant)
-            if (subtitle.isNotEmpty()) Text(subtitle, fontSize = 16.sp, color = if (error) c.error else c.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            if (subtitle.isNotEmpty()) {
+                if (error) ErrorMessage(subtitle, fontSize = 16.sp, color = c.error)
+                else Text(subtitle, fontSize = 16.sp, color = c.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            }
         }
         if (trailing != null) trailing() else if (onClick != null) Symbol("chevron_right", tint = c.onSurfaceVariant)
     }
@@ -169,7 +173,8 @@ internal fun PluginRow(title: String, subtitle: String = "", icon: String = "ext
 internal fun PluginHint(text: String, icon: String = "info", error: Boolean = false) {
     Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Symbol(icon, size = 20.dp, tint = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(text, fontSize = 16.sp, color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 24.sp)
+        if (error) ErrorMessage(text, Modifier.weight(1f), fontSize = 16.sp, lineHeight = 24.sp)
+        else Text(text, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 24.sp)
     }
 }
 
@@ -178,7 +183,11 @@ internal fun PluginBanner(text: String, error: Boolean = false, warning: Boolean
     val c = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).background(if (error) c.errorContainer else if (warning) Color(0xFFFFDCC1) else Color(0xFFF0F4F9), RoundedCornerShape(24.dp)).padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         Symbol(icon, tint = if (error) c.error else if (warning) Color(0xFF8A5000) else c.primary)
-        Column(Modifier.weight(1f)) { Text(text, fontSize = 17.sp, lineHeight = 26.sp); content?.invoke(this) }
+        Column(Modifier.weight(1f)) {
+            if (error) ErrorMessage(text, fontSize = 17.sp, lineHeight = 26.sp)
+            else Text(text, fontSize = 17.sp, lineHeight = 26.sp)
+            content?.invoke(this)
+        }
     }
 }
 

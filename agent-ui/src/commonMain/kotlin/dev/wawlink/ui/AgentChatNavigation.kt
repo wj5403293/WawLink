@@ -93,6 +93,6 @@ internal fun FeedHistoryActions(item: FeedItem, alignEnd: Boolean = false) {
                 }
             }
         }
-        error?.let { Text(it, color = LocalAgentColors.current.error) }
+        error?.let { ErrorMessage(it, color = LocalAgentColors.current.error, details = it) }
     }
 }

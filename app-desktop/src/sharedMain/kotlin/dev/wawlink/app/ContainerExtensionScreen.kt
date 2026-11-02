@@ -63,7 +63,7 @@ internal fun ContainerExtensionScreen(service: ContainerFeatureService, containe
         val error = if (startupPending) null else surfaceError ?: state.error
         if (error != null) {
             Surface(color = MaterialTheme.colorScheme.errorContainer) {
-                Text(error, Modifier.fillMaxWidth().padding(16.dp), fontSize = 18.sp, color = MaterialTheme.colorScheme.onErrorContainer)
+                ErrorMessage(error, Modifier.fillMaxWidth().padding(16.dp), fontSize = 18.sp, color = MaterialTheme.colorScheme.onErrorContainer)
             }
         }
         val displayStatus = if (startupPending && state.status != ContainerFeatureStatus.RUNNING && state.status != ContainerFeatureStatus.STOPPING) ContainerFeatureStatus.STARTING else state.status

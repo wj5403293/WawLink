@@ -249,9 +249,9 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                         Text("正在加载命令…", color = c.onSurfaceVariant)
                     }
-                    state.slashCommandsError?.let {
+                    state.slashCommandsError?.let { failure ->
                         Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("无法加载命令，请重试", Modifier.weight(1f), color = c.error)
+                            ErrorMessage(failure, Modifier.weight(1f), color = c.error, fontSize = 15.sp, details = failure)
                             TextButton(onClick = { controller.loadSlashCommands() }) { Text("重试") }
                         }
                     }
@@ -292,7 +292,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                 }
                 AttachmentStrip(attachments, !draft.takingQueuedPrompt) { attachments.remove(it) }
                 pickerError?.let { error -> Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(error, Modifier.weight(1f), color = c.error, fontSize = 14.sp)
+                    ErrorMessage(error, Modifier.weight(1f), color = c.error, fontSize = 14.sp, details = error)
                     AgentIconButton("close", "关闭错误", { pickerError = null })
                 } }
                 BasicTextField(text, { if (!draft.takingQueuedPrompt) { text = it; slashIndex = 0 } }, Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 160.dp)
@@ -345,7 +345,7 @@ internal fun ComposerArea(controller: AgentSessionController, state: ChatSession
                         }
                         ComposerMenu(menu == "model", { menu = null }) {
                             if (modelState.modelsLoading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 14.dp))
-                            (modelState.modelsError ?: modelState.error)?.let { Text(it, Modifier.padding(14.dp), color = c.error, fontSize = 16.sp) }
+                            (modelState.modelsError ?: modelState.error)?.let { ErrorMessage(it, Modifier.padding(14.dp), color = c.error, fontSize = 16.sp, details = it) }
                             if (availableModels.isEmpty() && !modelState.modelsLoading) Text("没有可用的对话模型", Modifier.padding(14.dp), fontSize = 16.sp, color = c.onSurfaceVariant)
                             availableModels.forEach { (providerId, models) ->
                                 val provider = providers.firstOrNull { it.id == providerId }
@@ -592,7 +592,7 @@ private fun WorkspaceBranch(controller: AgentSessionController, path: String, de
     val files by flow.collectAsState(initial = emptyList())
     val c = LocalAgentColors.current
     Column(Modifier.fillMaxWidth()) {
-    if (error != null) Text(error.orEmpty(), color = c.error, modifier = Modifier.padding(12.dp))
+    if (error != null) ErrorMessage(error.orEmpty(), Modifier.padding(12.dp), color = c.error, details = error.orEmpty())
     else if (!loaded) Row(Modifier.padding(12.dp)) { AgentProgressIndicator(); Text("正在读取文件…") }
     else if (files.isEmpty()) Text("此目录为空", color = c.onSurfaceVariant, modifier = Modifier.padding(start = (depth * 16 + 12).dp, top = 12.dp, bottom = 12.dp))
     files.sortedWith(compareByDescending<WorkspaceFileItem> { it.isDirectory }.thenBy { it.name.lowercase() }).forEach { file ->

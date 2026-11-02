@@ -36,7 +36,7 @@ internal fun ManagementEditableCodeScreen(title: String, text: String, language:
                     TextButton(onClick = { onSave(draft) }, enabled = !saving) { Text(if (saving) "保存中…" else "保存") }
                 }
                 HorizontalDivider(color = colors.outlineVariant)
-                error?.let { Text(it, Modifier.fillMaxWidth().padding(12.dp), color = colors.error) }
+                error?.let { ErrorMessage(it, Modifier.fillMaxWidth().padding(12.dp), color = colors.error, details = it) }
                 PlatformCodeEditor(draft, language, { draft = it }, Modifier.fillMaxWidth().weight(1f), editable = !saving)
             }
         }

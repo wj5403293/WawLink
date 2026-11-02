@@ -78,7 +78,7 @@ internal fun RichGraphic(graphic: MarkdownPart.Graphic, modifier: Modifier = Mod
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 6.dp))
             }
             if (failure != null) {
-                Text(failure!!, Modifier.padding(8.dp), color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                ErrorMessage(failure!!, Modifier.padding(8.dp), color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium, details = failure!!)
                 TextButton(onClick = { prepared = null; retry++ }) { Text("重试") }
             } else {
                 when (val result = prepared) {

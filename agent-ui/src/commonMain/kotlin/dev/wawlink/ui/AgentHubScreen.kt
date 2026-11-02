@@ -138,7 +138,7 @@ fun AgentHubScreen(
                 val error = failure ?: hub.error ?: hub.discoveryError
                 if (error != null) Row(Modifier.fillMaxWidth().background(colors.errorContainer).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Symbol("error", tint = colors.error)
-                    Text(error, Modifier.weight(1f).padding(horizontal = 10.dp), color = colors.error, fontSize = 16.sp)
+                    ErrorMessage(error, Modifier.weight(1f).padding(horizontal = 10.dp), color = colors.error, fontSize = 16.sp, details = error)
                     TextButton({ val action = retry; perform { if (action != null) action() else explorer.refreshHub() } }, enabled = !pending) { Text("重试") }
                     if (failure != null) AgentIconButton("close", "关闭错误", { failure = null })
                 }
@@ -334,7 +334,8 @@ internal fun HubActivity(hub: AgentHubState, explorer: SessionExplorer, root: Ru
             val agent = hub.agents.firstOrNull { it.instanceKey == activity.instanceKey }
             val title = if (activity.kind == AgentActivityKind.LIFECYCLE) RuntimeAgentLifecycle.entries.firstOrNull { it.name.equals(activity.text, true) }?.label ?: activity.text else activity.text
             ManagementRow(title, "${agent?.name ?: activity.agentId}  ${activity.agentId}  ${explorerTimestamp(activity.timestamp)}", activity.kind.icon,
-                onClick = agent?.let { { onOpen(it, activity.chatItemId ?: activity.entryId) } }, index = index, count = activities.size, error = activity.kind == AgentActivityKind.ERROR)
+                onClick = agent?.let { { onOpen(it, activity.chatItemId ?: activity.entryId) } }, index = index, count = activities.size, error = activity.kind == AgentActivityKind.ERROR,
+                trailing = if (activity.kind == AgentActivityKind.ERROR) ({ ErrorDetailsButton(title, title) }) else null)
         }
     }
     if ((hub.activityHasMore && hub.activityQuery == activityQuery) || failure != null) TextButton({
@@ -378,7 +379,7 @@ internal fun HubTag(text: String, icon: String? = null, error: Boolean = false, 
     val c = LocalAgentColors.current
     Row(Modifier.heightIn(min = 28.dp).background(when { error -> c.errorContainer; warning -> c.warnContainer; else -> c.primaryContainer }, RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         if (icon != null) Symbol(icon, size = 16.dp, tint = if (error) c.error else if (warning) c.warn else c.primary)
-        Text(text, fontSize = 15.sp, color = if (error) c.error else if (warning) c.warn else c.onPrimaryContainer)
+        if (error) { Text(text, fontSize = 15.sp, color = c.error); ErrorDetailsButton(text, text) } else Text(text, fontSize = 15.sp, color = if (warning) c.warn else c.onPrimaryContainer)
     }
 }
 @Composable

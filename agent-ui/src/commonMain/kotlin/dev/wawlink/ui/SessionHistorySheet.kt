@@ -731,7 +731,8 @@ private fun HistoryBanner(text: String, error: Boolean = false, warning: Boolean
         Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Symbol(if (error) "error" else if (warning) "warning" else "info", tint = if (error) c.error else if (warning) c.warn else c.primary)
             Column(Modifier.weight(1f)) {
-                SelectionContainer { Text(text, fontSize = 16.sp) }
+                if (error) ErrorMessage(text, color = c.error, fontSize = 16.sp, details = text)
+                else SelectionContainer { Text(text, fontSize = 16.sp) }
                 if (action != null) TextButton(onAction) { Text(action) }
             }
         }

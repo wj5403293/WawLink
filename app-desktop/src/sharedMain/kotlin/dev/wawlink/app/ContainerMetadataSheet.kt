@@ -112,7 +112,7 @@ internal fun ContainerMetadataSheet(app: AppCoordinator, files: HostFiles, confi
             .padding(horizontal = 24.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (loading) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在读取容器中的最新信息…") }
             loadError?.let {
-                Text("读取失败：$it", color = MaterialTheme.colorScheme.error)
+                ErrorMessage("读取失败：$it")
                 TextButton({ if (!busy) reload++ }, enabled = !busy) { Text("重试读取") }
             }
             if (baseline != null) {
@@ -180,7 +180,7 @@ internal fun ContainerMetadataSheet(app: AppCoordinator, files: HostFiles, confi
                 if (draft.title.length > 120 || draft.description.length > 4000 || draft.version.length > 64) Text("标题最多 120 字、描述最多 4000 字、版本号最多 64 字。", color = MaterialTheme.colorScheme.error)
                 if (picking || saving) LinearProgressIndicator(Modifier.fillMaxWidth())
                 actionError?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error)
+                    ErrorMessage(it)
                     TextButton({ if (!busy) confirmReload = true }, enabled = !busy) { Text("读取最新信息并保留草稿") }
                 }
                 Button({

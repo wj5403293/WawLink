@@ -61,7 +61,31 @@ data class SessionRecord(
     val titleSource: SessionTitleSource = SessionTitleSource.MANUAL,
 )
 data class HomeSession(val record: SessionRecord, val state: ChatSessionUiState)
-data class HostNotice(val id: Long = System.nanoTime(), val text: String, val error: Boolean = false)
+data class HostNotice(val id: Long = System.nanoTime(), val text: String, val error: Boolean = false, val details: String? = null)
+
+/** Bound diagnostic capture before rendering; never attach command arguments or environment. */
+internal fun hostErrorDetails(error: Throwable): String {
+    val limit = 32 * 1024
+    val text = StringBuilder(4096)
+    var truncated = false
+    val writer = object : java.io.Writer() {
+        override fun write(buffer: CharArray, offset: Int, length: Int) {
+            val count = minOf(length, limit - text.length)
+            if (count > 0) text.append(buffer, offset, count)
+            if (count < length) truncated = true
+        }
+        override fun write(value: String, offset: Int, length: Int) {
+            val count = minOf(length, limit - text.length)
+            if (count > 0) text.append(value, offset, offset + count)
+            if (count < length) truncated = true
+        }
+        override fun flush() = Unit
+        override fun close() = Unit
+    }
+    java.io.PrintWriter(writer).use { error.printStackTrace(it) }
+    if (truncated) text.append("\n错误详情超过 32 KiB，后续内容已省略。")
+    return text.toString()
+}
 
 internal data class OmpSetupRequest(
     val id: String = UUID.randomUUID().toString(),
@@ -194,12 +218,12 @@ class AppCoordinator(val runtime: ContainerRuntime, val pool: OmpProcessPool, va
     // Retaining the service must not start a container or restore a session.
     val active = combine(runtime.containers, runtime.deployments, sessions, busy, keepAlive) { containers, deployments, sessions, busy, keepAlive ->
         (isAndroid && keepAlive.enabled) || containers.any { it.running } ||
-            deployments.any { it.error == null && it.progress < 1f } || sessions.any { it.state.isRunning } || busy > 0
+            deployments.any { it.error == null && (it.progress?.let { fraction -> fraction < 1f } ?: true) } || sessions.any { it.state.isRunning } || busy > 0
     }.stateIn(scope, SharingStarted.Eagerly, isAndroid && keepAlive.value.enabled)
     fun report(text: String) { notices.update { it + HostNotice(text = text) } }
     fun showError(error: Throwable) {
         if (error is CancellationException && error !is TimeoutCancellationException) return
-        notices.update { it + HostNotice(text = error.message ?: error.toString(), error = true) }
+        notices.update { it + HostNotice(text = error.message ?: error.toString(), error = true, details = hostErrorDetails(error)) }
     }
     fun dismissNotice() { notices.update { it.drop(1) } }
     fun launch(action: suspend () -> Unit): Job = scope.launch {

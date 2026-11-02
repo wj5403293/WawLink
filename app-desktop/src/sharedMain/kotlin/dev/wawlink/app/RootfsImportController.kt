@@ -4,6 +4,7 @@ import dev.wawlink.runtime.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 internal data class RootfsImportDraft(
     val sourceType: String = "本地文件",
@@ -31,6 +32,7 @@ internal data class RootfsImportUiState(
     val selectedTargetId: String? = null,
     val rename: String = "",
     val error: String? = null,
+    val progress: DeploymentProgress? = null,
 ) {
     val busy get() = when (phase) {
         RootfsImportPhase.PREPARING, RootfsImportPhase.COMMITTING, RootfsImportPhase.FINALIZING, RootfsImportPhase.CANCELLING -> true
@@ -188,12 +190,22 @@ internal class RootfsImportController(
         }
         mutableState.value = current.copy(conflicts = conflicts, selectedTargetId = selected)
     }
+    private suspend fun progressCallback(): (DeploymentProgress) -> Unit {
+        val owner = currentCoroutineContext()[Job]
+        return { progress ->
+            if (!closed && owner?.isActive == true) mutableState.update { current ->
+                if (current.phase == RootfsImportPhase.PREPARING || current.phase == RootfsImportPhase.COMMITTING) current.copy(progress = progress)
+                else current
+            }
+        }
+    }
+
 
     private suspend fun prepare() {
         if (state.value.inspection != null) return
         val draft = state.value.draft
         withContext(Dispatchers.IO) {
-            val inspection = runtime.inspectRootfsArchive(draft.archiveSource, draft.name.trim(), draft.engine, draft.checksum.trim().ifBlank { null })
+            val inspection = runtime.inspectRootfsArchive(draft.archiveSource, draft.name.trim(), draft.engine, draft.checksum.trim().ifBlank { null }, progressCallback())
             inspectedDraft = draft
             mutableState.value = state.value.copy(inspection = inspection)
         }
@@ -209,11 +221,11 @@ internal class RootfsImportController(
     private suspend fun commit(mode: RootfsImportMode, target: String? = null) {
         val current = state.value
         val inspection = requireNotNull(current.inspection)
-        mutableState.value = current.copy(phase = RootfsImportPhase.COMMITTING)
+        mutableState.value = current.copy(phase = RootfsImportPhase.COMMITTING, progress = null)
         committedMode = mode
         val name = if (mode == RootfsImportMode.RENAME) current.rename.trim() else current.draft.name.trim()
         withContext(Dispatchers.IO) {
-            committed = runtime.importRootfs(inspection.id, name, mode, target)
+            committed = runtime.importRootfs(inspection.id, name, mode, target, progressCallback())
             committedGeneration = runtime.containers.value.firstOrNull { it.config.id == committed?.id }?.stopGeneration
             // Save consumption before returning across the cancellable dispatcher boundary.
             mutableState.value = state.value.copy(inspection = null, committed = true)
@@ -236,7 +248,7 @@ internal class RootfsImportController(
 
     private fun launchOperation(phase: RootfsImportPhase, action: suspend () -> Unit) {
         if (closed || state.value.busy || state.value.phase == RootfsImportPhase.COMPLETE) return
-        mutableState.value = state.value.copy(phase = phase, error = null)
+        mutableState.value = state.value.copy(phase = phase, error = null, progress = null)
         operation = scope.launch {
             try { action() }
             catch (cancelled: CancellationException) {

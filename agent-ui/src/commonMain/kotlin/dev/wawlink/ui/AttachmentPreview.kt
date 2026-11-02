@@ -207,8 +207,8 @@ private fun AttachmentImage(file: AttachmentFile, modifier: Modifier, album: Boo
         image?.let { Image(it.image, file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
             ?: if (failure == null) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
             else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Symbol("broken_image", contentDescription = failure)
-                Text(if (album) "$failure · 点击重试" else "重试", fontSize = 12.sp, maxLines = 3)
+                Text(if (album) "$failure · 点击重试" else "重试", fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                ErrorDetailsButton(failure!!, failure!!)
             }
         Text(attachmentSourceLabel(file), Modifier.align(Alignment.BottomStart).padding(if (album) 8.dp else 5.dp)
             .background(Color.Black.copy(alpha = .62f), RoundedCornerShape(6.dp)).padding(horizontal = 5.dp, vertical = 2.dp), color = Color.White, fontSize = if (album) 12.sp else 10.sp)
@@ -266,7 +266,7 @@ private fun AttachmentQuickPreview(file: AttachmentFile, onDismiss: () -> Unit) 
         Text(file.path, color = c.onSurfaceVariant, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
         if (content?.truncated == true) Text("仅预览前 64 KiB，内容已截断", color = c.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
         if (failure != null) {
-            Text(failure!!, color = c.error)
+            ErrorMessage(failure!!, color = c.error, details = failure!!)
             TextButton({ retry++ }) { Text("重试") }
         } else if (text == null) CircularProgressIndicator(Modifier.padding(16.dp).size(24.dp), strokeWidth = 2.dp)
         else {

@@ -14,9 +14,16 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 private const val OWNERSHIP_SCAN_COMPLETE = "WAWLINK_SNAPSHOT_COMPLETE"
+private const val OWNERSHIP_LINKS = "WAWLINK_SNAPSHOT_LINKS"
+private const val OWNERSHIP_LINKS_COMPLETE = "WAWLINK_SNAPSHOT_LINKS_COMPLETE"
+private data class SnapshotLink(val inode: Long, val target: String)
 private val OWNERSHIP_SCAN_WORKER = """
     set -eu
+    emit() { printf '%s\000' "${'$'}@"; }
+    # Android mksh has no builtin printf; its print -rN preserves bytes and NUL-separates arguments.
+    case "${'$'}{KSH_VERSION:-}" in *MIRBSD*) emit() { print -rN -- "${'$'}@"; } ;; esac
     complete=
+    link_marker=${'$'}(printf '\001')
     for p do
         shift
         if [ "${'$'}p" = '$OWNERSHIP_SCAN_COMPLETE' ]; then complete=1; else set -- "${'$'}@" "${'$'}p"; fi
@@ -31,18 +38,29 @@ private val OWNERSHIP_SCAN_WORKER = """
             [ "${'$'}#" -gt 0 ] || exit 1
             p=${'$'}1
             shift
-            link=
-            marker=
-            if [ -L "${'$'}p" ]; then
-                marker=${'$'}(printf '\001')
-                link=${'$'}(readlink -n -- "${'$'}p" && printf '\001') || exit
-                link=${'$'}{link%${'$'}marker}
-            fi
-            printf '%s\000%s\000%s\000%s\000' "${'$'}p" "${'$'}m" "${'$'}link" "${'$'}marker"
+            # stat's %f type nibble identifies links, avoiding a second lstat for links.
+            mode=${'$'}{m%:*}
+            mode=${'$'}{mode##*:}
+            case "${'$'}mode" in
+                [aA]*)
+                    if [ "${'$'}{WAWLINK_SNAPSHOT_LINKS:-0}" = 1 ]; then
+                        emit "${'$'}p" "${'$'}m" '' ''
+                    else
+                        # readlink also fails if a link was replaced after stat.
+                        link=${'$'}(readlink -n -- "${'$'}p" && printf '\001') || exit
+                        link=${'$'}{link%${'$'}link_marker}
+                        emit "${'$'}p" "${'$'}m" "${'$'}link" "${'$'}link_marker"
+                    fi
+                    ;;
+                *)
+                    # Keep the non-link race check: a replaced path must not be accepted as regular.
+                    [ ! -L "${'$'}p" ] || exit 1
+                    emit "${'$'}p" "${'$'}m" '' '' ;;
+            esac
         done
         [ "${'$'}#" -eq 0 ] || exit 1
     fi
-    if [ -n "${'$'}complete" ]; then printf '%s\000' '$OWNERSHIP_SCAN_COMPLETE'; fi
+    if [ -n "${'$'}complete" ]; then emit '$OWNERSHIP_SCAN_COMPLETE'; fi
 """.trimIndent()
 
 /** The sidecar is App-private and outside the guest tree; tar headers carry portable ownership. */
@@ -134,8 +152,8 @@ internal object RootfsOwnership {
     }
     fun preflight(rootCommand: (String) -> String) {
         try {
-            check(rootCommand("id -u").trim() == "0") { "su 未返回真实 UID 0" }
-            rootCommand("command -v find >/dev/null && command -v xargs >/dev/null && command -v stat >/dev/null && command -v chown >/dev/null && command -v chmod >/dev/null && command -v readlink >/dev/null || { echo '缺少 find/xargs/stat/chown/chmod/readlink' >&2; exit 1; }")
+            check(rootCommand("$ROOT_PERMISSION_CHECK_MARKER\nid -u").trim() == "0") { "su 未返回真实 UID 0" }
+            rootCommand("$ROOT_PERMISSION_CHECK_MARKER\ncommand -v find >/dev/null && command -v xargs >/dev/null && command -v stat >/dev/null && command -v chown >/dev/null && command -v chmod >/dev/null && command -v readlink >/dev/null || { echo '缺少 find/xargs/stat/chown/chmod/readlink' >&2; exit 1; }")
         } catch (failure: Exception) { throw IllegalStateException("跨引擎属主迁移需要真实 Root 权限和系统文件工具，当前无法执行；原引擎配置未更改：${failure.message}", failure) }
     }
     fun exclusions(config: ContainerConfig, rootCommand: ((String) -> String)? = null): Set<String> {
@@ -159,12 +177,41 @@ internal object RootfsOwnership {
         val base = root(config)
         val excluded = exclusions(config, rootCommand)
         if (rootCommand != null) {
-            // stat -c emits one numeric row per argument on GNU, BusyBox and Toybox; no per-inode process is needed.
-            // BusyBox find can overfill exec's argument limit; the sentinel also detects producer failure without pipefail.
-            val output = rootCommand("$OWNERSHIP_SCAN_MARKER\nset -eu\ncd ${shellQuote(base.path)}\nworker_shell=\$(command -v sh)\n{ find . -xdev \\( ${prune(excluded)} \\) -prune -o -print0 || exit; printf '%s\\000' '$OWNERSHIP_SCAN_COMPLETE'; } | xargs -0 -r -n 128 -s 16384 \"\$worker_shell\" -c ${shellQuote(OWNERSHIP_SCAN_WORKER)} ownership")
+            // Native find can collect link targets without one readlink process per link.
+            // BusyBox lacks -printf; retain the same bounded stat/readlink worker there.
+            val output = rootCommand("""
+                $OWNERSHIP_SCAN_MARKER
+                set -eu
+                cd ${shellQuote(base.path)}
+                worker_shell=${'$'}(command -v sh)
+                scan_links=0
+                if [ "${'$'}(find . -maxdepth 0 -printf 'WAWLINK%l_PRINTF' 2>/dev/null)" = WAWLINK_PRINTF ]; then
+                    printf '%s\000' '$OWNERSHIP_LINKS'
+                    find . -xdev \( ${prune(excluded)} \) -prune -o -type l -printf '%p\000%i\000%l\000' || exit
+                    printf '%s\000' '$OWNERSHIP_LINKS_COMPLETE'
+                    scan_links=1
+                fi
+                export WAWLINK_SNAPSHOT_LINKS=${'$'}scan_links
+                { find . -xdev \( ${prune(excluded)} \) -prune -o -print0 || exit; printf '%s\000' '$OWNERSHIP_SCAN_COMPLETE'; } |
+                    xargs -0 -r -n 512 -s 32768 "${'$'}worker_shell" -c ${shellQuote(OWNERSHIP_SCAN_WORKER)} ownership
+            """.trimIndent())
             val fields = output.split('\u0000')
-            require(fields.size >= 6 && fields.last() == "" && fields[fields.lastIndex - 1] == OWNERSHIP_SCAN_COMPLETE && (fields.size - 2) % 4 == 0) { "属主扫描协议不完整" }
-            return (0 until fields.size - 2 step 4).map { index ->
+            val linkTargets = if (fields.firstOrNull() == OWNERSHIP_LINKS) HashMap<String, SnapshotLink>() else null
+            var first = 0
+            if (linkTargets != null) {
+                first = 1
+                while (fields.getOrNull(first) != OWNERSHIP_LINKS_COMPLETE) {
+                    require(first + 2 < fields.size) { "属主扫描链接协议不完整" }
+                    val path = fields[first]
+                    val inode = fields[first + 1].toLongOrNull()
+                    require(path.startsWith("./") && inode != null && inode >= 0 && fields[first + 2].isNotEmpty() &&
+                        linkTargets.put(path, SnapshotLink(inode, fields[first + 2])) == null) { "属主扫描链接元数据无效" }
+                    first += 3
+                }
+                first++
+            }
+            require(fields.size - first >= 6 && fields.last() == "" && fields[fields.lastIndex - 1] == OWNERSHIP_SCAN_COMPLETE && (fields.size - first - 2) % 4 == 0) { "属主扫描协议不完整" }
+            val entries = (first until fields.size - 2 step 4).map { index ->
                 require(fields[index] == "." || fields[index].startsWith("./")) { "属主扫描路径无效" }
                 val path = if (fields[index] == ".") "/" else fields[index].removePrefix(".")
                 require(validPath(path) && !excluded(path, excluded)) { "属主扫描越过保护边界：$path" }
@@ -176,9 +223,23 @@ internal object RootfsOwnership {
                 require(uid != null && gid != null && uid in 0..MAX_ID && gid in 0..MAX_ID && mode != null && mode in 0..MODE_MASK &&
                     device != null && device >= 0 && inode != null && inode >= 0 && links != null && links > 0 && kind != null &&
                     when (kind) { 0x1000, 0x2000, 0x4000, 0x6000, 0x8000, 0xA000, 0xC000 -> true; else -> false } && size != null && size >= 0) { "属主扫描元数据无效：$path" }
-                require(if (kind == 0xA000) fields[index + 3] == "\u0001" else fields[index + 2].isEmpty() && fields[index + 3].isEmpty()) { "属主扫描链接类型不一致：$path" }
-                Entry(path, uid, gid, mode, device, inode, links, kind, if (kind == 0xA000) fields[index + 2] else null, size)
+                val target = if (kind == 0xA000) {
+                    if (linkTargets != null) {
+                        val link = linkTargets.remove(fields[index])
+                        require(link != null && link.inode == inode && fields[index + 2].isEmpty() && fields[index + 3].isEmpty()) { "扫描期间符号链接发生变化：$path" }
+                        link.target
+                    } else {
+                        require(fields[index + 3] == "\u0001") { "属主扫描链接类型不一致：$path" }
+                        fields[index + 2]
+                    }
+                } else {
+                    require(fields[index + 2].isEmpty() && fields[index + 3].isEmpty()) { "属主扫描链接类型不一致：$path" }
+                    null
+                }
+                Entry(path, uid, gid, mode, device, inode, links, kind, target, size)
             }
+            require(linkTargets.isNullOrEmpty()) { "扫描期间符号链接发生变化" }
+            return entries
         }
         val entries = mutableListOf<Entry>()
         fun add(path: Path) {
@@ -304,8 +365,9 @@ internal object RootfsOwnership {
     }
 
     /** Entire plan is validated and journaled before the first mutation. Re-running resumes it. */
-    fun migrate(previous: ContainerConfig, target: ContainerConfig, rootCommand: (String) -> String, checkActive: () -> Unit = {}) {
+    fun migrate(previous: ContainerConfig, target: ContainerConfig, rootCommand: (String) -> String, onProgress: (String, Float?) -> Unit = { _, _ -> }, checkActive: () -> Unit = {}) {
         val base = root(target)
+        onProgress("检查 Root 权限", null)
         preflight(rootCommand)
         require(root(previous) == base) { "属主迁移不能更换 Rootfs" }
         val stored = load(base)
@@ -313,7 +375,9 @@ internal object RootfsOwnership {
         val to = mapped(target.engine)
         stored?.pending?.let { require(it.to == to) { "已有未完成的属主迁移，请先继续原目标引擎" } }
         val combined = target.copy(mounts = (previous.mounts + target.mounts).distinct())
+        onProgress("扫描文件属主", null)
         val entries = snapshot(combined, rootCommand)
+        onProgress("校验属主迁移计划 · ${entries.size} 项", null)
         val manifest = if (stored?.pending != null) {
             check(stored.pending.identities.isNotEmpty()) { "旧迁移日志缺少 inode 证据，拒绝猜测恢复；请删除并重新导入 Rootfs" }
             check(entries.size == stored.entries.size && entries.all { it.path in stored.entries }) { "迁移中断后 Rootfs 条目集合已改变，请停止外部写入后重试" }
@@ -337,15 +401,20 @@ internal object RootfsOwnership {
             batches.getOrPut(Batch(parent, uid, gid, logical.mode, entry.symbolicLink)) { mutableListOf() }.add(entry)
         }
         val rootIdentity = index.getValue("/").identity
-        val prefix = "set -eu\ncd ${shellQuote(base.path)}\n[ \"\$(stat -c '%d:%i' .)\" = ${shellQuote(rootIdentity)} ] || exit 1\n$APPLY_HELPER\n"
+        val prefix = "$ROOTFS_OWNERSHIP_MIGRATION_MARKER\nset -eu\ncd ${shellQuote(base.path)}\n[ \"\$(stat -c '%d:%i' .)\" = ${shellQuote(rootIdentity)} ] || exit 1\n$APPLY_HELPER\n"
         val commands = StringBuilder()
         val pending = mutableListOf<Entry>()
+        val total = batches.values.sumOf { it.size }
+        var completed = 0
+        onProgress("迁移文件属主 · 0 / $total 项", if (total > 0) 0f else null)
         fun flush() {
             if (pending.isEmpty()) return
             checkActive()
             val currentExclusions = exclusions(combined, rootCommand)
             check(pending.none { excluded(it.path, currentExclusions) }) { "迁移期间出现新的挂载，已停止且未提交引擎配置" }
             rootCommand(prefix + commands)
+            completed += pending.size
+            onProgress("迁移文件属主 · $completed / $total 项", completed.toFloat() / total)
             commands.setLength(0)
             pending.clear()
         }
@@ -372,6 +441,7 @@ internal object RootfsOwnership {
         }
         flush()
         checkActive()
+        onProgress("保存属主迁移结果", null)
         save(base, manifest.copy(physical = to, pending = null))
     }
 

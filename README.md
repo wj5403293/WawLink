@@ -1117,3 +1117,41 @@ GNU/dash、mksh R59c + Toybox 0.8.9、mksh + BusyBox 三套隔离工具链均完
 
 本轮没有使用 Android 模拟器，没有改动原始 Rootfs 归档，也没有真实特权 chroot、跨 UID 内核或 Android ROM/SELinux 验收。本机耗时不能外推为手机启动时限，仍需反馈设备覆盖安装后验证已有容器启动及同一归档导入；不要求卸载、清数据或重新导入原有容器。
 
+### 统一错误详情、容器进度与链接扫描优化（2026-11-02）
+
+- 聊天、历史树/Hub、模型与 Agent 设置、插件/技能、文件和容器等运行时错误入口共用 `ErrorDetails.kt`：原位保留简洁摘要，点击“查看详情”打开可滚动、选择与复制的 Material 3 Dialog。不移除原有关闭、重试、修复与草稿恢复操作。
+- 显示与复制共用凭据脱敏，覆盖 Authorization/Bearer/Basic、URL userinfo 及常见 token/api_key/password/secret 字段；保留 errno、文件路径与错误原因。它不是任意秘密扫描，分享诊断前仍应核对内容。
+- 宿主取得 Throwable 时，有界保留最多 32,768 字符诊断，包含可得的 cause/suppressed 异常链并明确标记截断，不附加命令参数或环境；原生仅返回错误文本时不虚构异常栈。Root 命令错误补充实际操作阶段与对应期限，保留原始原因。
+- 容器列表、详情与 Rootfs 导入页显示实际阶段；传输有真实总量时显示百分比，属主迁移显示已完成项数，解压等未知总量阶段使用标准不定进度与可得字节。启动等待、引擎切换、克隆和导出也发布阶段，不用计时伪造百分比。表单取消、离页及迟到回调沿用操作代次隔离，失败保留草稿和真实错误。
+- 属主扫描改为相对路径、最多 512 项/32 KiB 的 native stat 批次。mksh 使用内建 `print -rN` 输出 NUL 字段，不再逐条启动外部 `printf`，其他 Shell 保留标准 `printf`。支持 `find -printf` 的工具先批量输出链接目标，再与 stat 的 inode 对齐；链接替换、遗漏、重复、部分输出或生产者失败均拒绝。链接目标按 NUL 字段传输，保留换行、反斜杠及尾部控制字符。不支持 `-printf` 的 BusyBox 使用有界 stat/readlink 路径，不屏蔽工具失败。
+- 全量预检、挂载排除、硬链接计划、完整模式、迁移 journal、取消与旧 inode 拒绝均保留；扫描仍为 300 秒/256 MiB，普通 Root 命令仍为 45 秒，不以加长超时掩盖开销。
+
+独立桌面烟测实际打开生产错误组件的 Dialog，检查长详情滚动至末尾、cause/suppressed 展示和剪贴板原文；复制结果保留第 80 个检查点并脱敏 Bearer 与含空格密码。另检查标准不定/定量进度组件的呈现；布局用固定输入，不冒充真实容器进度数据。验证窗口与进程已关闭。Android 模拟器、真机、特权 chroot 与 SELinux/ROM 尚未验收，桌面组件观察不能写成 Poco F6 已修复。
+
+
+使用前文同一完整 `IDADroid-v0-1-1.tar.zstd`，生产导入耗时 14,419 ms，并实际观察到读取、已知总量传输、安全解压、检查发行版/ELF/容器信息、保存配置与统计体积等阶段。GNU/dash、mksh R59 + Toybox 0.8.9、mksh + BusyBox 三套工具得到的 57,102 项快照均与 JVM 逐项完全一致，逻辑体积也相等；另检查了含引号/反斜杠的路径与尾部换行/控制字符链接目标的精确保留。下表是同一开发机单次整树扫描对照，不包含导入，不是 Android 启动时限承诺：
+
+| 宿主工具链 | 外部 printf 逐项输出（ms） | mksh 内建 NUL 输出（ms） |
+| --- | ---: | ---: |
+| mksh + Toybox | 131,873 | 11,799 |
+| mksh + BusyBox | 150,413 | 43,351 |
+
+完整导入后，通过生产 `LocalContainerRuntime.start/stop` 执行真实 PRoot/QEMU 启停，观察到四个启动阶段及最终停止状态；未读取归档认证正文或发送模型请求。真实 `sleep` 超时烟测同时确认异常保留阶段、配置扫描期限和原始命令超时原因，Root 授权未在该烟测中执行。临时烟测代码不进入仓库。
+
+本轮定向回归 177 项通过，无失败、错误或跳过：运行时 151、UI 诊断 6、应用协调与导入 20；Android Kotlin 编译通过，没有构建新 APK。包含链接目标原文、两遍间链接置换、生产者部分输出失败，以及取消导入后的迟到进度不得覆盖新重试。持久回归可使用下列命令复跑：
+
+```bash
+./gradlew :container-runtime:desktopTest \
+  --tests 'dev.wawlink.runtime.Rootfs*' \
+  --tests 'dev.wawlink.runtime.LocalContainerRuntimeTest' \
+  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
+  --tests 'dev.wawlink.runtime.RuntimeEnginesTest' \
+  :agent-ui:desktopTest \
+  --tests 'dev.wawlink.ui.ErrorDetailsRedactionTest' \
+  --tests 'dev.wawlink.ui.ChatErrorDiagnosisTest' \
+  :app-desktop:desktopTest \
+  --tests 'dev.wawlink.app.RootfsImportControllerTest' \
+  --tests 'dev.wawlink.app.AppCoordinatorInterruptionTest' \
+  :app-android:compileDebugKotlin --continue --console=plain
+```
+

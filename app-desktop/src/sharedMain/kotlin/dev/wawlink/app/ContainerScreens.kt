@@ -60,14 +60,12 @@ internal fun bytesLabel(bytes: Long): String = when {
             Box { AgentIconButton("filter_list", "筛选状态", { filterMenu = true }, filled = filter != "全部容器"); DropdownMenu(filterMenu, { filterMenu = false }) { listOf("全部容器", "运行中", "已停止").forEach { label -> DropdownMenuItem({ Text(label) }, { filter = label; filterMenu = false }, trailingIcon = { if (label == filter) Symbol("check") }) } } }
         }
         if (deployments.isNotEmpty()) {
-            SectionLabel("正在部署", "deployed_code")
+            SectionLabel("进行中的操作", "deployed_code")
             deployments.forEach { task ->
                 key(task.id) {
                     Column(Modifier.fillMaxWidth().padding(bottom = 3.dp).background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(20.dp)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(task.name, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
-                        Text(task.error ?: task.phase, color = if (task.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-                        LinearProgressIndicator(progress = { task.progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(6.dp))
-                        Text("${(task.progress * 100).toInt()}%", color = MaterialTheme.colorScheme.primary)
+                        ContainerOperationProgress(task)
                     }
                 }
             }
@@ -92,9 +90,26 @@ internal fun bytesLabel(bytes: Long): String = when {
                         AgentIconButton("more_vert", "${c.config.displayName} 容器设置", { onDetail(c.config.id) })
                         Switch(c.running, { run -> app.launch { if (run) app.runtime.start(c.config.id) else app.runtime.stop(c.config.id) } })
                     }
-                    c.error?.let { Text(it, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
-                    c.metadataError?.let { Text("容器信息读取失败：$it · 请进入设置重试或编辑", Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
+                    c.error?.let { ErrorMessage(it, Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+                    c.metadataError?.let { ErrorMessage("容器信息读取失败：$it · 请进入设置重试或编辑", Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ContainerOperationProgress(progress: DeploymentProgress, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val error = progress.error
+        if (error != null) ErrorMessage(error)
+        else {
+            Text(progress.phase, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val fraction = progress.progress
+            if (fraction == null) LinearProgressIndicator(Modifier.fillMaxWidth().height(6.dp))
+            else {
+                LinearProgressIndicator(progress = { fraction.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(6.dp))
+                Text("${(fraction.coerceIn(0f, 1f) * 100).toInt()}%", color = MaterialTheme.colorScheme.primary)
             }
         }
     }
@@ -156,6 +171,8 @@ internal fun bytesLabel(bytes: Long): String = when {
 
 @Composable internal fun ContainerDetailScreen(app: AppCoordinator, files: HostFiles, info: ContainerInfo, onBack: () -> Unit, onTerminal: (String) -> Unit, onFiles: (String) -> Unit) {
     val c = info.config
+    val deployments by app.runtime.deployments.collectAsState()
+    val operation = deployments.firstOrNull { it.id == c.id }
     var tools by remember(c.id) { mutableStateOf<List<ToolchainInfo>?>(null) }
     var probeError by remember(c.id) { mutableStateOf<String?>(null) }
     var toolBusy by remember { mutableStateOf<String?>(null) }
@@ -197,10 +214,11 @@ internal fun bytesLabel(bytes: Long): String = when {
                     DetailAction("导出", "ios_share") { export = true }
                 }
             }
-            info.error?.let { Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error) }
+            operation?.let { ContainerOperationProgress(it, Modifier.fillMaxWidth().padding(12.dp)) }
+            info.error?.let { ErrorMessage(it, Modifier.padding(12.dp)) }
             info.metadataError?.let { failure ->
                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                    Text("容器信息未成功读取：$failure", color = MaterialTheme.colorScheme.error)
+                    ErrorMessage("容器信息未成功读取：$failure")
                     Row {
                         TextButton({
                             if (!metadataRetryBusy) {
@@ -222,7 +240,7 @@ internal fun bytesLabel(bytes: Long): String = when {
             Text("切换引擎或配置会停止相关进程并应用新配置。chroot 需要 Root 权限。${if (!app.isAndroid) "proroot 仅支持 Android。" else "proroot 支持 root 与普通用户。"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
             SectionLabel("预装工具链", "construction", action = { TextButton({ uiScope.launch { probe() } }, enabled = toolBusy == null) { Text("重新探测") } })
             if (tools == null && probeError == null) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在容器内探测实际工具版本", Modifier.padding(12.dp)) }
-            probeError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            probeError?.let { ErrorMessage(it) }
             tools?.chunked(2)?.forEach { row -> Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 row.forEach { tool ->
                     Row(Modifier.weight(1f).fillMaxHeight().heightIn(min = 76.dp).animateContentSize(spring()).background(if (tool.installed) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(if (tool.installed) 24.dp else 18.dp)).clickable(enabled = toolBusy == null) {
@@ -386,7 +404,7 @@ internal fun bytesLabel(bytes: Long): String = when {
         DetailSegments(listOf(true, false), rw, { if (it) "读写模式" else "只读保护" }, { rw = it; error = null }, enabled = { !busy && (it || allowReadonly) })
         if (!allowReadonly) Text("只读挂载需要 chroot；proot / proroot 不支持真正只读绑定。", Modifier.padding(top = 12.dp), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 16.dp))
-        error?.let { Text(it, Modifier.padding(top = 16.dp), color = MaterialTheme.colorScheme.error) }
+        error?.let { ErrorMessage(it, Modifier.padding(top = 16.dp)) }
         HostAction("确认挂载", "check", { run {
             val actual = files.prepareMountSource(source, rw)
             save(ContainerMount(actual, target.trim(), rw))
@@ -441,7 +459,7 @@ internal fun bytesLabel(bytes: Long): String = when {
     AgentSheet("登录用户", dismiss) {
         DetailField("已存在的用户名称或 UID", value) { onChange(it); error = null }
         Text("必须存在于容器 /etc/passwd，不会自动创建用户或回退到 root。", Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(bottom = 12.dp)) }
+        error?.let { ErrorMessage(it, Modifier.padding(bottom = 12.dp)) }
         HostAction(if (busy) "正在验证…" else "验证并保存", "check", {
             busy = true
             scope.launch {

@@ -342,7 +342,7 @@ private fun SettingEditorSheet(item: SettingItem, onDismiss: () -> Unit, onUpdat
                     if (values.isEmpty()) SettingsEmpty("暂无配置项", "data_object")
                 }
             }
-            error?.let { Text(it, color = colors.error, fontSize = 16.sp) }
+            error?.let { ErrorMessage(it, color = colors.error, fontSize = 16.sp, details = it) }
         }
     }
 }

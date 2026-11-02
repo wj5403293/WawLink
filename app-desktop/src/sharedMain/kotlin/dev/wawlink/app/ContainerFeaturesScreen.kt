@@ -586,7 +586,7 @@ private fun FeatureCardTile(
                     }
                 }
                 if (failure != null) Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(10.dp)) {
-                    Text(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
+                    ErrorMessage(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
                 }
             }
         }
@@ -597,7 +597,7 @@ private fun FeatureCardTile(
             if (selected) Symbol("check", size = 22.dp, tint = if (customBackground != null) background else MaterialTheme.colorScheme.onPrimary)
         }
         if (htmlCard && failure != null) Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), color = MaterialTheme.colorScheme.errorContainer) {
-            Text(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
+            ErrorMessage(failure, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 16.sp)
         }
     }
 }
@@ -623,7 +623,7 @@ internal fun FeatureCardError(message: String) {
     Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.errorContainer) {
         Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Symbol("error", tint = MaterialTheme.colorScheme.onErrorContainer)
-            Text(message, color = MaterialTheme.colorScheme.onErrorContainer)
+            ErrorMessage(message, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer)
         }
     }
 }

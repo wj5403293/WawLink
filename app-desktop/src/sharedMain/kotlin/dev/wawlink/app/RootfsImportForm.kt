@@ -15,6 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.wawlink.runtime.*
 import dev.wawlink.ui.Symbol
+import dev.wawlink.ui.ErrorMessage
 import kotlinx.coroutines.*
 
 @Composable
@@ -71,18 +72,23 @@ internal fun RootfsImportForm(app: AppCoordinator, files: HostFiles, onBack: () 
     SectionLabel("默认 Shell（仅新建容器）", "terminal")
     HostChips(listOf("/bin/bash", "/bin/zsh", "/bin/sh"), draft.shell, { it.substringAfterLast('/').replaceFirstChar(Char::uppercase) }, { value -> controller.edit { it.copy(shell = value) } }, "terminal", enabled = { !state.busy })
     if (state.busy) {
-        LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 20.dp))
-        Text(when (state.phase) {
-            RootfsImportPhase.COMMITTING -> "正在导入已校验的归档…"
-            RootfsImportPhase.FINALIZING -> "正在完成容器配置…"
-            RootfsImportPhase.CANCELLING -> "正在取消并清理导入缓存…"
-            else -> "正在校验归档，请稍候…"
-        }, Modifier.padding(vertical = 8.dp))
+        val progress = state.progress
+        if (progress != null && (state.phase == RootfsImportPhase.PREPARING || state.phase == RootfsImportPhase.COMMITTING)) {
+            ContainerOperationProgress(progress, Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 8.dp))
+        } else {
+            LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 20.dp))
+            Text(when (state.phase) {
+                RootfsImportPhase.COMMITTING -> "正在导入已校验的归档…"
+                RootfsImportPhase.FINALIZING -> "正在完成容器配置…"
+                RootfsImportPhase.CANCELLING -> "正在取消并清理导入缓存…"
+                else -> "正在读取、校验并准备归档…"
+            }, Modifier.padding(vertical = 8.dp))
+        }
         if (state.phase == RootfsImportPhase.PREPARING || state.phase == RootfsImportPhase.COMMITTING) {
             TextButton(controller::cancel) { Text("取消导入") }
         }
     }
-    state.error?.let { Text(it, Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.error) }
+    state.error?.let { ErrorMessage(it, Modifier.padding(top = 12.dp)) }
     HostAction(if (state.committed) "重试完成导入" else "校验并导入容器", "folder_zip", controller::submit, Modifier.fillMaxWidth().padding(top = 28.dp), enabled = draft.canSubmit && !state.busy && state.phase != RootfsImportPhase.COMPLETE)
     if (state.phase == RootfsImportPhase.DECISION) RootfsImportConflictDialog(state, controller)
 }
@@ -119,7 +125,7 @@ internal fun RootfsImportConflictDialog(state: RootfsImportUiState, controller: 
                 Text("覆盖更新保留工作区、会话、凭据及现有配置；归档中的普通文件会被覆盖，归档中没有的本地新增文件会保留。未受保护的文件仍可能包含个人数据。", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(state.rename, controller::rename, Modifier.fillMaxWidth(), label = { Text("新容器名称") }, singleLine = true, isError = state.rename.isNotBlank() && renameError != null,
                     supportingText = { Text(renameError ?: "重命名会同时设置容器名称和归档标题") })
-                state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                state.error?.let { ErrorMessage(it) }
             }
         },
         confirmButton = {

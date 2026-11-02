@@ -326,7 +326,8 @@ private fun ProviderDetailScreen(
             }
             SettingsField(provider.apiKey, { key -> modifyLatest { it.copy(apiKey = key) } }, placeholder = "sk-", mono = true, secret = !showKey, keyboardType = KeyboardType.Password, trailing = { AgentIconButton(if (showKey) "visibility_off" else "visibility", if (showKey) "隐藏 API Key" else "显示 API Key", { showKey = !showKey }) })
             AnimatedVisibility(testResult != null, enter = expandVertically(tween(400, easing = EmphEasing)) + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                Text(testResult.orEmpty(), Modifier.padding(8.dp), color = if (testFailed) colors.error else colors.tertiary, fontSize = 15.sp)
+                if (testFailed) ErrorMessage(testResult.orEmpty(), Modifier.padding(8.dp), color = colors.error, fontSize = 15.sp, details = testResult.orEmpty())
+                else Text(testResult.orEmpty(), Modifier.padding(8.dp), color = colors.tertiary, fontSize = 15.sp)
             }
             Row(Modifier.fillMaxWidth().padding(start = 4.dp, top = 28.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (selectionMode) "已选 ${selectedModelIds.size} 项" else "模型", fontSize = 18.sp, fontWeight = FontWeight.Medium)
@@ -560,7 +561,8 @@ private fun ModelConfigSheet(
             SettingsField(id, { id = it; idRevision++; matchedModel = null; error = null }, mono = true, placeholder = "例如 gpt-5")
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (matching) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
-                Text(matchStatus, Modifier.weight(1f), color = if (matchFailed) colors.error else colors.onSurfaceVariant, fontSize = 14.sp)
+                if (matchFailed) ErrorMessage(matchStatus, Modifier.weight(1f), color = colors.error, fontSize = 14.sp, details = matchStatus)
+                else Text(matchStatus, Modifier.weight(1f), color = colors.onSurfaceVariant, fontSize = 14.sp)
                 TextButton({ matchedModel = null; retryMatch++ }, enabled = id.isNotBlank() && !matching) { Text("重新匹配") }
             }
             if (model != null) {
@@ -618,7 +620,7 @@ private fun ModelConfigSheet(
                     if (type == ProviderApiType.MESSAGE) Text("预算须为至少 1024 的整数，且小于上方编辑的最大输出 token。", Modifier.padding(start = 4.dp, top = 8.dp), fontSize = 14.sp, color = colors.onSurfaceVariant)
                 }
             }
-            error?.let { Text(it, Modifier.padding(top = 12.dp), color = colors.error, fontSize = 16.sp) }
+            error?.let { ErrorMessage(it, Modifier.padding(top = 12.dp), color = colors.error, fontSize = 16.sp, details = it) }
             Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 onDelete?.let { OutlinedButton(it, modifier = Modifier.height(54.dp)) { Symbol("delete"); Spacer(Modifier.width(8.dp)); Text("删除", fontSize = 18.sp) } }
                 SettingsSaveButton({

@@ -54,7 +54,7 @@ internal fun ImageDetailScreen(image: PreparedGraphic.Raster, title: String, onB
                 }
                 if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (saveHandler == null) Text("当前环境不支持保存图片", Modifier.padding(12.dp), color = colors.onSurfaceVariant)
-                message?.let { Text(it, Modifier.padding(12.dp), color = colors.onSurfaceVariant) }
+                message?.let { if (it.startsWith("图片保存失败")) ErrorMessage(it, Modifier.padding(12.dp), color = colors.error, details = it) else Text(it, Modifier.padding(12.dp), color = colors.onSurfaceVariant) }
                 Box(Modifier.fillMaxWidth().weight(1f).clipToBounds()
                     .pointerInput(image) { detectTapGestures(onDoubleTap = { reset() }) }
                     .pointerInput(image) {

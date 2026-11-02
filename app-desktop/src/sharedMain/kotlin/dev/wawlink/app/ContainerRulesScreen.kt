@@ -243,7 +243,7 @@ private fun RulesBrowser(app: AppCoordinator, config: ContainerConfig, kind: Gue
                 failure?.let { message -> item("failure") {
                     Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.errorContainer) {
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                            Text(message, color = MaterialTheme.colorScheme.onErrorContainer)
+                            ErrorMessage(message, color = MaterialTheme.colorScheme.onErrorContainer)
                             if (retry != null) TextButton({ retry?.invoke() }, enabled = !busy) { Text("重试") }
                         }
                     }
@@ -359,7 +359,7 @@ private fun RulesBrowser(app: AppCoordinator, config: ContainerConfig, kind: Gue
                 OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("名称") }, singleLine = true,
                     enabled = !busy, shape = RoundedCornerShape(16.dp), isError = invalid != null && name.isNotEmpty(),
                     supportingText = { Text(invalid?.takeIf { name.isNotEmpty() } ?: if (action.folder || action.source != null) "不会覆盖同名条目" else "例如 ${kind.example}；不会覆盖同名条目") })
-                failure?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                failure?.let { ErrorMessage(it) }
                 Button({
                     val target = name
                     run(if (action.source != null) "正在重命名" else "正在创建") {
@@ -383,7 +383,7 @@ private fun RulesBrowser(app: AppCoordinator, config: ContainerConfig, kind: Gue
             text = { Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(source.orEmpty())
                 Text("此操作无法撤销。删除前会检查符号链接、特殊文件、受保护挂载及权限。外部并发修改仍可能造成部分删除；失败后请刷新目录检查。")
-                failure?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                failure?.let { ErrorMessage(it) }
             } },
             confirmButton = { TextButton({
                 if (source != null) run("正在删除${kind.label}") {

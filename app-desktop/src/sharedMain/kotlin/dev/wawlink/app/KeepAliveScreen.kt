@@ -18,6 +18,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.wawlink.ui.AgentTopBar
+import dev.wawlink.ui.ErrorMessage
 import dev.wawlink.ui.Symbol
 
 /** Android owns system settings and resources; Desktop never pretends to hold them. */
@@ -74,7 +75,7 @@ internal fun KeepAliveScreen(app: AppCoordinator, files: HostFiles, onBack: () -
                     Symbol("chevron_right")
                 }
                 status.error?.let { message ->
-                    Text(message, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error, fontSize = 16.sp)
+                    ErrorMessage(message, Modifier.padding(12.dp), fontSize = 16.sp)
                 }
                 Text("保活会增加耗电，仍受系统及 ROM 限制；强行停止后不会自动恢复。",
                     Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)

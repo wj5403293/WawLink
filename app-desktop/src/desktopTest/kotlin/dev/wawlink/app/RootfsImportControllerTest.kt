@@ -16,6 +16,7 @@ class RootfsImportControllerTest {
         private val base = LocalContainerRuntime(RuntimePaths(directory.resolve("runtime")))
         val containers = MutableStateFlow(configs.map { ContainerInfo(it, stopGeneration = 7) })
         val inspectCalls = AtomicInteger()
+        val inspectionProgress = java.util.concurrent.CopyOnWriteArrayList<(DeploymentProgress) -> Unit>()
         val commitCalls = mutableListOf<Commit>()
         val commitStarted = CompletableDeferred<Unit>()
         val updates = mutableListOf<ContainerConfig>()
@@ -30,15 +31,16 @@ class RootfsImportControllerTest {
         var cleanupWasActive = false
         val runtime = object : ContainerRuntime by base {
             override val containers = this@Fixture.containers
-            override suspend fun inspectRootfsArchive(source: String, name: String, engine: ContainerEngineType, expectedSha256: String?): RootfsImportInspection {
+            override suspend fun inspectRootfsArchive(source: String, name: String, engine: ContainerEngineType, expectedSha256: String?, onProgress: (DeploymentProgress) -> Unit): RootfsImportInspection {
                 val attempt = inspectCalls.incrementAndGet()
+                inspectionProgress += onProgress
                 inspectGate?.await()
                 if (failInspection) error("归档校验失败")
                 val id = "inspection-$attempt"
                 liveHandles += id
                 return RootfsImportInspection(id, name, ContainerMetadata(title = title, version = "archive-v2"))
             }
-            override suspend fun importRootfs(inspectionId: String, name: String, mode: RootfsImportMode, targetId: String?): ContainerConfig {
+            override suspend fun importRootfs(inspectionId: String, name: String, mode: RootfsImportMode, targetId: String?, onProgress: (DeploymentProgress) -> Unit): ContainerConfig {
                 assertTrue(inspectionId in liveHandles)
                 commitCalls += Commit(inspectionId, name, mode, targetId)
                 commitStarted.complete(Unit)
@@ -267,6 +269,27 @@ class RootfsImportControllerTest {
             assertEquals("/bin/sh", updates.single().shell)
         }
     }
+    @Test fun cancelledImportProgressCannotOverwriteAnActiveRetry() = runBlocking {
+        withFixture {
+            inspectGate = CompletableDeferred()
+            controller.submit()
+            withTimeout(5_000) { while (inspectionProgress.size != 1) yield() }
+            val oldProgress = inspectionProgress.single()
+            controller.cancel()
+            idle()
+            inspectGate = CompletableDeferred()
+            controller.submit()
+            withTimeout(5_000) { while (inspectionProgress.size != 2) yield() }
+            val current = DeploymentProgress("retry", "incoming", null, "扫描文件属主")
+            inspectionProgress.last()(current)
+            oldProgress(DeploymentProgress("cancelled", "incoming", 1f, "已完成"))
+            assertEquals(RootfsImportPhase.PREPARING, controller.state.value.phase)
+            assertEquals(current, controller.state.value.progress)
+            assertEquals("/archive.tar.gz", controller.state.value.draft.source)
+            assertTrue(commitCalls.isEmpty())
+        }
+    }
+
 
     @Test fun cancelDiscardsInspectionButPreservesAllFormAndDecisionDrafts() = runBlocking {
         withFixture(listOf(existing("old", "incoming"))) {

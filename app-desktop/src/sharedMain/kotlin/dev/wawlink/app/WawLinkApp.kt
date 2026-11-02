@@ -390,7 +390,10 @@ fun WawLinkApp(app: AppCoordinator, files: HostFiles, navigation: HostNavigation
                 dismissButton = { TextButton({ app.dismissOmpSetup(setup) }) { Text("取消") } },
             )
         } else notice?.let { item ->
-            AlertDialog(onDismissRequest = app::dismissNotice, title = { Text(if (item.error) "操作失败" else "提示") }, text = { Text(item.text, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) }, confirmButton = { TextButton(onClick = app::dismissNotice) { Text("知道了") } })
+            AlertDialog(onDismissRequest = app::dismissNotice, title = { Text(if (item.error) "操作失败" else "提示") }, text = {
+                if (item.error) ErrorMessage(item.text, details = item.details ?: item.text)
+                else Text(item.text, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()))
+            }, confirmButton = { TextButton(onClick = app::dismissNotice) { Text("知道了") } })
         }
     }
 }

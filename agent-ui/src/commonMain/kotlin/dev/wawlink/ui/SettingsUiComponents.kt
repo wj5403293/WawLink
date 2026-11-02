@@ -146,7 +146,7 @@ internal fun SettingsFailure(queue: SettingsWriteQueue, onRetry: () -> Unit) {
     if (queue.failures.isNotEmpty()) {
         Surface(color = LocalAgentColors.current.errorContainer, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
             Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(queue.failures.values.first(), Modifier.weight(1f), color = LocalAgentColors.current.error, fontSize = 15.sp)
+                ErrorMessage(queue.failures.values.first(), Modifier.weight(1f), color = LocalAgentColors.current.error, fontSize = 15.sp, details = queue.failures.values.first())
                 TextButton(onRetry) { Text("重试") }
             }
         }
@@ -160,7 +160,7 @@ internal fun SettingsSyncError(message: String?) {
         Surface(color = colors.errorContainer, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
             Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Symbol("error", tint = colors.error)
-                Text(message, color = colors.error, fontSize = 17.sp)
+                ErrorMessage(message, Modifier.weight(1f), color = colors.error, fontSize = 17.sp, details = message)
             }
         }
     }

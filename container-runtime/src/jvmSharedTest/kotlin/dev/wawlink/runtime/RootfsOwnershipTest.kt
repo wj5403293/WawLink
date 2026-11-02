@@ -74,15 +74,15 @@ class RootfsOwnershipTest {
     @Test fun rootSnapshotAcceptsCompletionAfterAnExactFullBatch() {
         Fixture().use { f ->
             val initial = RootfsOwnership.snapshot(f.config).size
-            repeat(128 - initial) { f.put("file-$it") }
+            repeat(512 - initial) { f.put("file-$it") }
             val entries = RootfsOwnership.snapshot(f.config, f::run)
-            assertEquals(128, entries.size)
+            assertEquals(512, entries.size)
         }
     }
 
     @Test fun rootSnapshotPreservesCompleteEntriesAcrossBatches() {
         Fixture().use { f ->
-            repeat(300) { f.put("batch/file $it") }
+            repeat(1100) { f.put("batch/file $it") }
             val unusual = f.put("batch/quote ' and \\ literal [*] ?")
             f.put("WAWLINK_SNAPSHOT_COMPLETE")
             Files.createLink(File(f.root, "hard alias").toPath(), unusual.toPath())
@@ -91,6 +91,61 @@ class RootfsOwnershipTest {
             val expected = RootfsOwnership.snapshot(f.config).associateBy { it.path }
             val actual = RootfsOwnership.snapshot(f.config, f::run).associateBy { it.path }
             assertEquals(expected, actual)
+        }
+    }
+
+    @Test fun rootSnapshotPreservesOpaqueLinkTargetsWithAndWithoutNativePrintf() {
+        Fixture().use { f ->
+            val targets = listOf("missing\n", "\nmissing\n\n", "../literal\\ name ?[*]'\u0001\n")
+            targets.forEachIndexed { index, target ->
+                Files.createSymbolicLink(File(f.root, "link-$index").toPath(), java.nio.file.Path.of(target))
+            }
+            val expected = RootfsOwnership.snapshot(f.config).associateBy { it.path }
+            assertEquals(expected, RootfsOwnership.snapshot(f.config, f::run).associateBy { it.path })
+            File(f.tools, "find").apply {
+                writeText("#!/bin/sh\nfor arg do [ \"\$arg\" != -printf ] || exit 1; done\nexec /usr/bin/find \"\$@\"\n")
+                setExecutable(true)
+            }
+            assertEquals(expected, RootfsOwnership.snapshot(f.config, f::run).associateBy { it.path })
+        }
+    }
+
+    @Test fun rootSnapshotRejectsLinkReplacementBetweenNativePasses() {
+        Fixture().use { f ->
+            val link = File(f.root, "link")
+            val original = File(f.root, "link-before")
+            Files.createSymbolicLink(link.toPath(), java.nio.file.Path.of("original"))
+            File(f.tools, "stat").writeText("""
+                #!/bin/sh
+                if [ ! -L ${shellQuote(original.path)} ]; then
+                    /bin/mv -- ${shellQuote(link.path)} ${shellQuote(original.path)} || exit
+                    /bin/ln -s changed ${shellQuote(link.path)} || exit
+                fi
+                exec /usr/bin/stat "${'$'}@"
+            """.trimIndent() + "\n")
+            assertFailsWith<IllegalArgumentException> { RootfsOwnership.snapshot(f.config, f::run) }
+            assertEquals("changed", Files.readSymbolicLink(link.toPath()).toString())
+            assertEquals("original", Files.readSymbolicLink(original.toPath()).toString())
+        }
+    }
+
+    @Test fun rootSnapshotRejectsNativeLinkProducerFailureAfterOutput() {
+        Fixture().use { f ->
+            Files.createSymbolicLink(File(f.root, "link").toPath(), java.nio.file.Path.of("missing"))
+            File(f.tools, "find").apply {
+                writeText("""
+                    #!/bin/sh
+                    probe=0
+                    formatted=0
+                    for arg do
+                        case "${'$'}arg" in -maxdepth) probe=1 ;; -printf) formatted=1 ;; esac
+                    done
+                    /usr/bin/find "${'$'}@" || exit
+                    if [ "${'$'}formatted" -eq 1 ] && [ "${'$'}probe" -eq 0 ]; then exit 23; fi
+                """.trimIndent() + "\n")
+                setExecutable(true)
+            }
+            assertFailsWith<IllegalStateException> { RootfsOwnership.snapshot(f.config, f::run) }
         }
     }
 
@@ -136,7 +191,7 @@ class RootfsOwnershipTest {
             for ((index, value) in invalid) {
                 val row = valid.toMutableList().apply { this[index] = value }.joinToString(":") + "\n"
                 f.statOutput.writeText(row.repeat(count))
-                assertFailsWith<IllegalArgumentException>("metadata field $index = $value") { RootfsOwnership.snapshot(f.config, f::run) }
+                assertFails("metadata field $index = $value") { RootfsOwnership.snapshot(f.config, f::run) }
             }
         }
     }
