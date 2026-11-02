@@ -14,6 +14,36 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 private const val OWNERSHIP_SCAN_COMPLETE = "WAWLINK_SNAPSHOT_COMPLETE"
+private val OWNERSHIP_SCAN_WORKER = """
+    set -eu
+    complete=
+    for p do
+        shift
+        if [ "${'$'}p" = '$OWNERSHIP_SCAN_COMPLETE' ]; then complete=1; else set -- "${'$'}@" "${'$'}p"; fi
+    done
+    if [ "${'$'}#" -gt 0 ]; then
+        metadata=${'$'}(stat -c '%u:%g:%a:%d:%i:%h:%f:%s' -- "${'$'}@") || exit
+        # Only numeric metadata is split; paths remain quoted positional arguments.
+        set -f
+        IFS='
+    '
+        for m in ${'$'}metadata; do
+            [ "${'$'}#" -gt 0 ] || exit 1
+            p=${'$'}1
+            shift
+            link=
+            marker=
+            if [ -L "${'$'}p" ]; then
+                marker=${'$'}(printf '\001')
+                link=${'$'}(readlink -n -- "${'$'}p" && printf '\001') || exit
+                link=${'$'}{link%${'$'}marker}
+            fi
+            printf '%s\000%s\000%s\000%s\000' "${'$'}p" "${'$'}m" "${'$'}link" "${'$'}marker"
+        done
+        [ "${'$'}#" -eq 0 ] || exit 1
+    fi
+    if [ -n "${'$'}complete" ]; then printf '%s\000' '$OWNERSHIP_SCAN_COMPLETE'; fi
+""".trimIndent()
 
 /** The sidecar is App-private and outside the guest tree; tar headers carry portable ownership. */
 internal object RootfsOwnership {
@@ -129,12 +159,13 @@ internal object RootfsOwnership {
         val base = root(config)
         val excluded = exclusions(config, rootCommand)
         if (rootCommand != null) {
-            val worker = "for p do if [ \"\$p\" = '$OWNERSHIP_SCAN_COMPLETE' ]; then printf '%s\\000' '$OWNERSHIP_SCAN_COMPLETE'; continue; fi; m=\$(stat -c '%u:%g:%a:%d:%i:%h:%f:%s' -- \"\$p\") || exit; link=; marker=; if [ -L \"\$p\" ]; then marker=\$(printf '\\001'); link=\$(readlink -n -- \"\$p\" && printf '\\001') || exit; link=\${link%\$marker}; fi; printf '%s\\000%s\\000%s\\000%s\\000' \"\$p\" \"\$m\" \"\$link\" \"\$marker\"; done"
+            // stat -c emits one numeric row per argument on GNU, BusyBox and Toybox; no per-inode process is needed.
             // BusyBox find can overfill exec's argument limit; the sentinel also detects producer failure without pipefail.
-            val output = rootCommand("$OWNERSHIP_SCAN_MARKER\nset -eu\ncd ${shellQuote(base.path)}\nworker_shell=\$(command -v sh)\n{ find . -xdev \\( ${prune(excluded)} \\) -prune -o -print0 || exit; printf '%s\\000' '$OWNERSHIP_SCAN_COMPLETE'; } | xargs -0 -r -n 128 -s 16384 \"\$worker_shell\" -c ${shellQuote(worker)} ownership")
+            val output = rootCommand("$OWNERSHIP_SCAN_MARKER\nset -eu\ncd ${shellQuote(base.path)}\nworker_shell=\$(command -v sh)\n{ find . -xdev \\( ${prune(excluded)} \\) -prune -o -print0 || exit; printf '%s\\000' '$OWNERSHIP_SCAN_COMPLETE'; } | xargs -0 -r -n 128 -s 16384 \"\$worker_shell\" -c ${shellQuote(OWNERSHIP_SCAN_WORKER)} ownership")
             val fields = output.split('\u0000')
             require(fields.size >= 6 && fields.last() == "" && fields[fields.lastIndex - 1] == OWNERSHIP_SCAN_COMPLETE && (fields.size - 2) % 4 == 0) { "属主扫描协议不完整" }
             return (0 until fields.size - 2 step 4).map { index ->
+                require(fields[index] == "." || fields[index].startsWith("./")) { "属主扫描路径无效" }
                 val path = if (fields[index] == ".") "/" else fields[index].removePrefix(".")
                 require(validPath(path) && !excluded(path, excluded)) { "属主扫描越过保护边界：$path" }
                 val values = fields[index + 1].split(':')
@@ -145,12 +176,14 @@ internal object RootfsOwnership {
                 require(uid != null && gid != null && uid in 0..MAX_ID && gid in 0..MAX_ID && mode != null && mode in 0..MODE_MASK &&
                     device != null && device >= 0 && inode != null && inode >= 0 && links != null && links > 0 && kind != null &&
                     when (kind) { 0x1000, 0x2000, 0x4000, 0x6000, 0x8000, 0xA000, 0xC000 -> true; else -> false } && size != null && size >= 0) { "属主扫描元数据无效：$path" }
+                require(if (kind == 0xA000) fields[index + 3] == "\u0001" else fields[index + 2].isEmpty() && fields[index + 3].isEmpty()) { "属主扫描链接类型不一致：$path" }
                 Entry(path, uid, gid, mode, device, inode, links, kind, if (kind == 0xA000) fields[index + 2] else null, size)
             }
         }
         val entries = mutableListOf<Entry>()
         fun add(path: Path) {
             val guest = if (path == base.toPath()) "/" else "/" + base.toPath().relativize(path)
+            require(validPath(guest)) { "属主扫描路径无效：$guest" }
             val values = Files.readAttributes(path, "unix:uid,gid,mode,dev,ino,nlink,size", NOFOLLOW_LINKS)
             val mode = (values.getValue("mode") as Number).toInt()
             val kind = mode and 0xF000
@@ -290,27 +323,54 @@ internal object RootfsOwnership {
         checkHardlinks(entries, manifest.entries)
         checkActive()
         save(base, manifest.copy(pending = OwnershipMigration(from, to, entries.associate { it.path to migrationIdentity(it) })))
+        data class Batch(val parent: String, val uid: Long, val gid: Long, val mode: Int, val symbolic: Boolean)
+        val index = entries.associateBy { it.path }
         val unique = HashSet<String>()
-        val ordered = entries.filter { it.directory || it.symbolicLink || unique.add(it.identity) }.sortedByDescending { it.path.count { c -> c == '/' } }
-        val rootIdentity = entries.first { it.path == "/" }.identity
-        for (chunk in ordered.chunked(80)) {
+        val batches = linkedMapOf<Batch, MutableList<Entry>>()
+        for (entry in entries.sortedByDescending { it.path.count { c -> c == '/' } }) {
+            if (!entry.directory && !entry.symbolicLink && !unique.add(entry.identity)) continue
+            val logical = manifest.entries.getValue(entry.path)
+            val uid = if (to == ContainerEngineType.CHROOT) logical.uid else ChrootHostIdentity.uid.toLong()
+            val gid = if (to == ContainerEngineType.CHROOT) logical.gid else ChrootHostIdentity.gid.toLong()
+            if (entry.uid == uid && entry.gid == gid && (entry.symbolicLink || entry.mode == logical.mode)) continue
+            val parent = entry.path.substringBeforeLast('/').ifEmpty { "/" }
+            batches.getOrPut(Batch(parent, uid, gid, logical.mode, entry.symbolicLink)) { mutableListOf() }.add(entry)
+        }
+        val rootIdentity = index.getValue("/").identity
+        val prefix = "set -eu\ncd ${shellQuote(base.path)}\n[ \"\$(stat -c '%d:%i' .)\" = ${shellQuote(rootIdentity)} ] || exit 1\n$APPLY_HELPER\n"
+        val commands = StringBuilder()
+        val pending = mutableListOf<Entry>()
+        fun flush() {
+            if (pending.isEmpty()) return
             checkActive()
             val currentExclusions = exclusions(combined, rootCommand)
-            check(chunk.none { excluded(it.path, currentExclusions) }) { "迁移期间出现新的挂载，已停止且未提交引擎配置" }
-            val script = buildString {
-                append("set -eu\ncd ").append(shellQuote(base.path)).append("\n[ \"\$(stat -c '%d:%i' .)\" = ").append(shellQuote(rootIdentity)).append(" ] || exit 1\n")
-                append(APPLY_HELPER).append('\n')
-                for (entry in chunk) {
-                    val logical = manifest.entries.getValue(entry.path)
-                    val uid = if (to == ContainerEngineType.CHROOT) logical.uid else ChrootHostIdentity.uid.toLong()
-                    val gid = if (to == ContainerEngineType.CHROOT) logical.gid else ChrootHostIdentity.gid.toLong()
-                    append("apply ").append(shellQuote(if (entry.path == "/") "." else ".${entry.path}"))
-                        .append(' ').append(shellQuote(entry.identity)).append(' ').append(entry.kind).append(' ').append(entry.links)
-                        .append(' ').append(uid).append(':').append(gid).append(' ').append(logical.mode.toString(8)).append('\n')
-                }
-            }
-            rootCommand(script)
+            check(pending.none { excluded(it.path, currentExclusions) }) { "迁移期间出现新的挂载，已停止且未提交引擎配置" }
+            rootCommand(prefix + commands)
+            commands.setLength(0)
+            pending.clear()
         }
+        for ((batch, members) in batches) for (chunk in members.chunked(32)) {
+            val before = chunk.joinToString("\n") { "${it.identity}:${it.links}:${it.uid}:${it.gid}:${it.mode.toString(8)}:${(it.kind or it.mode).toString(16)}" }
+            val identities = chunk.joinToString("\n") { "${it.identity}:${it.links}" }
+            val after = chunk.joinToString("\n") {
+                val mode = if (it.symbolicLink) it.mode else batch.mode
+                "${it.identity}:${it.links}:${batch.uid}:${batch.gid}:${mode.toString(8)}:${(it.kind or mode).toString(16)}"
+            }
+            val command = buildString {
+                append("apply ").append(shellQuote(if (batch.parent == "/") "." else ".${batch.parent}"))
+                    .append(' ').append(shellQuote(index.getValue(batch.parent).identity))
+                    .append(' ').append(shellQuote(before)).append(' ').append(shellQuote(identities)).append(' ').append(shellQuote(after))
+                    .append(' ').append(batch.uid).append(':').append(batch.gid).append(' ').append(batch.mode.toString(8))
+                    .append(' ').append(if (batch.symbolic) '1' else '0')
+                for (entry in chunk) append(' ').append(shellQuote(if (entry.path == "/") "." else "./${entry.path.substringAfterLast('/')}"))
+                append('\n')
+            }
+            // Below Android's per-argument limit even with three-byte UTF-8 path characters.
+            if (commands.length + command.length > 32 * 1024) flush()
+            commands.append(command)
+            pending.addAll(chunk)
+        }
+        flush()
         checkActive()
         save(base, manifest.copy(physical = to, pending = null))
     }
@@ -362,30 +422,26 @@ internal object RootfsOwnership {
     private val APPLY_HELPER = """
         fail() { echo "属主迁移边界或 inode 已变化：${'$'}1" >&2; exit 1; }
         apply() (
-            path=${'$'}1; identity=${'$'}2; kind=${'$'}3; links=${'$'}4; owner=${'$'}5; mode=${'$'}6
-            if [ "${'$'}path" = . ]; then parent=.; name=.; else parent=${'$'}{path%/*}; name=./${'$'}{path##*/}; fi
-            # Parent components were discovered without following links. Recheck before pinning cwd.
+            parent=${'$'}1; parent_id=${'$'}2; before=${'$'}3; identities=${'$'}4; after=${'$'}5
+            owner=${'$'}6; mode=${'$'}7; symbolic=${'$'}8; shift 8
+            # Check components without following links, then pin the shared parent once.
             current=.
             rest=${'$'}{parent#./}
             while [ "${'$'}rest" != . ] && [ -n "${'$'}rest" ]; do
                 component=${'$'}{rest%%/*}; current=${'$'}current/${'$'}component
-                [ ! -L "${'$'}current" ] && [ -d "${'$'}current" ] || fail "${'$'}path"
+                [ ! -L "${'$'}current" ] && [ -d "${'$'}current" ] || fail "${'$'}parent"
                 case "${'$'}rest" in */*) rest=${'$'}{rest#*/};; *) rest=;; esac
             done
-            cd -P "${'$'}parent" || fail "${'$'}path"
-            [ "${'$'}(stat -c '%d:%i' -- "${'$'}name")" = "${'$'}identity" ] || fail "${'$'}path"
-            [ "${'$'}(stat -c %h -- "${'$'}name")" = "${'$'}links" ] || fail "${'$'}path"
-            chown -h "${'$'}owner" "${'$'}name"
-            [ "${'$'}(stat -c '%d:%i' -- "${'$'}name")" = "${'$'}identity" ] || fail "${'$'}path"
-            if [ "${'$'}kind" != 40960 ]; then
-                [ ! -L "${'$'}name" ] || fail "${'$'}path"
-                chmod "${'$'}mode" "${'$'}name"
+            cd -P "${'$'}parent" || fail "${'$'}parent"
+            [ "${'$'}(stat -c '%d:%i' .)" = "${'$'}parent_id" ] || fail "${'$'}parent"
+            [ "${'$'}(stat -c '%d:%i:%h:%u:%g:%a:%f' -- "${'$'}@")" = "${'$'}before" ] || fail "${'$'}parent"
+            chown -h "${'$'}owner" "${'$'}@"
+            [ "${'$'}(stat -c '%d:%i:%h' -- "${'$'}@")" = "${'$'}identities" ] || fail "${'$'}parent"
+            if [ "${'$'}symbolic" != 1 ]; then
+                for name do [ ! -L "${'$'}name" ] || fail "${'$'}name"; done
+                chmod "${'$'}mode" "${'$'}@"
             fi
-            [ "${'$'}(stat -c '%d:%i' -- "${'$'}name")" = "${'$'}identity" ] || fail "${'$'}path"
-            [ "${'$'}(stat -c '%u:%g' -- "${'$'}name")" = "${'$'}owner" ] || fail "${'$'}path"
-            if [ "${'$'}kind" != 40960 ]; then
-                [ "${'$'}(stat -c %a -- "${'$'}name")" = "${'$'}mode" ] || fail "${'$'}path"
-            fi
+            [ "${'$'}(stat -c '%d:%i:%h:%u:%g:%a:%f' -- "${'$'}@")" = "${'$'}after" ] || fail "${'$'}parent"
         )
     """.trimIndent()
 }

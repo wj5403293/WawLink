@@ -21,6 +21,8 @@ import org.apache.commons.compress.archivers.tar.TarConstants
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 
+internal const val ROOTFS_SIZE_SCAN_MARKER = "# WAWLINK_ROOTFS_SIZE_SCAN"
+
 /** Extraction never follows an archive-created link while writing. Absolute guest links are
  * rebased to relative links, so inspecting the extracted rootfs on the host is safe as well. */
 internal object RootfsArchives {
@@ -445,6 +447,71 @@ internal object RootfsArchives {
             }
         })
         RootfsOwnership.deleteManifest(file)
+    }
+
+    /** Count logical bytes per regular-file path, including each hard link but never a symlink. */
+    fun privilegedSize(config: ContainerConfig, rootCommand: (String) -> String): Long {
+        val excluded = RootfsOwnership.exclusions(config, rootCommand)
+        val prune = excluded.joinToString(" -o ") {
+            "-path " + shellQuote("." + it.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?").replace("[", "\\["))
+        }
+        val producerComplete = "WAWLINK_SIZE_PRODUCER_COMPLETE"
+        val workersComplete = "WAWLINK_SIZE_WORKERS_COMPLETE"
+        // Keep each stat invocation bounded. Android mksh uses 32-bit arithmetic, so only
+        // numeric metadata crosses the shell; Kotlin performs checked Long aggregation.
+        val worker = """
+            set -efu
+            complete=0
+            for path do
+                shift
+                if [ "${'$'}path" = '$producerComplete' ]; then complete=1; else set -- "${'$'}@" "${'$'}path"; fi
+            done
+            # Buffer this batch so a failed stat cannot publish its partial numeric output.
+            if [ "${'$'}#" -gt 0 ]; then
+                values=${'$'}(stat -c '%f:%s' -- "${'$'}@") || exit
+                printf '%s\n' "${'$'}values"
+            fi
+            if [ "${'$'}complete" -eq 1 ]; then printf '%s\n' '$producerComplete'; fi
+        """.trimIndent()
+        val output = rootCommand("""
+            $ROOTFS_SIZE_SCAN_MARKER
+            set -eu
+            cd ${shellQuote(File(config.rootfsPath).canonicalPath)}
+            worker_shell=${'$'}(command -v sh)
+            {
+                { find . -xdev \( $prune \) -prune -o -type f -print0 || exit; printf '%s\000' '$producerComplete'; } |
+                    xargs -0 -r -n 128 -s 16384 "${'$'}worker_shell" -c ${shellQuote(worker)} size || exit
+                printf '%s\n' '$workersComplete'
+            }
+        """.trimIndent())
+        var total = 0L
+        var producer = false
+        var workers = false
+        for (line in output.lineSequence()) {
+            when (line) {
+                producerComplete -> {
+                    require(!producer && !workers) { "Rootfs 体积扫描完成标记无效" }
+                    producer = true
+                }
+                workersComplete -> {
+                    require(producer && !workers) { "Rootfs 体积扫描未完整完成" }
+                    workers = true
+                }
+                "" -> require(workers) { "Rootfs 体积扫描包含空元数据" }
+                else -> {
+                    require(!producer && !workers) { "Rootfs 体积扫描完成后仍有元数据" }
+                    val separator = line.indexOf(':')
+                    require(separator > 0) { "Rootfs 体积元数据无效" }
+                    val mode = line.substring(0, separator).toIntOrNull(16)
+                    val size = line.substring(separator + 1).toLongOrNull()
+                    require(mode != null && mode >= 0 && size != null && size >= 0) { "Rootfs 体积元数据无效" }
+                    if ((mode and 0xF000) == 0x8000) total = Math.addExact(total, size)
+                }
+            }
+        }
+        // Neither a failed find nor an earlier failed xargs worker may publish a partial sum.
+        require(producer && workers) { "Rootfs 体积扫描协议不完整" }
+        return total
     }
 
     fun size(rootfs: File, excluded: Set<String> = emptySet()): Long {

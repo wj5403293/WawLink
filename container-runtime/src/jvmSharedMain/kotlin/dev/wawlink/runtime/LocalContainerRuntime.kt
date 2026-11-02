@@ -150,16 +150,9 @@ class LocalContainerRuntime internal constructor(
     private fun ensureOpen() = check(!closed && !closing) { "容器运行时已关闭" }
     private fun config(id: String): ContainerConfig = configurations[id] ?: error("找不到容器：$id")
     private fun sizeOf(config: ContainerConfig): Long {
-        if (config.engine == ContainerEngineType.CHROOT) {
-            return RootfsOwnership.snapshot(config, engines::rootCommand).asSequence().filter { it.kind == 0x8000 }.sumOf { it.size }
-        }
-        val root = File(config.rootfsPath).canonicalFile
-        val rootPath = root.toPath()
-        val excluded = config.mounts.mapNotNull { mount ->
-            val target = File(root, mount.target.trimStart('/')).canonicalFile.toPath()
-            if (target.startsWith(rootPath)) rootPath.relativize(target).toString() else null
-        }.toSet()
-        return measureRootfs(root, excluded)
+        if (config.engine == ContainerEngineType.CHROOT) return RootfsArchives.privilegedSize(config, engines::rootCommand)
+        val excluded = RootfsOwnership.exclusions(config).map { it.removePrefix("/") }.toSet()
+        return measureRootfs(File(config.rootfsPath).canonicalFile, excluded)
     }
 
     /** Called during construction or under mutex; only the latest exact configuration may publish. */

@@ -1071,7 +1071,7 @@ env WAWLINK_TEST_HOST_TOOLS=/usr/bin/busybox WAWLINK_TEST_BUSYBOX=/usr/bin/busyb
 - 旧容器的启发式处理只执行一次：按有效账户及 HOME 推断属主，恢复明确的临时目录 sticky、sudo suid、SSH/VNC/认证状态私有权限；不宣称能精确恢复已丢失的原始 UID/GID。后续启动不全树扫描或重复重设模式；PRoot/Proroot 的正常启动仍能先修复有限管理路径的 owner 访问。
 - `RootfsHostFiles` 统一元数据、布局、DNS 和组数据库的离线读写。chroot 走 Root，完成私有暂存后设定逻辑属主并恢复完整模式，复核内容哈希和 inode/属主/模式后原子替换；同 Rootfs 的提交与 finalizer 隔离。拒绝外部修改、链接/硬链接写入、实际挂载和失效根/父目录，清理失败保留真实错误；不承诺路径式 Shell 操作能抵御任意恶意并发置换，或内容与 sidecar 跨文件事务。
 - chroot 私有内容通过可取消、失败可回收的 Root tar 流导出，脱敏继续隔离 HOME、保护路径及硬链接别名。完整导出不要求解析 passwd、不修改源文件模式；新文件的属主推断支持当前配置用户的 HOME 覆盖。
-- Root 扫描以 NUL 分隔路径，按最多 128 项/16 KiB 调用 worker；校验生产者完成标记，避免 BusyBox `find -exec … {} +` 超过参数上限或把生产者失败误当完整结果。链接目标精确保留，包括真实尾随换行，不混入 `readlink` 的输出分隔符；整树快照使用单独的 300 秒/256 MiB 上限，普通命令限制不扩大。
+- Root 扫描以 NUL 分隔路径，按最多 128 项/16 KiB 调用 worker；每批使用一次 native stat，不在 worker 内逐 inode 启动 stat。校验生产者完成标记，避免 BusyBox `find -exec … {} +` 超过参数上限或把生产者失败误当完整结果。链接目标精确保留，包括真实尾随换行，不混入 `readlink` 的输出分隔符；整树快照使用单独的 300 秒/256 MiB 上限，普通命令限制不扩大。
 
 对提供的完整 `IDADroid-v0-1-1.tar.zstd` 使用生产解压/导出/再解压：导入清单有 57,104 项，`/root/.omp/agent` 保留逻辑 `0:0` 和 700；在隔离 PRoot/QEMU + 原有 Bun 内调用 OMP 的真实 `assertOwnerPrivateDir`，观察目录收紧为 700，再连续两轮原子替换并读取 600 文件；往返后保留文件正文及逻辑 `0:0:600`。只使用隔离烟测 HOME，不加载认证或发送模型请求，原归档未修改。
 
@@ -1084,4 +1084,36 @@ env WAWLINK_TEST_HOST_TOOLS=/usr/bin/busybox WAWLINK_TEST_BUSYBOX=/usr/bin/busyb
 | 往返归档 | 1,698,354,608 |
 
 本轮没有真实特权 chroot、跨 UID 内核或 Android SELinux/ROM 验收，不使用 Android 模拟器；Shell/UID 夹具和 PRoot/QEMU 结果不能写成 Poco F6 真机已修复。
+
+### 启动与导入校验等待回归修复（2026-11-02）
+
+针对覆盖安装后容器长时间启动、Rootfs 导入长期显示校验的反馈，定位到 `5a43f26` 新增的确定性开销：首次 chroot 接入与导入注册执行整树属主迁移，扫描 worker 和迁移脚本逐 inode 启动外部命令；chroot 体积统计还复用了包含 UID/GID、链接目标等字段的完整快照。导入页准备状态同时覆盖解压检查和后续提交，不能仅凭“校验”文字断言卡在 SHA-256。所附 Android 日志没有容器异常栈、ANR 或 FATAL EXCEPTION，厂商 ColorX/Oplus 日志不足以证明容器失败原因。
+
+扫描现改为有界多路径 native stat；迁移按同父目录、目标属主和模式分组，固定父目录 cwd，批量复核完整元数据、执行 `chown -h`、恢复模式并复核结果；物理属主和模式已满足目标时不重写。全树预检、硬链接计划、挂载边界、迁移 journal、取消检查和旧 inode 拒绝均保留，不用删校验或放宽权限换速度。
+
+体积统计只传输普通文件类型与大小，不构造完整 Entry/属主/链接快照，由 Kotlin checked Long 求和。Android 类 mksh 的算术会在 32 位溢出，因此不在宿主 shell 中累加大文件体积，也不把 `du` 的磁盘块数当逻辑字节。硬链接仍逐路径计数，不跟符号链接，排除配置、实际及运行时挂载；find 或任一 worker 失败都不能发布部分统计或覆盖成功缓存。专用扫描仍限制为 300 秒/256 MiB，不扩大普通命令限额。
+
+在同一开发机对 518 个条目的真实文件迁移进行前后对照；Root 授权预检显式模拟，文件、模式、native 命令与已有补充 GID 的实际切换均真实执行：
+
+| 同一隔离迁移 | 修复前 | 修复后 |
+| --- | ---: | ---: |
+| 扫描 stat 进程 | 518 | 5 |
+| 迁移 stat 进程（含扫描及管理读取） | 3,655 | 110 |
+| chown 进程 | 518 | 20 |
+| chmod 进程 | 517 | 19 |
+| 本机迁移耗时（毫秒） | 6,512 | 413 |
+
+GNU/dash、mksh R59c + Toybox 0.8.9、mksh + BusyBox 三套隔离工具链均完成生产扫描、迁移和 `4 GiB + 7` 稀疏文件体积读取。定向回归 165 项通过，无失败、错误或跳过，覆盖完整元数据、批次边界、私有权限与归档、迁移中断/恢复、同批文件被替换时拒绝修改其他成员、挂载排除、超过 8 GiB 的精确逻辑体积、生产者/worker 失败及旧结果隔离：
+
+```bash
+./gradlew :container-runtime:desktopTest \
+  --tests 'dev.wawlink.runtime.Rootfs*' \
+  --tests 'dev.wawlink.runtime.LocalContainerRuntimeTest' \
+  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
+  --tests 'dev.wawlink.runtime.RuntimeEnginesTest' \
+  --tests 'dev.wawlink.runtime.RuntimeIdentityTest' \
+  --tests 'dev.wawlink.runtime.ContainerMetadataTest' --continue --console=plain
+```
+
+本轮没有使用 Android 模拟器，没有改动原始 Rootfs 归档，也没有真实特权 chroot、跨 UID 内核或 Android ROM/SELinux 验收。本机耗时不能外推为手机启动时限，仍需反馈设备覆盖安装后验证已有容器启动及同一归档导入；不要求卸载、清数据或重新导入原有容器。
 

@@ -28,19 +28,27 @@ class RootfsOwnershipLifecycleTest {
                         const fs = require('fs'), path = require('path'), cp = require('child_process');
                         const state = ${kotlinx.serialization.json.JsonPrimitive(state.path)};
                         const metadata = JSON.parse(fs.readFileSync(state, 'utf8'));
-                        const args = process.argv.slice(2), target = path.resolve(args.at(-1));
-                        const st = fs.lstatSync(target), key = st.dev + ':' + st.ino;
+                        const args = process.argv.slice(2);
+                        const targets = args.includes('--') ? args.slice(args.indexOf('--') + 1) : args.slice(args.indexOf('-c') + 2);
                         if (${kotlinx.serialization.json.JsonPrimitive(name)} === 'stat') {
                             const i = args.indexOf('-c') + 1;
                             args[i] = args[i].replace(/%u/g, '__UID__').replace(/%g/g, '__GID__');
-                            const actual = cp.execFileSync('/usr/bin/stat', args, {encoding: 'utf8'});
-                            const owner = metadata[key] || [st.uid, st.gid];
-                            process.stdout.write(actual.replace(/__UID__/g, String(owner[0])).replace(/__GID__/g, String(owner[1])));
+                            const lines = cp.execFileSync('/usr/bin/stat', args, {encoding: 'utf8'}).trimEnd().split('\n');
+                            targets.forEach((target, index) => {
+                                const st = fs.lstatSync(target), owner = metadata[st.dev + ':' + st.ino] || [st.uid, st.gid];
+                                lines[index] = lines[index].replace(/__UID__/g, String(owner[0])).replace(/__GID__/g, String(owner[1]));
+                            });
+                            process.stdout.write(lines.join('\n') + '\n');
                         } else {
-                            metadata[key] = args.find(a => /^\d+:\d+${'$'}/.test(a)).split(':').map(Number);
+                            const ownerIndex = args.findIndex(a => /^\d+:\d+${'$'}/.test(a));
+                            const owner = args[ownerIndex].split(':').map(Number);
+                            for (const target of args.slice(ownerIndex + 1)) {
+                                const st = fs.lstatSync(target);
+                                metadata[st.dev + ':' + st.ino] = owner;
+                                fs.lchownSync(target, process.getuid(), process.getgid());
+                            }
                             const temporary = state + '.' + process.pid;
                             fs.writeFileSync(temporary, JSON.stringify(metadata)); fs.renameSync(temporary, state);
-                            fs.lchownSync(target, process.getuid(), process.getgid());
                         }
                     """.trimIndent())
                     setExecutable(true)

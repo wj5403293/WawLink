@@ -456,6 +456,7 @@ internal class RuntimeEngines(
     fun rootCommand(command: String): String = try {
         if (runRootCommand != null) runRootCommand.invoke(command)
         else if (command.startsWith(OWNERSHIP_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = 300, maxOutputBytes = 256 * 1024 * 1024)
+        else if (command.startsWith(ROOTFS_SIZE_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = 300, maxOutputBytes = 256 * 1024 * 1024)
         else HostCommands.run(listOf("su", "-c", command))
     } catch (failure: Throwable) { throw IllegalStateException("chroot Root 命令执行失败：${failure.message}", failure) }
 }

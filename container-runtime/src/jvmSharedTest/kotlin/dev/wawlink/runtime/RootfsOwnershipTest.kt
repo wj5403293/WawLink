@@ -12,9 +12,11 @@ class RootfsOwnershipTest {
         val root = File(directory, "root ' space").apply { mkdir() }
         val tools = File(directory, "tools").apply { mkdir() }
         private val state = File(directory, "owners.json").apply { writeText("{}") }
+        val statOutput = File(directory, "stat-output")
         val config = ContainerConfig("owner", "Owner", root.path, arch = System.getProperty("os.arch"), shell = "/bin/sh")
         var mutations = 0
         var failMutation = false
+        var beforeMutation: (() -> Unit)? = null
         init {
             put("etc/passwd", "root:x:0:0:root:/root:/bin/sh\nalice:x:1001:1002::/home/alice:/bin/sh\npostgres:x:110:120::/var/lib/postgresql:/bin/sh\nredis:x:111:121::/nonexistent:/bin/false\n")
             for (name in listOf("stat", "chown")) {
@@ -24,20 +26,28 @@ class RootfsOwnershipTest {
                         const state = ${kotlinx.serialization.json.JsonPrimitive(state.path)};
                         const metadata = JSON.parse(fs.readFileSync(state, 'utf8'));
                         const args = process.argv.slice(2);
-                        const target = path.resolve(args.at(-1));
-                        const st = fs.lstatSync(target), key = st.dev + ':' + st.ino;
+                        const targets = args.slice(args.indexOf('--') >= 0 ? args.indexOf('--') + 1 : args.indexOf('-c') + 2);
                         if (${kotlinx.serialization.json.JsonPrimitive(name)} === 'stat') {
                             const index = args.indexOf('-c') + 1;
                             const fmt = args[index];
                             args[index] = fmt.replace(/%u/g, '__OWNER_UID__').replace(/%g/g, '__OWNER_GID__');
-                            const real = cp.execFileSync('/usr/bin/stat', args, {encoding:'utf8'});
-                            const owner = metadata[key] || [st.uid, st.gid];
-                            process.stdout.write(real.replace(/__OWNER_UID__/g, String(owner[0])).replace(/__OWNER_GID__/g, String(owner[1])));
+                            const lines = cp.execFileSync('/usr/bin/stat', args, {encoding:'utf8'}).trimEnd().split('\n');
+                            targets.forEach((target, i) => {
+                                const st = fs.lstatSync(path.resolve(target)), key = st.dev + ':' + st.ino;
+                                const owner = metadata[key] || [st.uid, st.gid];
+                                lines[i] = lines[i].replace(/__OWNER_UID__/g, String(owner[0])).replace(/__OWNER_GID__/g, String(owner[1]));
+                            });
+                            const override = ${kotlinx.serialization.json.JsonPrimitive(statOutput.path)};
+                            process.stdout.write(fs.existsSync(override) ? fs.readFileSync(override, 'utf8') : lines.join('\n') + '\n');
                         } else {
-                            const spec = args.find(a => /^\d+:\d+${'$'}/.test(a));
-                            metadata[key] = spec.split(':').map(Number);
+                            const index = args.findIndex(a => /^\d+:\d+${'$'}/.test(a));
+                            const owner = args[index].split(':').map(Number);
+                            for (const target of args.slice(index + 1).filter(a => a !== '--')) {
+                                const st = fs.lstatSync(path.resolve(target)), key = st.dev + ':' + st.ino;
+                                metadata[key] = owner;
+                                fs.lchownSync(target, process.getuid(), process.getgid());
+                            }
                             fs.writeFileSync(state, JSON.stringify(metadata));
-                            fs.lchownSync(target, process.getuid(), process.getgid());
                         }
                     """.trimIndent())
                     setExecutable(true)
@@ -53,11 +63,112 @@ class RootfsOwnershipTest {
             if (command.contains("apply()")) {
                 mutations++
                 if (failMutation) throw IllegalStateException("injected media I/O failure")
+                beforeMutation?.also { beforeMutation = null }?.invoke()
             }
             return HostCommands.run(ProcessBuilder("/bin/sh", "-c", command).apply { environment()["PATH"] = tools.path + ":" + environment()["PATH"] }, 90)
         }
         fun owner(path: String) = run("stat -c '%u:%g:%a' -- ${shellQuote(File(root, path).path)}").trim()
         override fun close() { RootfsArchives.deleteTree(directory) }
+    }
+
+    @Test fun rootSnapshotAcceptsCompletionAfterAnExactFullBatch() {
+        Fixture().use { f ->
+            val initial = RootfsOwnership.snapshot(f.config).size
+            repeat(128 - initial) { f.put("file-$it") }
+            val entries = RootfsOwnership.snapshot(f.config, f::run)
+            assertEquals(128, entries.size)
+        }
+    }
+
+    @Test fun rootSnapshotPreservesCompleteEntriesAcrossBatches() {
+        Fixture().use { f ->
+            repeat(300) { f.put("batch/file $it") }
+            val unusual = f.put("batch/quote ' and \\ literal [*] ?")
+            f.put("WAWLINK_SNAPSHOT_COMPLETE")
+            Files.createLink(File(f.root, "hard alias").toPath(), unusual.toPath())
+            Files.setAttribute(unusual.toPath(), "unix:mode", 0b111111111111)
+            Files.createSymbolicLink(File(f.root, "symbolic alias").toPath(), java.nio.file.Path.of("batch/quote ' and \\ literal [*] ?"))
+            val expected = RootfsOwnership.snapshot(f.config).associateBy { it.path }
+            val actual = RootfsOwnership.snapshot(f.config, f::run).associateBy { it.path }
+            assertEquals(expected, actual)
+        }
+    }
+
+    @Test fun rootSnapshotKeepsDifferentOwnersInTheSameNativeBatch() {
+        Fixture().use { f ->
+            f.put("first")
+            f.put("second")
+            f.run("chown -h 1001:1002 -- ${shellQuote(File(f.root, "first").path)}")
+            f.run("chown -h 110:120 -- ${shellQuote(File(f.root, "second").path)}")
+            val entries = RootfsOwnership.snapshot(f.config, f::run).associateBy { it.path }
+            assertEquals(1001L, entries.getValue("/first").uid)
+            assertEquals(1002L, entries.getValue("/first").gid)
+            assertEquals(110L, entries.getValue("/second").uid)
+            assertEquals(120L, entries.getValue("/second").gid)
+        }
+    }
+
+    @Test fun snapshotRejectsNewlinePathsWithoutSplittingOtherLiteralCharacters() {
+        Fixture().use { f ->
+            f.put("bad\nname")
+            assertFailsWith<IllegalArgumentException> { RootfsOwnership.snapshot(f.config) }
+            assertFailsWith<IllegalArgumentException> { RootfsOwnership.snapshot(f.config, f::run) }
+        }
+    }
+
+    @Test fun rootSnapshotRejectsMissingAndSurplusNativeMetadataRows() {
+        Fixture().use { f ->
+            val count = RootfsOwnership.snapshot(f.config).size
+            val row = "0:0:755:1:1:1:41ed:0\n"
+            for (rows in listOf(count - 1, count + 1)) {
+                f.statOutput.writeText(row.repeat(rows))
+                assertFailsWith<IllegalStateException> { RootfsOwnership.snapshot(f.config, f::run) }
+            }
+        }
+    }
+
+    @Test fun rootSnapshotRejectsInvalidNativeMetadataAndLinkTypeDisagreement() {
+        Fixture().use { f ->
+            val count = RootfsOwnership.snapshot(f.config).size
+            val valid = listOf("0", "0", "755", "1", "1", "1", "41ed", "0")
+            val invalid = listOf(0 to "-1", 0 to "4294967295", 1 to "-1", 1 to "4294967295", 2 to "10000",
+                3 to "-1", 4 to "-1", 5 to "0", 6 to "0", 6 to "e000", 6 to "a1ff", 7 to "-1")
+            for ((index, value) in invalid) {
+                val row = valid.toMutableList().apply { this[index] = value }.joinToString(":") + "\n"
+                f.statOutput.writeText(row.repeat(count))
+                assertFailsWith<IllegalArgumentException>("metadata field $index = $value") { RootfsOwnership.snapshot(f.config, f::run) }
+            }
+        }
+    }
+
+    @Test fun rootSnapshotRejectsNativeStatFailureAfterItWritesRows() {
+        Fixture().use { f ->
+            File(f.tools, "stat").writeText("#!/bin/sh\n/usr/bin/stat \"\$@\"\nexit 23\n")
+            assertFailsWith<IllegalStateException> { RootfsOwnership.snapshot(f.config, f::run) }
+        }
+    }
+
+    @Test fun rootSnapshotPrunesConfiguredVirtualAndActualMountsWithoutFollowingLinks() {
+        Fixture().use { f ->
+            val outside = File(f.directory, "outside").apply { mkdir() }
+            File(outside, "secret").writeText("outside")
+            Files.createSymbolicLink(File(f.root, "alias").toPath(), outside.toPath())
+            f.put("storage/secret")
+            val configured = "/mnt/quote ' \\ [*] ?"
+            f.put("${configured.removePrefix("/")}/secret")
+            val mounted = f.put("actual bound/secret").parentFile
+            val encoded = mounted.path.replace("\\", "\\134").replace(" ", "\\040")
+            File(f.tools, "cat").apply {
+                writeText("#!/bin/sh\nif [ \"\$1\" = /proc/self/mountinfo ]; then /bin/cat \"\$@\"; printf '%s\\n' ${shellQuote("991 1 0:1 / $encoded rw - tmpfs tmpfs rw")}; else exec /bin/cat \"\$@\"; fi\n")
+                setExecutable(true)
+            }
+            val config = f.config.copy(mounts = listOf(ContainerMount(outside.path, configured)))
+            val entries = RootfsOwnership.snapshot(config, f::run)
+            assertEquals(outside.path, entries.single { it.path == "/alias" }.linkTarget)
+            assertFalse(entries.any { it.path == "/storage" || it.path.startsWith("/storage/") ||
+                it.path == configured || it.path.startsWith("$configured/") ||
+                it.path == "/actual bound" || it.path.startsWith("/actual bound/") || it.path.startsWith("/alias/") })
+        }
     }
 
     @Test fun rootSnapshotPreservesLiteralAndTrailingNewlineInSymlinkTarget() {
@@ -73,7 +184,7 @@ class RootfsOwnershipTest {
     @Test fun rootSnapshotRejectsProducerFailureEvenWhenConsumerExitsSuccessfully() {
         Fixture().use { f ->
             File(f.tools, "find").apply {
-                writeText("#!/bin/sh\nexit 23\n")
+                writeText("#!/bin/sh\nprintf '.\\000./etc\\000'\nexit 23\n")
                 setExecutable(true)
             }
             assertFailsWith<IllegalArgumentException> { RootfsOwnership.snapshot(f.config, f::run) }
@@ -143,6 +254,28 @@ class RootfsOwnershipTest {
             assertEquals(0, f.mutations)
             assertNull(RootfsOwnership.load(f.root))
             assertEquals("outside", outside.readText())
+        }
+    }
+
+    @Test fun replacedBatchMemberRejectsBeforeChangingItsSiblingOrLinkTarget() {
+        Fixture().use { f ->
+            val sibling = f.put("home/alice/.ssh/first", "keep sibling")
+            val replaced = f.put("home/alice/.ssh/last", "original")
+            val outside = File(f.directory, "outside").apply { writeText("keep outside") }
+            Files.setAttribute(outside.toPath(), "unix:mode", 0x1A0)
+            val ownerBefore = f.owner("home/alice/.ssh/first")
+            f.beforeMutation = {
+                Files.delete(replaced.toPath())
+                Files.createSymbolicLink(replaced.toPath(), outside.toPath())
+            }
+            assertFailsWith<IllegalStateException> {
+                RootfsOwnership.migrate(f.config, f.config.copy(engine = ContainerEngineType.CHROOT), f::run)
+            }
+            assertEquals(ownerBefore, f.owner("home/alice/.ssh/first"))
+            assertEquals("keep sibling", sibling.readText())
+            assertEquals("keep outside", outside.readText())
+            assertEquals(0x1A0, (Files.getAttribute(outside.toPath(), "unix:mode") as Number).toInt() and 0xFFF)
+            assertNotNull(RootfsOwnership.load(f.root)!!.pending)
         }
     }
 

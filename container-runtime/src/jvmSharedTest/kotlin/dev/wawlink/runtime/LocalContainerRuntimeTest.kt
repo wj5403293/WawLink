@@ -1,6 +1,7 @@
 package dev.wawlink.runtime
 
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -114,6 +115,84 @@ class LocalContainerRuntimeTest {
     @Test fun cachedFirstScreenDoesNotWaitForRecursiveSizeCalculation() = startup(987_654L)
 
     @Test fun oldConfigurationWithoutASizeCacheLoadsAndRefreshesOffline() = startup(null)
+
+    @Test fun chrootSizeCountsLogicalBytesPerPathAndPrunesMountsWithoutFollowingLinks() = fixture { directory, data, config -> runBlocking {
+        val root = File(config.rootfsPath)
+        var expected = File(root, "bin/sh").length() + File(root, "etc/passwd").length() + File(root, "payload").length()
+        val sparse = File(root, "sparse")
+        RandomAccessFile(sparse, "rw").use { it.setLength(4L * 1024 * 1024 * 1024 + 7) }
+        Files.createLink(File(root, "hard link\nwith newline").toPath(), sparse.toPath())
+        expected += sparse.length() * 2
+        repeat(300) { index ->
+            val file = File(root, "many/file-$index").apply { parentFile.mkdirs(); writeText("payload-$index") }
+            expected += file.length()
+        }
+        val outside = File(directory, "outside").apply { mkdir() }
+        File(outside, "large").writeBytes(ByteArray(8192))
+        Files.createSymbolicLink(File(root, "outside-link").toPath(), outside.toPath())
+        Files.createSymbolicLink(File(root, "inside-link").toPath(), sparse.toPath())
+        val configuredMount = "mnt/config [*]?\\path"
+        val actualMount = "mnt/actual mount"
+        for (name in listOf(configuredMount, actualMount, "proc", "sys", "dev", "host-rootfs", "sdcard", "storage")) {
+            File(root, "$name/ignored").apply { parentFile.mkdirs(); writeBytes(ByteArray(4096)) }
+        }
+        val neighbor = File(root, "mnt/config [*]?\\path-neighbor/kept").apply { parentFile.mkdirs(); writeText("keep") }
+        expected += neighbor.length()
+        val privileged = config.copy(engine = ContainerEngineType.CHROOT, mounts = listOf(ContainerMount(outside.path, "/$configuredMount")))
+        saved(data, privileged, 111L)
+        val mountPath = File(root, actualMount).path.replace(" ", "\\040")
+        val runtime = LocalContainerRuntime(RuntimePaths(data), RootfsArchives::size, runRootCommand = { command ->
+            if (command == "cat /proc/self/mountinfo") "1 0 0:1 / $mountPath rw - tmpfs tmpfs rw\n"
+            else HostCommands.run(listOf("/bin/sh", "-c", command))
+        })
+        try {
+            awaitSizeWork(runtime)
+            assertEquals(expected, runtime.containers.value.single().sizeBytes)
+            val persisted = Json.parseToJsonElement(File(data, "containers.json").readText()).jsonObject
+            assertEquals(expected, persisted.getValue("sizes").jsonObject.getValue(config.id).jsonPrimitive.long)
+        } finally { runtime.close(); awaitSizeWork(runtime) }
+    } }
+
+    @Test fun mappedSizeExcludesTheMountPathRatherThanItsSymlinkDestination() = fixture { _, data, config -> runBlocking {
+        val root = File(config.rootfsPath)
+        val kept = File(root, "real-directory/kept").apply { parentFile.mkdirs(); writeText("must remain counted") }
+        Files.createSymbolicLink(File(root, "mounted-alias").toPath(), kept.parentFile.toPath())
+        for (name in listOf("sdcard", "storage", "proc", "sys", "dev", "host-rootfs")) {
+            File(root, "$name/ignored").apply { parentFile.mkdirs(); writeText("not guest data") }
+        }
+        val expected = File(root, "bin/sh").length() + File(root, "etc/passwd").length() + File(root, "payload").length() + kept.length()
+        saved(data, config.copy(mounts = listOf(ContainerMount("/outside", "/mounted-alias"))), 111L)
+        val runtime = LocalContainerRuntime(RuntimePaths(data, hostProot = "/missing-engine-must-not-be-launched"))
+        try {
+            awaitSizeWork(runtime)
+            assertEquals(expected, runtime.containers.value.single().sizeBytes)
+        } finally { runtime.close(); awaitSizeWork(runtime) }
+    } }
+
+    @Test fun failedSizeProducerOrAnEarlierBatchCannotReplaceTheSuccessfulCache() {
+        for (broken in listOf("find", "stat")) fixture { directory, data, config -> runBlocking {
+            val root = File(config.rootfsPath)
+            repeat(300) { File(root, "file-$it").writeText("payload") }
+            val tools = File(directory, "tools").apply { mkdir() }
+            File(tools, broken).apply {
+                writeText(if (broken == "find") "#!/bin/sh\n/usr/bin/find \"\$@\"\nexit 37\n"
+                    else "#!/bin/sh\nfor path do [ \"\$path\" != './payload' ] || exit 37; done\nexec /usr/bin/stat \"\$@\"\n")
+                setExecutable(true)
+            }
+            saved(data, config.copy(engine = ContainerEngineType.CHROOT), 111L)
+            val runtime = LocalContainerRuntime(RuntimePaths(data), RootfsArchives::size, runRootCommand = { command ->
+                HostCommands.run(ProcessBuilder("/bin/sh", "-c", command).apply {
+                    environment()["PATH"] = tools.path + ":" + environment()["PATH"]
+                })
+            })
+            try {
+                awaitSizeWork(runtime)
+                assertEquals(111L, runtime.containers.value.single().sizeBytes, "$broken must not publish a partial sum")
+                val persisted = Json.parseToJsonElement(File(data, "containers.json").readText()).jsonObject
+                assertEquals(111L, persisted.getValue("sizes").jsonObject.getValue(config.id).jsonPrimitive.long)
+            } finally { runtime.close(); awaitSizeWork(runtime) }
+        } }
+    }
 
     @Test fun lateSizeCannotReplaceADeletedAndReregisteredContainer() = fixture { directory, data, config -> runBlocking {
         saved(data, config, 111L)
