@@ -1,1183 +1,172 @@
-# WawLink
+<div align="right">
+  <strong>简体中文 · <a href="README_EN.md">English</a></strong>
+</div>
 
-Android / Linux Desktop 跨端 Coding Agent。Kotlin Multiplatform、Compose Multiplatform 与 Material 3；主页、聊天与框架设置以既有 `ref-plan/` 原型为基准，Agent、插件、技能管理分别遵循 `agent-settings.html`、`plugin-management.html`、`skill-management.html`，控件使用当前主题色而非原型紫色。
+<p align="center">
+  <img src="doc/images/icon.svg" width="128" alt="WawLink 图标">
+</p>
 
-## 模块与边界
+<h1 align="center">WawLink</h1>
 
-| 模块 | 职责与依赖边界 |
+<p align="center">
+  <strong>装进口袋里的跨端全功能 Coding Agent 工作台。</strong><br>
+  在 Android 与 Linux 桌面直接运行真实 Linux 容器、Oh My Pi Agent、代码编辑与流式交互终端。
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&amp;logoColor=white" alt="Android 8.0 及以上">
+  <img src="https://img.shields.io/badge/Desktop-Linux%20x86__64%20%7C%20arm64-FCC624?logo=linux&amp;logoColor=black" alt="Linux Desktop">
+  <img src="https://img.shields.io/badge/Kotlin-Multiplatform-7F52FF?logo=kotlin&amp;logoColor=white" alt="Kotlin Multiplatform">
+  <img src="https://img.shields.io/badge/UI-Compose%20Material%203-4285F4?logo=jetpackcompose&amp;logoColor=white" alt="Material 3">
+  <img src="https://img.shields.io/badge/Runtime-Proroot%20%7C%20PRoot%20%7C%20chroot-blue" alt="Container Runtime">
+</p>
+
+<p align="center">
+  <a href="https://github.com/wsdx233/WawLink/releases">下载发布</a> ·
+  <a href="#快速上手">快速上手</a> ·
+  <a href="#核心特性">核心特性</a> ·
+  <a href="#从源码构建">源码构建</a> ·
+  <a href="https://github.com/wsdx233/WawLink/issues">反馈问题</a>
+</p>
+
+---
+
+## 界面预览
+
+<p align="center">
+  <img src="doc/images/screenshots/home.png" width="31%" alt="WawLink 主页与会话列表">
+  <img src="doc/images/screenshots/chat.png" width="31%" alt="Agent 聊天与流式思考交互">
+  <img src="doc/images/screenshots/agent-settings.png" width="31%" alt="Agent 与模型服务多维度配置">
+</p>
+<p align="center"><sub>会话与容器总览 · Agent 交互与流式思考 · 细粒度模型与 Agent 配置</sub></p>
+
+<details>
+<summary><strong>更多截图：集成终端与容器文件管理</strong></summary>
+<br>
+<p align="center">
+  <img src="doc/images/screenshots/terminal.png" width="46%" alt="容器内真实 PTY 终端">
+  <img src="doc/images/screenshots/files.png" width="46%" alt="独立容器文件浏览器与操作">
+</p>
+<p align="center"><sub>真实 PTY 终端 · 容器独立文件管理</sub></p>
+</details>
+
+## 关于项目
+
+WawLink 是基于 Kotlin Multiplatform、Compose Multiplatform 与 Material 3 构建的跨端 Coding Agent。
+
+它打破了移动端只能通过网页或远程 SSH 操作大模型工具的局限：通过内置的 **Proroot / PRoot / chroot** 运行时，直接在手机或 Linux 桌面上运行独立的 Linux Rootfs 容器环境；借助 **Oh My Pi (OMP)** 引擎，实现完全原生的本地进程级 Agent 编排、实时工具执行（Bash、文件读写、Grep、Glob、代码编辑等）、完整流式思考与离线图表渲染。
+
+## 核心特性
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🤖 原生 Agent 交互与思考流</h3>
+      <p>一会话一独立 OMP 进程。支持模型流式输出、折叠/全屏思考树、Todo 计划看板、离线 Mermaid/SVG 渲染与代码块语法高亮，原生交互丝滑流畅。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>📦 完整的 Linux 容器生态</h3>
+      <p>支持 Ubuntu、Debian、Alpine、Arch ARM 等主流发行版镜像。Proroot / PRoot 纯用户态免 Root 运行，亦可使用 Root chroot 获得极速原生性能。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>⚙️ 细粒度 Agent 与模型管理</h3>
+      <p>统一管理全局与项目级 Agent、Watchdog 顾问、原生角色与模型策略；支持多服务商 Provider 注册、OAuth 授权、模型过滤与故障转移链。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>💻 真实终端与容器管理工具</h3>
+      <p>集成 Termux 级 JNI PTY 真实终端和等宽快捷键栏，配合全功能文件浏览器、代码编辑器、提示词模板及容器自定义 WebUI 卡片，开箱即用。</p>
+    </td>
+  </tr>
+</table>
+
+## 快速上手
+
+### 1. 安装应用
+前往 [Releases](https://github.com/wsdx233/WawLink/releases) 下载最新版本的 APK（Android）或获取桌面构建。
+
+### 2. 准备容器环境
+- **在线一键安装**：在应用内进入“容器”页，选择在线发行版（官方源或清华/阿里/中科大国内源），应用会自动拉取并部署。
+- **自定义导入**：也可以将自己预置的 `rootfs.tar.xz` 导入应用，支持完整备份与脱敏导入。
+
+### 3. 配置模型服务
+进入 **右上角菜单 → 模型服务** 或 **Agent 设置**：
+- 添加你的 LLM API 密钥（如 DeepSeek、OpenAI、Claude、Qwen 等兼容服务）。
+- 设置主力模型角色与思考档位。
+
+### 4. 开始 Coding！
+在主页新建会话，输入你的开发需求。Agent 会自主探索工作区、分析代码、规划任务并调用容器内的 Linux 工具完成任务。
+
+## 系统要求与架构
+
+| 维度 | 支持范围 |
 | --- | --- |
-| `agent-protocol` | 会话控制、消息树、模型服务与设置契约；仅依赖 Kotlin 协程，不依赖 UI、OMP 或容器 |
-| `agent-ui` | 聊天、Composer、模型服务、Agent 管理与框架设置；业务层仅依赖 `agent-protocol` |
-| `agent-driver-omp` | 一会话一进程、真实 OMP RPC-UI / JSONL、条件式 Todo 分组与 YAML 双向同步 |
-| `container-runtime` | Proroot / PRoot / chroot、Rootfs、发行版部署、工具链、终端与容器声明的真实 WebUI 功能 |
-| `app-desktop` | 460 × 920 桌面窗口；`src/sharedMain/kotlin` 包含双端共用主页、单容器选择、功能、规则/提示词、插件/技能管理与应用协调层 |
-| `app-android` | arm64-v8a 宿主、系统文件选择、前台服务与功能 WebView；Rootfs 从容器页单独导入 |
-| `terminal-emulator` / `terminal-view` | 从 Love2Droid 固定提交移植的 Android Termux 终端与 JNI PTY；只构建 arm64-v8a |
+| **Android 平台** | Android 8.0 (API 26) 及更高版本，当前支持 `arm64-v8a` |
+| **Linux 桌面** | Linux x86_64 / arm64，需 Java 17+ 运行环境 |
+| **容器引擎** | Proroot (Android 专属超轻量)、PRoot (兼容通用)、chroot (需 Root 权限) |
+| **Agent 核心** | 原生 Oh My Pi (OMP) + Bun 运行时，离线管理通道 |
+| **代码高亮** | Android 内置 Sora Editor + TextMate 离线语法库，桌面使用 RSyntaxTextArea |
 
-`agent-driver-omp/src/jvmSharedMain/resources/` 中的模型预算扩展、OMP 设置 Schema 和 `omp-management/` 原生管理桥同时供两端使用。Android 驱动显式将该目录接入 `main.resources`，使这些文件作为 Java 类路径资源进入驱动 AAR 和宿主 APK；仅声明 Kotlin 共享源码集依赖不足以打包这些资源。修复此类 APK 资源遗漏不需要重新生成或导入 Rootfs。
+## 从源码构建
 
-OMP 启动前会将 `models.yml` 和主设置文件重新序列化为 Bun 可解析的 YAML，自动修复旧版本写出的 pretty-flow 格式；保留认证值、注释和未知字段，不改认证存储，也不重写内容已稳定的文件。Android PRoot 的版本化库名通过应用私有目录中的符号链接解析，不再把 Android `LD_PRELOAD` 传给第一个 Linux 程序。更新 APK 即可使用这些修复，无需重新导入 Rootfs。
+项目采用标准 Gradle 构建系统，预置免 Docker 与免 Root 自动化准备脚本。
 
-新增“Agent 设置”与原有“框架设置”独立导航。新页面按当前容器、工作区及可选会话建立管理上下文，直接使用已安装 OMP 的配置注册表、定义发现、角色解析、模型目录及认证实现：
+### 环境要求
+- Linux 环境（x86_64 或 aarch64）
+- **JDK 17** 及以上
+- **Android SDK Platform 35**、**Build Tools 35.0.0** 与 **NDK 27.0.12077973**
+- 基础系统工具：`bash`、`python3`、`curl`、`tar`、`flock`
 
-- Agent 支持全局/项目定义、来源和遮蔽关系、只读来源复制、启停、系统提示词、候选模型链、真实工具及技能目录、原始 YAML + Markdown，以及按名称生效的独立运行覆盖；启停仅修改目标层原始 `task.disabledAgents`，不复制继承禁用项。
-- 顾问支持原生 WATCHDOG 配置、共享/专属指令、模型与工具、审查时机及输出预算；没有可靠运行状态时不伪造运行或暂停信息。
-- 默认模型与原生角色、候选顺序、模型预设、允许范围、快速切换和故障转移独立管理；允许/停用规则与故障转移链的修改基于目标层原始数据，继承值只用于未覆盖时展示，未修改直接完成不生成覆盖。`xhigh` 与 `max` 保持不同值。AI 生成 Agent 使用有效默认角色的原生补全，不自动保存定义。
-- 模型服务读取 OMP 原生可用状态与 OAuth 注册，不默认启用全部内置服务；用户项在前，内置项分隔置底，各组禁用项灰显下沉。Provider 使用稳定颜色与名称首字标识。“获取模型”执行实际远端目录请求或原生定向发现，只追加新模型，保留已有编辑；不支持的 OAuth 和协议操作不显示。内置模型通过原生字段覆盖编辑，认证由 OMP 独立存储。
-- 运行设置来自当前 OMP 注册表；原始配置保存前校验原生 Schema，原子写入并拒绝覆盖外部新修改。脱敏导出不包含凭据。Android 原文编辑使用可编辑 Sora 与离线 TextMate，Desktop 使用 RSyntaxTextArea；保存、舍弃与返回分别处理。
-
-Agent 设置先加载运行配置、Agent 与文件来源，再异步读取模型和认证目录，不用模型 SDK 初始化阻塞整页。模型列表以有界分页传输，完整字段仅在编辑模型时读取；无效 `models.yml` 或管理进程退出会显示可恢复错误，原始配置仍可打开修复并重新加载。配置错误保留文件、字段路径及可得行列，不回显凭据或服务响应正文；保存失败保留表单和模型子页草稿。旧版 pretty-flow YAML 先经原生校验，成功才转换为 Bun 可解析格式，拒绝的文档保留原字节。
-
-启动和容器列表更新仅加载会话元数据；进入某个会话时才恢复其消息与控制器，未打开的历史不批量恢复。已打开的会话仍持续更新主页状态。
-
-“应用设置 → 整体缩放”对主页、聊天、Agent 设置、框架设置及其他页面统一生效，支持 80%–125%、重启保留和恢复默认 100%。新版 100% 等于此前 115%，原有 115% 偏好自动迁移为 100%，旧默认值随新基线放大，其他自定义比例按基线换算且只迁移一次。窄屏仍按 460 逻辑像素视口统一校准；系统字体缩放保持有效，嵌套页面主题不重复缩放。
-
-“应用设置 → 主题配色”支持默认蓝色、系统配色和自定义主色；自定义通过 Material Color Utilities 的 HCT 色调生成明暗两套 Material 3 角色，可选择预设或输入六位 HEX，设置跨重启保留。Android 12+ 直接读取系统莫奈调色板，旧版 Android 与 Desktop 的系统选项明确回退默认蓝色；默认界面的背景保持纯白，分段选择器及其他控件统一使用主题色，不残留默认紫色。完整上游许可随 UI 资源打包。
-
-Android“应用设置 → 外观与显示 → 屏幕常亮”默认关闭，开关状态跨重启保留。开启后主页、聊天、终端和其他应用页面在前台可见时均保持亮屏；关闭或切到后台恢复系统自动熄屏，终端不再单独强制常亮。该选项只使用当前窗口的常亮标志，不修改系统熄屏时间；后台 CPU 唤醒锁由独立的保活选项控制。
-
-“应用设置 → 后台保活”默认关闭，设置跨重启保留。Android 可按需启用前台服务、锁屏 CPU 唤醒锁、Wi-Fi 锁及循环静音音频，也可打开电池优化请求和厂商自启动设置；无可用厂商页面时回退系统应用设置。页面显示服务和资源的实际状态与错误，关闭保活会释放可选资源，但仍有活动任务时原有前台服务继续工作。Desktop 不提供 Android 系统资源。保活增加耗电，受 Android 与 ROM 策略限制，强行停止后不保证恢复；不会自动启动容器或恢复会话。
-
-前台服务启动按“立即前台化 → 处理启动命令 → 按需获取资源”排序；每条启动命令重新确认前台契约，Application 合并尚未确认和已运行实例，不再按短暂 `active=false` 直接停服务。只有停服等待 300 ms 空闲宽限，并以系统最新 startId 核对后移除通知；关闭保活的资源释放不等待这段宽限。Android 14+ 保留合法 `specialUse` 基础类型，添加 `mediaPlayback` 失败时停用音频但保留基础服务，不能改用无类型或其他用途绕过限制。启动前校验基础权限和清单，拒绝通知权限不阻止合法 FGS；系统完全拒绝前台化时报告实际原因、停止无效实例，不宣称已满足启动契约或无限重试。
-
-Android 17 的后台音频限制对当前 targetSdk 35 同样要求可见 Activity 或非 shortService 前台服务；未来 targetSdk 37 还要求后台服务具备 while-in-use 能力，重复 `startForeground()` 不会凭空获得该能力。静音音轨状态仅反映 AudioTrack 可观察状态，不能证明系统没有静默抑制音频，也不保证厂商保活效果。参阅 [前台服务启动与故障](https://developer.android.com/develop/background-work/services/fgs/troubleshooting)、[类型与权限](https://developer.android.com/develop/background-work/services/fgs/service-types) 及 [Android 17 后台音频限制](https://developer.android.com/about/versions/17/changes/bg-audio)。
-
-`specialUse` 不是后台启动豁免或应用商店审核豁免；已声明类型/权限不代表任意常驻或静音保活都符合平台及商店政策。本次修复不通过其他类型、假播放用途或延长系统期限绕过这些限制。
-
-“应用设置 → 关于”使用“图标 + 标题 + 描述”的 Material 3 标准列表，展示项目 GitHub 地址 `https://github.com/wsdx233/WawLink` 与作者 `wsdx233`。点击 GitHub 项由系统打开外部链接，Android 使用 `ACTION_VIEW` Intent；返回应用设置保留原滚动位置。
-
-## 构建与运行
-
-构建环境：Linux x86_64 或 arm64、JDK 17、Android SDK Platform 35、Build Tools 35.0.0 与 NDK 27.0.12077973（编译终端 JNI）、网络，以及 Bash、Python 3、curl、GNU tar、dpkg-deb、flock 和 GNU coreutils。工程自带 Gradle Wrapper，不需要系统 Gradle。Android 最低版本为 Android 8.0 / API 26。
-
-Android Application/Service 的 Robolectric 单元测试另需 JDK 21，以加载 API 36/37 的 Android 框架；Gradle 只为测试进程选择 Java 21 并开放其所需 FileDescriptor 访问桥，APK/生产源码仍使用 Java 17，不提高应用最低 Android 版本。
-
-在工程根目录执行：
-
+### 1. 运行桌面端
 ```bash
+# 准备环境依赖与本地测试 Rootfs
 ./scripts/fetch-android-binaries.sh
 ./scripts/build-debug-rootfs.sh
+
+# 启动桌面端应用 (460 × 920 移动视口模拟)
 ./gradlew :app-desktop:run
 ```
 
-两个准备脚本均不使用 Docker、sudo 或 Android 模拟器。缺失的宿主工具下载到 `build/host-tools`，不会覆盖系统工具。输入版本和校验值固定在 `scripts/assets.lock.json`；构建失败不会覆盖已完成的 Rootfs 归档。
-
-桌面端检测并加载 `build/debug-rootfs/ubuntu-main`，数据默认保存在 `build/user-data`。在“模型服务”中配置自己的接口和模型后即可新建会话；预置环境不含开发机认证，也没有默认 API Key。
-
-单独构建不内置 Rootfs 的 Debug APK：
-
+### 2. 编译 Android Debug APK
 ```bash
 ./scripts/fetch-android-binaries.sh
 ./gradlew :app-android:assembleDebug
 ```
+产物位置：`app-android/build/outputs/apk/debug/app-android-debug.apk`。
 
-输出：`app-android/build/outputs/apk/debug/app-android-debug.apk`。后续更新始终覆盖这个 Gradle 默认产物，不再按任务复制或另存新命名 APK。该任务不要求 Rootfs 归档存在，不会启动模拟器。预置原生命令作为可执行 `.so` 随 APK 安装，仅打包 arm64-v8a，保留上游二进制原始字节；新增终端 PTY 的 `libtermux.so` 从移植的 JNI 源码构建。
-
-Rootfs 独立由 `./scripts/build-debug-rootfs.sh` 构建，输出归档与 SHA256 文件到 `build/outputs/`。首次安装后，将独立归档复制到手机，在“容器 → 导入 rootfs”选择文件并完成导入；应用启动不再从 APK 解包环境。以后覆盖安装同签名 APK 即可保留已有容器和会话，不需要重新下载或导入未变化的 Rootfs，也不要为更新而卸载应用。
-
-在线安装基础镜像后会检查容器内 OMP；缺失或损坏时弹出安装/修复确认，OMP 会话进程及原生管理进程故障也会提示。点击“打开终端并安装/修复”后，先暂停该容器的 OMP 进程，再打开独立真实终端自动执行应用内置脚本；取消不执行。容器详情另提供“安装/修复 OMP”入口。已有配置、认证、工作区和会话保留，不需要重新导入镜像。
-
-切换容器、启停/重启容器、退出终端或功能页引起的预期中断不弹 OMP 重装引导或会话、终端、卡片报错。旧操作在停止前失效，快速重启不接收旧回执，后台检查不会重开已停止容器；显式打开新会话或管理页仍保留原有按需启动语义。真实 OMP 安装损坏、原生进程异常退出和功能服务失败仍提示，已接收的会话消息不会因中断撤回。
-
-安装需要联网及容器内 root 身份，固定安装 OMP 18.12.6、Bun 1.3.14 和完整运行依赖，校验上游包完整性、真实原生模块与 RPC `ready/get_state`，校验后才切换安装，切换失败恢复旧程序。无 CA 的 Debian/Ubuntu 基础镜像通过保留 APT 签名及包哈希校验的临时 HTTP 源安装证书，之后使用原 HTTPS 源；不修改用户源配置或关闭 TLS 校验。安装期间请留在终端，失败原因和 Shell 会保留；返回后重新自检，成功才刷新已有 OMP 控制器。不会复制开发机认证或发起模型推理。
-
-在线发行版安装默认选择最左侧“官方源”。清华、阿里和中科大选项同时控制软件包源与安装下载策略：
-
-| 发行版 | 选择国内软件源后的 Rootfs 来源 | 完整性依据 |
-| --- | --- | --- |
-| Ubuntu 24.04 | 清华 Ubuntu Base 24.04.5 ARM64 | 固定发布者 SHA256，并核对镜像元数据 |
-| Debian 12、Arch ARM、Kali Rolling | 清华 LXC 对应分支的 ARM64 `rootfs.tar.xz` | 同一明确快照的 SHA256；不是独立上游签名认证 |
-| Alpine 3.21 | 所选国内站的 minirootfs 3.21.9 ARM64 | 固定发布者 SHA256，并核对同源元数据 |
-| Fedora 41 | 暂无同版本可校验的直接导入国内归档，明确报错 | 可手动选择官方源；不回退、不升级到其他版本、不将 OCI 当作 Rootfs |
-
-下载进度明确区分 Rootfs 供应站与所选软件源。国内 Rootfs 的元数据和归档重定向不跨出供应站，禁止 HTTPS 降级；镜像不可用或校验失败直接报告错误。APT 导入配置会移除基础镜像中仍启用的旧 `.list` / `.sources`，不关闭软件包签名校验。Fedora 41 已结束维护，官方软件源使用真实归档仓库。
-
-选择保存在客体 `/etc/wawlink-install-source`，随 Rootfs 导出、导入和克隆保留。选择任意国内源时，OMP/Bun 使用 `registry.npmmirror.com`，仍核验固定 npm SHA512；官方使用 `registry.npmjs.org`。无记录的旧容器仅识别应用支持的三个镜像站，否则使用官方。安装只设置进程级 npm registry，不覆盖用户全局 `.npmrc`。
-
-国内 x86_64 安装还从华为 NuGet 镜像预取 ONNX 1.30.0 的完整 CUDA/TensorRT provider 文件，按 NuGet 发布者 SHA512 校验，再执行未修改的上游 postinstall；不设置跳过安装开关。ARM64 对应文件已包含在 npm 包中。下载提供库文件并不代表设备具备 NVIDIA 驱动或 GPU 能力。
-
-Alpine 安装保持 musl 系统不变，在 `/opt/omp/.wawlink-runtime` 放置固定哈希的 Debian glibc/GCC 运行库，通过独立 GNU multiarch 目录链接供 OMP/Bun 使用；不向 musl 子进程导出兼容库路径，不覆盖外来的 glibc 兼容目录。Bun 自启动、原生模块和 RPC 均参与安装校验，失败恢复旧程序及运行库链接。最小 BusyBox 客体的内置 Skill 安装逐级解析已有目录，不依赖 GNU `readlink -m`。
-
-Arch ARM 先初始化并填充发行版密钥环，回收该密钥环的 GPG 辅助进程；安装命令为不支持 Landlock/seccomp 下载沙箱的 PRoot/Proroot 使用进程级 `--disable-sandbox`。不修改全局 `pacman.conf`，不关闭包签名或依赖校验。
-
-Fedora 安装先更新 `sqlite-libs`，修复旧基础镜像的 SQLite 不含新 Node 所需 session 符号、但 SONAME 依赖仍被判为满足的问题；随后正常安装并执行完整 Node/npm 生命周期脚本，不绕过原生加载错误。
-
-### Release APK 与 GitHub Actions
-
-本地使用独立脚本完成原生资源准备、Release 编译、签名、证书核对、ZIP 对齐检查与 SHA-256 生成，不构建或内置 Rootfs：
-
+### 3. 构建生产 Release APK
 ```bash
-# 首次准备 Android SDK；JDK 17 须已安装。
-sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.0.12077973'
-chmod 600 ~/.android/wsdx233.keystore ~/.android/.env
-./scripts/build-release.sh              # 默认 0.1.2
-./scripts/build-release.sh v0.1.3       # 指定下一版本
+./scripts/build-release.sh v0.1.2
+```
+签名脚本会校验证书指纹与 ZIP 对齐，产出固定位于 `app-android/build/outputs/apk/release/`。
+
+## 项目架构
+
+```text
+wawlink/
+├── agent-protocol/       # 纯 Kotlin 领域契约：会话、事件树、模型服务与设置接口
+├── agent-ui/             # 跨端 Compose UI：聊天流、Composer、富媒体渲染与设置
+├── agent-driver-omp/     # OMP RPC 驱动：进程池、JSONL 协议通讯与配置同步
+├── container-runtime/    # 容器运行时：Proroot/PRoot/chroot、Rootfs 部署、终端与文件服务
+├── app-desktop/          # Linux 桌面宿主入口与混合渲染层
+├── app-android/          # Android 宿主入口、前台保活服务与系统集成
+└── terminal-emulator/    # 移植自 Termux / Love2Droid 的底层 PTY 终端解析与 JNI
 ```
 
-SDK 优先使用 `ANDROID_HOME`，其次为 `ANDROID_SDK_ROOT`，未设置时使用 `~/Android/Sdk`。签名读取 `~/.android/wsdx233.keystore`、别名 `wsdx233`，以及私有 Shell 环境文件 `~/.android/.env` 中的 `WSDX233_KEY_PASSWORD`；同一密码用于仓库与私钥。也可在签名进程环境中提供 `WSDX233_KEYSTORE_PATH` 与 `WSDX233_KEY_PASSWORD`，环境密码优先，不把密码放在命令参数、Gradle properties 或项目文件中。该 `.env` 是会被 Shell 加载的本机可信文件，不接收仓库下载的替代文件。
+## 致谢与开源项目
 
-固定输出为 `app-android/build/outputs/apk/release/app-android-release.apk` 和同目录的 `app-android-release.apk.sha256`；后续构建覆盖这两个产物。单独运行 `./gradlew :app-android:assembleRelease` 或 `./scripts/build-release.sh --unsigned v0.1.3` 只产生未签名 APK，不能直接安装。签名只在 Gradle 结束后的独立进程进行，构建子进程不继承上述密码或 Base64 私钥环境变量；缺少签名输入或证书不匹配时失败，不退回 Debug 签名。保留现有未混淆配置，不在发布环境配置中引入未经设备验证的 R8 裁剪。
+WawLink 汲取并受益于开源社区众多卓越项目：
 
-版本采用稳定的 `MAJOR.MINOR.PATCH`，不带前导零；次版本和修订号范围为 `0..999`。`versionCode = 1,000,000 + MAJOR × 1,000,000 + MINOR × 1,000 + PATCH`，须在 Android 的 `1..2,100,000,000` 范围内；例如 `0.1.2` 对应 `1001002`，`1.0.0` 对应 `2000000`。本地参数与 tag 使用同一版本规则；可用 Gradle 属性 `-Pwawlink.version=0.1.3` 显式设置版本，默认版本在 `app-android/build.gradle.kts` 中维护。
+- **[Love2Droid](https://github.com/wsdx233/Love2Droid)** — 优雅的 Android 终端架构与移动端开发工作台设计灵感。
+- **[Oh My Pi](https://github.com/can1357/oh-my-pi)** — 强大的本地 Coding Agent 引擎与工具链。
+- **[Termux](https://github.com/termux/termux-app)** — Android 上成熟的终端模拟、PTY 与 Linux 移植方案。
+- **[Sora Editor](https://github.com/Rosemoe/sora-editor)** — 卓越的 Android 原生代码编辑器与语法高亮体验。
+- **[Jetpack Compose](https://developer.android.com/jetpack/compose) & [Compose Multiplatform](https://www.jetbrains.com/lp/compose-multiplatform/)** — 现代声明式跨端 UI 框架。
+- **[Material Symbols](https://fonts.google.com/icons)** — 全应用一致的 Material Design 图标系统。
 
-GitHub 私有仓库为 [wsdx233/WawLink](https://github.com/wsdx233/WawLink)，工作流位于 `.github/workflows/android-release.yml`，只在推送 `vMAJOR.MINOR.PATCH` tag 时运行，普通分支推送和 Pull Request 不触发发布。远端 `release` Environment 只允许 `v*` tag，保存两个 Environment Secrets：
+---
 
-| Secret | 内容 |
-| --- | --- |
-| `WSDX233_KEYSTORE_BASE64` | keystore 原始字节的 Base64 编码；Base64 本身不是加密，必须作为 Secret 保存 |
-| `WSDX233_KEY_PASSWORD` | keystore 与 `wsdx233` 私钥密码 |
-
-上述环境和 Secrets 已配置；迁移仓库时需重新配置相同的 tag 部署限制与 Secrets，不把 `.env` 或 keystore 推送到 Git。所有 Action 固定完整提交 SHA；三个独立 runner 分别编译未签名 APK、签名并验签、创建 GitHub Release。仅签名步骤接收私钥 Secrets，仅发布任务获得 `contents: write`；签名临时文件放在 runner 私有临时目录，正常结束或失败后删除，另有 `always()` 清理。私钥不进入 Gradle、共享缓存或 artifact，artifact 只上传明确列出的 APK 和校验文件；未签名中间产物保留 1 天，签名产物保留 7 天，GitHub Release 附件持续保留。
-
-只给可信提交打 tag：拥有修改工作流并推送发布 tag 权限的人能改变签名流程，Environment Secrets 不是对仓库写入者的代码沙箱。密码或私钥轮换需在私有环境操作；签名脚本固定核对公开证书 SHA-256 `d40ca2e0088d61ac708cbc0b2b5772781b098ae1caeb5511a050ac4509a0f471`，更换签名证书也需显式更新这一身份约束，并处理 Android 的签名升级限制。
-
-发布命令（首次配置只推送 `main`，不自动创建发布 tag）：
-
-```bash
-git tag -a v1.0.0 -m 'WawLink 1.0.0'
-git push origin v1.0.0
-```
-
-工作流自动创建同名 GitHub Release 并附上签名 APK 与 SHA-256 文件，不自动创建缺失 tag、不覆盖已有 Release。同版本重建保持版本号，不把 Actions 的运行次数作为 Android 升级版本号。
-
-**安装注意：** 现有 Debug APK 与指定 Release keystore 的签名不同，同一包名不能直接覆盖安装。切换前先备份容器及其他可导出数据；卸载会清除应用私有数据，Rootfs 导出不等于全部应用数据备份。后续使用此同一 Release 签名并递增版本即可覆盖更新。
-
-本轮已在本机完成 Release 构建、APK v2/v3 验签、固定证书核对与 ZIP 对齐验证，并通过 Shell 语法和 `actionlint` 检查；未推送发布 tag，未将这些检查当作 GitHub runner、Android 设备安装或界面验收。
-
-### 桌面路径覆盖
-
-| 环境变量 | 用途 |
-| --- | --- |
-| `WAWLINK_DATA_DIR` | 容器元数据、会话、设置的保存目录 |
-| `WAWLINK_ROOTFS` | 自动注册的预置 Rootfs 目录 |
-| `WAWLINK_TOOLS_DIR` | 宿主 PRoot / QEMU 所在目录 |
-| `WAWLINK_PROOT` | 指定宿主 PRoot 可执行文件 |
-| `WAWLINK_QEMU` | 指定 qemu-aarch64-static；原生 arm64 宿主不需要 QEMU |
-
-对应 JVM 属性为 `wawlink.dataDir`、`wawlink.rootfs`、`wawlink.toolsDir`、`wawlink.proot`、`wawlink.qemu`，属性优先于环境变量。
-
-## 使用与能力边界
-
-- 主页管理多会话、搜索、容器/状态筛选、分支、批量置顶/归档/删除；长按会话列表项直接进入多选，并可直接处理待审批操作。当前容器为持久化单选：点击容器卡片选择，右侧开关仍独立启停，选中卡片有主题主色粗边框，长名称单行截断；终端入口移至“功能”。新建会话直接使用所选容器且不预设名称，未发送消息即离开的空会话不进入持久化列表。发送后以首条用户问题命名，保留手动标题；聊天内新建沿用当前容器与工作区。
-- 主页会话卡片展开/收起动画分别为 260/220 毫秒，保留非线性曲线；分支操作使用带中文无障碍说明的纯图标按钮，减少窄屏操作栏换行。
-- 主页底栏按“会话、功能、容器”排列，功能位于中间；页面切换方向跟随标签位置，标题、操作按钮和各页滚动状态与对应页面保持一致。
-- 聊天页支持真实流式输出、Todo 条件归组、工具详情和 Diff、审批/提问、运行中消息排队与编辑、附件、项目文件、斜杠命令和用量详情；右上角设置使用锚定 popup menu，保留模型服务、Agent 设置与框架设置入口。Android 状态栏与聊天顶栏共享背景色及滚动变色动画，保留顶部安全区与明暗主题的状态栏图标。
-- 主会话错误显示在输入框上方，可关闭并按错误类型跳转模型服务、Agent 设置或 OMP 修复确认；普通文件缺失不作为 OMP 安装损坏处理，修复需用户确认，不自动安装。
-- 聊天顶栏在设置左侧新增“历史树”和“Agent Hub”。历史树沿用 `session-history.html` 的树形/时间线、筛选、搜索、展开、当前叶定位与节点操作；预览不切换续写位置，标签、回退、可取消的分支摘要、历史 Ask 重答和独立会话分支走原生 API。复制按选定消息提供可见正文、代码、引用、链接与该轮命令，不混入思考、工具输出或其他轮次；聊天与原生节点按精确 ID 互相定位。
-- Agent Hub 沿用 `agent-hub.html` 的 Agents/活动、树形/平铺、搜索筛选、跟随最新及批量操作，展示原生注册表与递归发现的持久子会话。活动在原生当前已索引集合中先按实例/子树、类别与文本筛选，再返回最近匹配项并按需加载更早项；轮询保留当前筛选与限额，旧查询回执不能覆盖新查询。独立子代理页保留会话、概况、产物、后台任务与身份链；查看停放记录不自动恢复运行。继续、停止、终止、模型/思考、Ask 与审批均校验会话及运行实例，顾问保持只读；顶部与输入区的模型/思考候选来自存活实例的原生能力，空候选不回退全局目录，不改写候选外的已有绑定。导出仅包含选定子代理及其下级，不导出主会话。
-- 两页使用当前蓝色、系统配色或自定义主题，不写入原型演示状态。OMP 18.12.6 发行版未向扩展导出实时 IRC 邮箱计数时显示未测量，不冒充零条；模型不可用、记录缺失、失效实例和原生操作失败保留实际错误。需要模型的摘要、续写或恢复仍要求容器自身配置和认证，不使用开发机凭据。
-- 历史树首屏仅传完整轻量节点索引，不携带全部正文、预览 Feed、原始 JSON 或复制块；大索引使用固定快照分页，刷新只应用节点/标签/叶子增量。预览、原始记录、复制与历史 Ask 按节点读取，详情按会话身份、节点和版本缓存，拒绝过期响应。Hub 实例首屏不依赖主会话历史或全部子会话正文，持久实例与活动摘要异步补齐；首次打开仍需启动当前容器内的 OMP。
-- 会话输入与排队消息编辑支持多行，Enter 和软键盘回车用于换行，不发送或保存；使用发送按钮提交、勾选按钮保存。Slash 菜单使用 Tab 或点击选择，不拦截回车。
-- 主会话运行中点按追加使用 OMP 原生 `steer` 干预当前执行，长按使用原生 `followUp` 等待后续处理，均支持附件。主输入框为空时点击队列编辑，在确认撤出队列后将原始文字和附件放回输入框；已有草稿则保留行内编辑，不覆盖输入。队列种类贯穿本地预览、编辑及停止恢复，撤回失败显示实际原因。
-- 容器独立文件管理按 WawSSH 对齐列表、图标操作栏、面包屑、路径编辑、筛选/排序、多选、复制/粘贴、重命名、属性、书签与导入导出；路径、更多、下载、新建、书签及同类操作面板使用全宽简洁图标列表，不叠加卡片背景、重复标题和取消行。支持系统打开图片、Android APK 安装、单文件下载及目录/多选 ZIP 下载。删除确认后可递归删除非空目录，先检查整批对象及子树，拒绝符号链接、特殊文件、宿主绑定路径及其祖先，不先删掉部分再因边界错误中断；不覆盖已有目标。文件操作通过客体进程执行，不直接读写宿主 Rootfs。失效历史会显示实际错误，但不会重新入栈，仍可继续返回或退出。
-- 聊天加号菜单保留项目文件，并提供可跨目录选择的“容器文件”；取消保留草稿及已有附件，容器附件使用真实客体绝对路径，不复制到宿主后伪造工作区路径。
-- 附件交互遵循 `ref-plan/attachment-preview.html`：输入框上方为横向图片缩略图/文件卡，队列显示紧凑附件胶囊，已发送消息在气泡内展示相册及文件卡。原始文字保留空白，纯附件消息的文字为空串；容器路径说明只进入 OMP RPC，主会话/子代理、队列撤回编辑及历史标题、搜索、预览、复制、回退草稿不显示该后缀，无缓存旧记录也能恢复附件。
-- 消息旁的复制图标直接将完整原文写入系统剪贴板，不打开历史树：用户正文保留原始空白、纯附件消息复制文件名，助手复制完整 Markdown，提问卡复制全部问题、选项及已保存答案。按钮短暂显示对勾；三点菜单的“选择复制”独立打开该消息的全文/代码/命令/链接分块面板，“创建分支”独立打开原生会话内切换确认，沿用不摘要/生成摘要/指定重点及恢复原输入/保留草稿，关闭直接回聊天。运行中不能创建分支；未落盘节点明确报错，索引缺失先刷新再按原生 ID 重查。只有“在历史树中定位”会打开历史树主列表。
-- 图片按 MIME 或 PNG/JPEG/WebP/GIF/SVG 扩展名识别，真实读取并通过既有安全解码器展示；点击缩略图或相册进入原生全屏缩放、拖动、复位及保存，复用已加载字节。输入框普通文件及尚未传输的本机文件打开只读快速预览，显示大小、来源、路径和前 64 KiB 严格 UTF-8 代码高亮，二进制/截断/读取失败如实提示；已传输的工作区/容器文件沿用打开、打开所在文件夹、编辑、下载面板。本机和客体来源隔离，客体预览通过有界文件进程读取，不访问宿主 Rootfs；图片上限 8 MiB，SVG 上限 1 MiB。
-- 会话发送过消息后，用量条持续显示，运行、空闲、继续下一轮及执行出错时均不再隐藏；项目文件展开子目录后使用独立列表行，不再叠放。
-- 工具、Todo 和思考的运行耗时实时更新，结束后固定；不足 1 秒隐藏，1–59 秒显示 `15s`，达到 1 分钟后显示 `1:05`。展开的长思考/工具概况吸附在计划、子任务下方，三层均可回跳。
-- 思考仅在展开动画期间冻结显示快照，结束后追上最新内容；平时按 32 ms 节奏平滑推进尾部，已完成 Markdown 段落保持稳定，不以整段防抖替代流式输出。上滑、阅读或选择时不强制追尾，使用独立的“回到底部”恢复跟随。思考全文以 Markdown 显示，展开时不从头播放。
-- 点击思考或工具左侧图标，可直接进入该节点的现有全屏内容页，无需先展开；图标保留原有外形并带 Material 3 波纹与中文无障碍名称。标题仍控制展开/收起，打开和返回不改变展开状态，计划与任务组图标行为不变；展开后的全文/详情入口继续保留。
-- 超长聊天保留完整历史、正文和既有动画/富媒体/交互。吸顶几何改为相对所属 Lazy 行记录，滚动时不重写每个节点的绝对坐标，候选仅取可见根项并隔离观察；追尾仍按实际尾项和底部留白计算有限距离。思考折叠预览只准备可见宽度所需的头部/尾部文字，不删改全文；普通段落跳过内联代码专用子组合布局，大块 Markdown 后台准备，高亮注册表在 Android 串行复用。
-- Markdown 代码块、未展开工具的命令摘要、执行脚本与文件内容共用原生离线高亮；Android 使用 Sora TextMate，Desktop 使用 RSyntaxTextArea 3.6.0。语言依据显式标记、工具名、文件后缀或 shebang 识别，未知显式语言保留纯文本。读取路径支持行号、范围、raw、归档成员和查询选择器，不将这些选择器误当后缀。
-- 读取、写入、创建及查找代码可打开全屏只读查看器，支持行号、选择和复制原文，默认开启自动换行；右上角三点菜单的“自动换行”项可切换，换行不改变原文或复制内容。Android 使用 Sora Editor 0.23.6，Desktop 使用 RSyntaxTextArea 3.6.0，不以网页组件替代 Sora；桌面全屏窗口沿用混合画布，避免新菜单被原生编辑器遮挡。内置 34 项 TextMate 语言映射、完整语法依赖及明暗主题，包含 HTML/JavaScript/CSS、TypeScript/JSX/TSX、Shell、Python、Kotlin、Java、C/C++/C#、Go、Rust、JSON/YAML/TOML、SQL 等；HTML 内嵌脚本与样式保持跨行状态。来源、哈希、差异和完整许可位于 `agent-ui/src/commonMain/composeResources/files/code/`。
-- 内联代码参照 Kelivo，使用带 5×3 dp 留白、6 dp 圆角的中性浅底胶囊与深色等宽文字；长代码可分段换行，原文仍参与选择复制。Markdown 表格使用统一列宽、对齐网格、细边框与浅表头，保留左右/居中对齐和转义竖线，窄屏多列表格可横向滚动。Markdown 中的绝对路径、带目录相对路径和文件链接可点击；相对路径以当前会话工作区解析，打开、安装和下载均通过当前容器的文件服务，不把容器路径当宿主文件；同样支持 `app-release.apk (app/build/outputs/apk/release/app-release.apk)` 这种输出格式。
-- 聊天文件路径操作仅保留对应类型的动作：目录为“打开”“打包下载”；普通文件为“打开”“打开所在文件夹”“编辑”“下载”。目录在当前容器的独立浏览器中打开，返回保留聊天滚动和草稿；文件打开复用系统查看器及 APK 安装器。编辑使用原生代码编辑器，可显式保存并确认舍弃；通过客体进程暂存后原子替换，保留文件权限，保存失败保留草稿，检测到外部内容变化时拒绝覆盖。仅支持最大 2 MiB 的有效 UTF-8 文本，拒绝二进制、链接、虚拟路径与挂载根，未知语言仍可作为纯文本编辑。
-- Slash 菜单从当前会话 OMP 的原生命令目录加载并跟随动态更新；第一次输入 `/` 时才启动目录查询，不发送用户 prompt。当前内置命令匹配中文描述与 Material Symbols 图标；未知、扩展或被自定义覆盖的命令仍显示，使用默认图标且不显示描述。无参数 `/model`、`/cost` 保留应用内快捷入口，带参数的命令交给 OMP 原生解析。
-- 同一次 ask 的多个问题共用一张卡片，左下角灰色无背景前后按钮配合左右非线性切换；问题 ID 固定答案、页码和预览状态。单选选择后自动进入下一题，多选停留当前题；切题和检查答案原位更新，不把会话滚回顶部。支持推荐项、选项描述、自定义输入、提交前回看与一次提交完整答案，提交后仍可查看；免审批不会自动回答普通提问。
-- Agent 正文与 ask 富预览共用 Markdown、SVG/Mermaid 代码块与 Markdown 图像显示。点击图片进入原生全屏，可缩放、拖动、复位并保存；PNG/JPEG/GIF/WebP 保存已加载的原始文件，不截屏或转码，动画图像显示首帧但保留原始动画字节。SVG 保存安全校验后的矢量内容；全屏与保存不重复下载或解码，取消保存不提示成功，失败可重试。Mermaid 12.2.0 随 UI 离线打包，本轮不新增 Mermaid 导出。图像来源仅 HTTP(S) 与图像 data URL，不读取宿主文件；SVG 不允许脚本、外部资源、实体、事件或 foreignObject，错误内容显示中文原因。
-- 用户消息与运行中追加消息即时本地显示，发送失败只撤回对应的未接收消息并显示原因；收到原生用户消息后，后续模型执行失败仍保留该消息。消息按发送时的 Todo 与前置节点定位，后续工具、思考、任务切换及历史重放不改变其位置。加载状态使用 Material 3 标准进度组件。
-- 应用设置中的“新会话默认免审批”默认开启并持久化，只影响以后创建的会话；会话内仍能单独切换。开启免审批会立即回复已等待和后续工具审批，不自动回答普通提问，不改写全局工具权限配置；关闭时在下一轮启动恢复原生审批模式。
-- 新思考节点和模型正文跟随创建时的活动 Todo 子任务，正文显示在任务子级；没有活动 Todo 时保持扁平。任务切换、完整快照与历史重放不迁移或重复既有节点，不改变用户消息锚点；Todo 全部完成或清空后的新总结仍显示在顶层。
-- 用户消息和新一轮执行不重复追加未改变的 Todo；原生更新、提醒和完整状态按内容、状态与阶段判重，真正变化才生成新计划卡片，先前快照和用户消息位置保持不变。
-- 返回聊天、切换会话或进入设置后，保留各会话的滚动位置、Todo/思考/工具展开状态及未发送草稿；主页筛选和相关设置页的滚动、展开状态独立保存。不跨会话共享草稿，也不承诺结束应用进程后恢复所有临时 UI 状态。
-- 页面进入保持原有右侧滑入和非线性曲线；返回时当前页向右退出、上一级从左侧恢复。主页底栏“会话、功能、容器”按位置定向切换，保留各页已有状态。
-- 模型服务支持 Chat、Response、Message 接口、真实连通性测试与远端模型同步；搜索框下方与首个列表项保留 16 dp 间距。模型及服务的通用入口图标统一为 Material Symbols `deployed_code` 立方体，已有模型品牌、服务首字标识及真正的思考控件保持不变。模型可编辑显示名、推理/图片能力、上下文与最大输出，以及输入、输出、缓存读取、缓存写入四项美元/百万 token 价格。
-- 原生与独立模型服务详情均支持模型长按多选、全选/取消全选和确认后批量移除；返回先退出多选。原生页只选择自定义模型或已有覆盖，纯内置目录保留，变更仍需底部保存；独立详情确认后一次性入队保存。远端获取结果不再直接全部追加：先展示默认全选的“获取到的模型”弹层，可按名称或 ID 搜索，全选只作用于当前筛选可见项，隐藏项保持原选择；确认仅追加所选新 ID，取消不写入配置。
-- 模型资料参考 ipmt 的目录匹配方式，联网读取主/备目录并缓存六小时；按唯一 ID 或规范化别名匹配，歧义或未知模型不猜测。新增模型可补全能力与价格；已保存模型须显式“应用匹配”，手动改过的字段保留。远端同步仅追加新模型，不覆盖既有编辑。
-- 思考强度包含无、低、中、高、超高（`xhigh`）和最大（`max`）；支持接口自定义 effort 与 Message 数值预算，预算须至少 1024 且小于最大输出。两个最高档分别贯通原生 RPC、配置和请求参数，不互相合并。
-- 模型列表与输入区模型选择按钮共用离线品牌图标并保留原色；按钮随当前模型切换，列表项始终展示各自模型图标。未匹配品牌的模型显示 ID 首字符的大写单字标识及圆形底色，底色按字母稳定生成，同字母同色，不使用服务商图标或通用脑图标替代。选中背景覆盖整行，弹出菜单动画保留外部阴影。品牌图标参照 Kelivo，DeepSeek 使用原蓝鲸；Codex、Kimi 因 Kelivo 对应资源的许可来源未能核实，使用 MIT 许可的 LobeHub 同品牌图标。来源与差异见 `agent-ui/src/commonMain/composeResources/files/model-icons/NOTICE.txt` 和 `provenance.json`。
-- Agent 设置按 OMP Schema 展示，过滤外观及 TUI 专属项。外观独立保存在宿主设置中，不写回 TUI 配置。
-- `models.yml` / `config.yml` 位于容器当前用户有效 HOME 的 `~/.omp/agent/`，账户与 `HOME` 覆盖离线解析，不为定位目录启动容器。全局配置、受管会话、模型扩展与原生管理桥使用同一有效目录，不固定为 `/root`，不自动迁移其他用户的数据。文件操作通过该容器当前账户的客体进程执行，不从 App 直接读取 Rootfs 内的 OMP 私有文件；拒绝链接、特殊文件和覆盖配置目录的宿主/系统挂载，普通工作区挂载保持原有语义。支持应用写入和外部修改回流；模型服务配置可能含 API Key，应留在本地数据目录，不要提交版本控制。
-- Proroot 上游仅提供 Android arm64 版本；桌面使用真实 PRoot/QEMU 或具备 Root 权限的 chroot，不伪装支持 Proroot。
-- Proroot 参照 DSHA 的显式 `host:guest` 绑定方式修复 `/dev` 等默认路径启动报错，工作区与自定义挂载同样显式映射。修复位于宿主启动参数，无需重新导入 Rootfs。
-- Proroot 五库固定为作者 [andClaw 2.3.47 的同一提交](https://github.com/coderredlab/andClaw/tree/376460cc8e76f1652f51493de5180daceecb78c7/app/src/main/jniLibs/arm64-v8a)，逐文件校验 SHA-256 并原样打包；启动时显式选择当前 APK 配套的 runtime/linker，避免自动发现混用旧组件。该更新修复旧 syscall relay 破坏寄存器导致的 Bun 崩溃及原生模块加载失败；保留原 Bun、OMP 和 Rootfs，无需禁用缓存、屏蔽错误或加入兼容 shim，更新 APK 即可生效。
-- 容器详情按原型重置操作按钮、工具链卡片、主题色分段控件和挂载 bottom sheet；保留原有功能。包括 Proroot 在内的普通登录身份可填写容器中已有的用户名或数字 UID，实际启动使用该账户的 UID/GID、HOME、USER 与 LOGNAME，不固定为 `user`，不自动创建账户。有效 HOME 使用与启动器共用的离线账户解析，并遵循容器配置中的 `HOME` 环境覆盖。
-- 容器详情 → 挂载目录支持主机目录选择，主机路径右侧的文件夹按钮在 Android 打开系统目录选择器，Desktop 打开原生目录选择器；也可手填 `/sdcard/项目` 等实际主机路径并指定容器内挂载点。Android 11+ 按需申请“所有文件访问权限”，Android 8–10 请求储存读写权限，Android 10 使用传统共享储存访问；启动不自动申请。仅解析本机共享储存卷的目录，保存实际路径而非 `content://`，不复制或同步目录内容；取消选择、拒绝授权或保存失败保留草稿。云盘等文档提供方不能直接挂载；系统选择器不允许选择共享储存根目录或 Download 时，可在授权后手填路径。权限不绕过 Android 对其他应用私有目录的限制；只读保护仍仅由 chroot 提供。更新 APK 即可使用，无需重新导入 Rootfs。
-- 强制只读绑定仅由 chroot 实现。Proroot / PRoot 对只读挂载明确报错，不会静默变为可写。chroot 需要真实 Root 权限，bind 和只读重挂载都显式传入源与目标，并校验内核报告的只读状态；挂载失败回滚并保留实际错误。Android 的 mount 不支持私有化标志时允许继续，不能保证挂载传播隔离；停止容器时回收所属进程、卸载挂载点。
-- Rootfs 物理属主与逻辑属主分开管理：PRoot/Proroot 的物理文件归 App，逻辑 UID/GID 和完整 `07777` 存在 Rootfs 外私有清单；chroot 使用真实客体属主。导入、导出和克隆通过 tar 头传递逻辑身份，不把宿主 App UID 或 sidecar 放入归档。切换这两类引擎时先停服、预检并离线迁移，成功后才保存引擎配置；无真实 Root、实际挂载未卸载、外部硬链接或身份不一致时拒绝，中断可按 journal 继续，半迁移树不能启动或归档。
-- 无清单的旧容器仅首次按有效 passwd 账户、配置 HOME、系统路径及明确的 SSH/VNC/OMP 等私有状态保守重建。这不是已丢失原始 UID/GID 的精确恢复；后续客体 chmod 和真实 chroot 属主为准。普通启动只准备明确管理路径，不再周期递归扫描、恢复 App 共享组或把目录重新设为 2770/700；新管理目录和文件采用私有模式，PRoot/Proroot 的 owner 访问修复仍不伪造内核 chown 能力。
-- OMP 配置、历史、扩展、通道和附件继续通过同身份客体文件进程访问。离线元数据、布局、DNS 和用户数据库使用统一安全文件服务；chroot 私有树由 Root 读取，写入先完成私有暂存、设置属主、恢复完整模式并复核版本/身份，再原子替换。完整/脱敏导出不修改源 Rootfs，Root tar 流读取 chroot 私有内容；完整备份不要求解析用户数据库，脱敏仍严格校验 HOME 与链接。Skill 与调试器独立初始化、分别报告错误，不因辅助失败阻断原生聊天；调试程序、凭据和 Skill 安装记录保持 700/600，不吞权限错误或承诺绕过 Android/SELinux 限制。
-- 多个部署项目按首次出现顺序显示；进度或错误更新原位替换，完成后仅移除对应项目，不因并发刷新反复换位。
-- 容器终端是独立导航页，直接连接真实 PTY，不再使用命令输入框加日志模拟。Android 保留 Love2Droid 的黑色控制台、Maple Mono 字体及两行等宽快捷键栏，移植 Termux TerminalView/TerminalSession；挂载和窗口获焦后重建输入连接，点击终端唤出软键盘，快捷键不抢焦点。Desktop 使用 JediTerm 3.63 + pty4j 0.13.4。支持 ANSI、交互式 Shell、方向键、Ctrl-C、选择复制与窗口尺寸更新；离开页面关闭其终端进程，退出后保留输出并提示重新打开，不关闭其他会话的进程。
-- 容器宿主进程的 `/proc/<pid>/stat` 不可读时，以仍存活的原进程句柄回退跟踪和终止；恢复可读后固定 starttime，避免将复用的 PID 当作原进程。Android Termux PTY 的已知会话进程组也会收到停止信号；若 `/proc` 持续不可读，无法保证发现所有后代，组长退出后不会再向未验证的进程组发信号，忽略停止信号或脱离进程组的后代可能残留。chroot 仍要求经过 Root 身份握手及特权快照。
-- PRoot/Proroot 启动前为宿主补充 GID 追加缺失的容器组名，保留已有 `/etc/group` 条目并原子更新，解决 `groups: cannot find name for ...`，不屏蔽报错。DNS 继续使用已有的默认网络监听与客体配置更新，无需替换 PRoot 二进制或重新导入 Rootfs。
-- 工具链安装/卸载先确认，取消不执行，执行期间禁止重复触发；同一行卡片按较高内容等高，长版本自动换行。Git 版本去掉 `git version` 前缀。
-- rootfs 支持 `.tar.gz`、`.tar.xz`、`.tar.zst` 导入，导出为 `.tar.zst`。归档路径和符号链接受边界检查；克隆/导出保留可执行及访问权限。文件系统允许时保留真实硬链接；Android 等环境拒绝创建硬链接时，导入器改为复制普通文件并保留权限和修改时间，不生成替代符号链接。此时文件不再共享 inode，可能增加磁盘占用。体积统计不遍历运行时挂载和 PRoot/QEMU 的临时宿主视图。
-- 导入同时检查表单名称和归档中非空的容器标题，任一匹配现有 `displayName` 或 `name` 即提示冲突；输入名称失焦即可检查，不必先读取归档。读取并校验归档后展示内置标题及真实分发版本，匹配多个容器时必须明确选择目标。可选择“覆盖更新现有容器”“重命名并作为新容器导入”或取消；重命名同时修改新容器的 `config.name` 与客体 `container.json.title`，不会导入后又恢复为冲突标题。
-- 覆盖更新先在临时 staging 完成下载/传输、可选 SHA256、安全解压、包装目录扁平化、发行版信息读取、ELF 架构及引擎根目录校验，再停止并隔离目标，对完整覆盖计划做零写入预检。保留原 ID、配置、挂载、有效 HOME 及归档未包含的本地新增文件；普通系统文件、工具、技能、扩展、规则、提示词、功能卡片、卡片布局及分发信息按归档更新。
-- 覆盖时始终跳过 `/workspace`、配置挂载目标、`/tmp/wawlink`，以及 `/root`、当前有效 HOME、新旧用户数据库 HOME 下的指定 OMP 本地配置/凭据/数据库、会话和日志、Shell 历史、SSH/Git 等凭据；原本缺少的保护文件也不会从归档注入。保护不扩大到整个 HOME 或 `.omp`，缓存仍可更新。拒绝越界父链接、危险目录替换、失效用户、隐式 HOME 变更及不兼容架构；文件采用替换 inode 的方式更新，避免硬链接别名改写本地凭据。**未列入保护范围的文件仍可能含个人数据**。
-- 损坏归档或预检失败不会写目标 Rootfs。实际合并是逐文件原子替换，不保证磁盘满或其他提交期 I/O 故障时整树回滚；重要容器更新前仍应完整备份。更新后重新读取元数据和体积，原本运行的容器按既有代次规则恢复；手动停止、取消或关闭后不自动重启。失败保留表单与可重试的校验结果，取消或离页回收临时归档。
-- 容器详情的“导出容器”默认完整导出；选择“脱敏导出”后，可分别排除 OMP 配置/凭据、会话及日志、Shell 历史、SSH/Git 凭据与常见缓存。过滤覆盖 `/root`、容器有效 HOME、用户数据库中的 HOME 和 OMP 配置档，只影响归档，不修改源容器；用户数据库或 HOME 解析越界时拒绝脱敏导出。**这不是全面秘密扫描**：未列入路径及内容中的凭据、项目文件和自定义配置仍可能保留，分享前须自行检查归档。
-- 容器列表冷启动先发布已保存的体积缓存，旧配置没有缓存时先显示现有默认值，再在运行时的后台 IO 协程中离线统计并保存，不为统计启动容器；失败保留上次成功缓存，迟到结果不得覆盖删除、重注册、配置变化或关闭后的状态。克隆的归档、解压和体积统计，以及导出的归档工作不持有全局容器锁；同容器归档期间拒绝新的启动、进程、终端、删除和配置修改，但允许显式停止。自动恢复仅限原本运行且操作、配置及停止代次仍匹配的容器，取消或关闭不重开容器。导出使用相邻临时文件，完成后提交且不覆盖已有目标；失败清理暂存文件并保留原始异常。
-- 容器详情右上角的编辑按钮位于删除按钮左侧，打开当前主题 Material 3 底部面板，可修改标题、描述、分发版本号与图标。图标支持离线 Material Symbols、恢复发行版默认头像，以及系统文件选择的 PNG/JPEG/WebP/GIF/BMP 图片；图片上限 10 MiB、1600 万像素，保存为不超过 512×512、512 KiB 的 PNG 静态头像。
-- 四项信息保存在容器当前用户有效 HOME 的 `~/.wawlink/container.json`，字段为 `title`、`description`、`version`、`icon`。`icon` 为空表示默认头像，Material Symbols 小写名称表示内置图标，`data:image/png;base64,...` 表示内嵌图片；图片与文字同文件原子保存，不依赖宿主路径或容器 ID。标题最多 120 字符、描述 4000 字符、分发版本号 64 字符；分发版本号不替换 Linux 发行版版本。导出/导入保留全部信息，克隆保留描述、版本与图标并使用输入的新标题；使用非 root 用户制作的容器，导入后选择同一用户读取其 HOME。
-- 容器信息读写无需启动引擎，保存不重启已运行容器或中断会话；文件只在容器内持久化。缺少文件的旧容器保留原名称与发行版头像，新建/导入无信息容器写入初始标题。JSON 最大 1 MiB，读取失败保留原文件并显示错误；拒绝链接、特殊文件、越界及宿主挂载中的信息路径。外部修改触发冲突，图片选择取消不改草稿，保存失败保留草稿；关闭未保存编辑及重新读取后覆盖均需确认。Rootfs 分发仍包含用户自行配置的认证与数据，分发前须自行清理秘密信息。
-- 导入时以解压目录的真实路径统一校验符号链接，支持 Android 应用数据父目录的路径别名及合法的 `node_modules/.bin` 相对链接；仍拒绝作为解压目录的符号链接、路径穿越和真正逃逸的链接链。
-- Android 容器启动及执行命令前使用当前默认网络的 DNS，并在网络变化时原子更新已运行容器的 `/etc/resolv.conf`；断网时保留最后一份有效配置。显式绑定 `/etc/resolv.conf` 或 `/etc` 时，以用户挂载为准。现有 Rootfs 的旧 DNS 会在运行时修正，无需重新下载或导入归档。
-- Bun 会缓存 DNS 服务器；默认网络的 DNS 变化后，OMP 在下一次空闲发送时重启子进程并续接原会话，不中断正在执行的任务，不自动重发请求。独立宿主接入时，将同一个 `StateFlow<String?>` 同时传给 `RuntimePaths.resolvConf` 与 `OmpProcessPool` 的 `resolvConf` 参数；`null` 表示不覆盖现有 DNS。
-
-### 当前容器的功能
-
-底栏“功能”以两列卡片提供终端、文件、规则、提示词、插件、技能及容器声明的自定义功能。内置操作只针对当前选择容器；规则目录来自实际配置用户的 `~/.omp/agent/rules/`。提示词入口浏览 `~/.omp/agent/prompts/`，并直接列出 `~/.omp/agent/` 的 `AGENTS.md`、`RULES.md`、`SYSTEM.md`、`SYSTEM_TEMPLATE.md`、`APPEND_SYSTEM.md`、`PERSONALITY.md` 和 `TITLE_SYSTEM.md` 及创建状态。已有文件使用原生编辑器打开，未创建的文件以空白草稿打开，保存时才原子创建；拒绝符号链接与覆盖，外部修改冲突保留草稿。Android 使用 Sora，Desktop 使用 RSyntaxTextArea。
-
-插件与技能直接调用容器内已安装 OMP 的实现，不展示原型演示数据：
-
-- “功能”入口管理用户级对象；聊天设置菜单中的插件/技能入口固定当前会话工作区的项目级对象，不提供跨范围切换。项目技能的保存、发布预检、发布与版本修改均校验目录属于当前工作区，不能借用户技能路径跨层操作。OMP 仅支持用户级的 npm、Git 和本地插件链接，项目入口不会假装能独立安装或卸载这些用户插件；项目可管理原生允许的市场安装与覆盖。
-- 插件支持 npm、Git、本地链接与市场来源，真实安装/卸载、启停、可选功能、声明设置及来源覆盖、市场登记与缓存、诊断和更新；本地链接不伪装支持升级。风险操作确认后执行，原生耗时操作可请求取消，取消不保证撤回已经发生的外部副作用。
-- 技能支持真实发现、加载过滤、别名/冲突与来源、完整原文及资源预览、创建/复制/保存/删除、外部修改冲突、Skillshare 搜索与包版本安装、锁定恢复、账号、发布预检、发布和维护。包或插件中的技能保持只读，修改先复制为独立技能；包含脚本的精确版本安装单独确认，不在安装时执行脚本。`.skill` 导入是上传转换并公开发布，不冒充本地安装。
-- 官方 Skillshare 包可在安装前预览精确版本的文件，校验清单大小与 SHA-256；单文件预览上限 512 KiB，脚本不会执行。包安装、更新、恢复、卸载或修复失败后尝试重新读取技能快照，保留原错误提示。
-- 技能市场默认打开独立的 [ClawHub](https://clawhub.ai/) 公开目录，支持真实浏览、下载量/最新/趋势排序、游标翻页、搜索、版本与资源预览；右上“切换来源”保留官方 Skillshare，原有包安装、锁定恢复、账号和发布管理不变。官方空库只表示该 Skillshare 服务当前没有包，不代表 ClawHub 或本地技能为空。
-- ClawHub 安装固定发布者、技能及精确版本，保存全部原始资源并核验大小与 SHA256；GitHub 来源固定公开审核交接的提交和技能目录，核验 Git 对象及完整目录哈希，不安装整个仓库或静默改用最新分支。仅写入当前入口的用户级或项目级技能目录，不修改官方包声明/锁文件；同名目录拒绝覆盖，可改本地目录名后重试。`.wawlink-clawhub.json` 保存原版身份与安装时间，不认证后续本地编辑内容。
-- 第三方技能预览不执行脚本、不自动加载外部图片或打开内容链接；安装也不执行脚本、依赖安装或改写 frontmatter。ClawHub/OpenClaw 与 OMP 的工具、依赖、权限和格式不保证兼容，扫描 `clean` 仍可能含警告；安装前必须阅读并明确确认精确版本风险。公开服务超时、限流及审核拦截显示实际类别，不绕过限制或自动重试。
-- 两页的路径、版本、默认值和可操作项来自实际容器。秘密设置遮罩且错误脱敏；插件详情的 package.json `omp/pi.settings`、标准清单及兼容清单同样按 schema 遮蔽秘密默认值，不改写磁盘清单。草稿在失败后保留。保存明确提示新会话或重启后生效，不把发现清单当加载成功证明，不伪造现有 RPC 没有提供的运行时重载。
-
-### 容器声明的自定义卡片
-
-统一目录为当前容器用户的 `~/.wawlink/features/<id>/`，不是宿主 HOME。`id` 为 1–64 个字母、数字、下划线或短横线，首字符须为字母或数字。每个功能包含 `card.json`、前台启动脚本 `start.sh`，以及可选的幂等收尾脚本 `stop.sh`。目录扫描仅读取声明，不执行脚本；添加后点击功能页刷新即可发现，不重建 APK 或 Rootfs。
-
-`card.json` 为不超过 64 KiB 的 UTF-8 JSON 对象：
-
-```json
-{
-  "icon": "dashboard",
-  "title": "工作台",
-  "description": "查看与处理当前项目",
-  "lifecycle": "manual",
-  "color": "#D9EAFD",
-  "showStatus": true,
-  "showMemory": true
-}
-```
-
-`icon`、`title`、`description` 必填；图标使用 Google Material Symbols 小写名称，标题和描述使用中文。`lifecycle` 省略为 `page`，离开该功能即停止；`manual` 离页继续运行，由用户明确启停；新增 `container`，每次启动容器时自动发现并启动，不必先打开功能页，离页或隐藏卡片不停止。三者均在停止容器或关闭应用时回收，不承诺 Android 杀进程后继续运行。
-
-`container` 每个真实运行代次只自动尝试一次，单个功能失败不阻塞其他功能或容器；扫描、启动及进程退出错误会真实提示。手动停止或失败后不会因刷新、切页或元数据更新反复拉起，下次容器启动再尝试；运行中新增的卡片可手动启动，或下次容器启动时自动运行。快速重启即使合并了中间的停止状态，也按新的运行代次处理；等待服务就绪时停止容器同样回收进程组，不反向启动已停止容器。
-
-功能页以 `ref-plan/feature-cards.html` 为视觉基准，自定义卡片紧随五个内置功能。半宽原生卡片图标位于标题上方，整行卡片图标与标题/状态并排；不默认附加任何按钮。`cardSpan` 为整数 `1`（默认，半宽）或 `2`（占满两列，原生和 HTML 均支持）。长按进入顶部编辑栏，零选择仍保持编辑；可隐藏/显示、调色和卸载，只有全部选中自定义功能时才允许卸载。隐藏项在编辑模式底部和应用设置均可恢复。拖动保留原有抬起、跟手、边缘滚动和非线性换位。顺序、隐藏与原生颜色覆盖保存在当前容器用户的 `~/.wawlink/feature-cards.json`，不再保存在软件数据目录；文件不依赖容器 ID，随 Rootfs 导出、导入和克隆保留。导入后使用同一容器用户即可读取其设置；本次不迁移旧版未发布软件的测试设置。顶部胶囊切换全局当前容器，功能清单及设置沿用既有客体进程读取和按需启动语义，状态来自真实运行时。
-
-功能页已加载的 HTML 卡片滚出可见区域后保留同一 WebView 和文档，滚回不重建或重载，网页内部状态继续保留；尚未加载的卡片仍按需创建。此保留仅用于滚动，不延长切换底栏后的页面生命周期；手动隐藏卡片、切换容器或销毁页面仍正常回收。内存占用随本页已加载的 HTML 卡片数量增加，原生卡片仍沿用懒加载。
-
-原生卡片可选 `color` 为严格 `#RRGGBB`，用户调色覆盖它；默认色恢复清单颜色或应用主题。自定义底色生成同色系深色文字和图标，极深底色使用可读浅色。调色 bottom sheet 提供默认/七色、HEX 输入和实时预览，取消或保存失败不丢草稿。HTML 卡片自行决定完整布局和配色，不参与原生调色；仍提供 `--wawlink-card-color` 与 `--wawlink-card-foreground` 供作者主动使用，不覆盖显式背景/渐变/前景。`showStatus`、`showMemory` 默认为 `false`，内存为真实服务进程组 RSS，不可读时显示不可用。页面与卡片不展示生命周期说明，功能启动只显示水平垂直居中的标准圆形进度组件。
-
-Desktop 的编辑和模态弹层期间使用当前 WebView 的固定合成快照，避免原生网页盖住选择标记、拖动层和 bottom sheet；保留同一网页实例与脚本状态，退出编辑/弹层后恢复原视图，不重载文档。Android 直接使用原生 WebView 并按卡片圆角裁剪；原生布局参数明确填满 Compose 分配的区域，不使用 `WRAP_CONTENT`，避免百分比高度及 `vh` 被计算为零而出现白屏。
-
-#### 原生按钮
-
-`actions` 是可选数组，最多三个，缺省不显示按钮；每项必须包含唯一小写 `id`、中文 `title`、Material Symbols `icon` 和 `type`。每张卡片只有一行按钮，等宽、44 dp 等高；半宽三个按钮隐藏全部文字但保留无障碍名称，整行保留图标/文字。启停过渡与脚本/Lua 执行显示标准进度组件并禁止重复触发，不使用假进度或模拟成功。
-
-```json
-{
-  "icon": "dns", "title": "开发服务器", "description": "管理项目服务",
-  "lifecycle": "manual", "cardSpan": 2, "showStatus": true,
-  "actions": [
-    {"id": "power", "title": "启动", "icon": "play_arrow", "type": "toggle"},
-    {"id": "open", "title": "打开", "icon": "open_in_new", "type": "open"},
-    {"id": "logs", "title": "日志", "icon": "receipt_long", "type": "logs"}
-  ]
-}
-```
-
-`open` 打开真实功能页，`start`/`stop`/`toggle` 使用既有服务生命周期，`logs` 查看实际服务和最近动作输出。`script` 需要功能目录内的相对 `script` 路径（例如 `tasks/backup.sh`），使用当前容器身份、实际功能目录和 `/bin/sh` 执行；`WAWLINK_FEATURE_ID`、`WAWLINK_FEATURE_DIR`、`WAWLINK_ACTION_ID` 提供执行上下文。脚本不脱离进程组，返回真实输出与退出错误，取消、停容器或关闭应用回收进程组。`lua` 需要非空内联 `lua`，例如 `{"id":"share","title":"分享","icon":"share","type":"lua","lua":"host.share('分享内容', '分享')"}`；直接复用下述 Android LuaJ 引擎，不创建隐藏 WebView，每次调用独立 globals。离开功能页或切容器取消仍在执行的按钮任务；任意不可中断 Java API 不保证立即终止。清单扫描不执行按钮。
-
-#### HTML 卡片
-
-在功能目录放置可选 `card.html` 即完整替换卡片区域，亦可用 `card` 指定目录内的相对 HTML 文件。静态 HTML 为不超过 256 KiB 的 UTF-8，可以内联，也可使用 HTTPS 资源、接口与 CDN，不再强制所有 CSS/JS 自包含。`cardHeight` 为 80–480 dp，默认 172 dp，半宽 HTML 至少填满同一行相邻卡片的高度。宿主不增加图标、标题、描述、按钮或内边距，仅裁剪 28 dp 圆角并提供选择遮罩。目录扫描不执行 HTML、Lua 或功能脚本，显示卡片才执行 JS；只有用户操作或 `container` 启动策略会启动服务。
-
-静态卡片首个脚本即可读取 `window.wawlink.card`，字段为 `id`、`status`、`memoryBytes`（整数或 `null`）、`containerRunning`。动态 URL 文档等待原生初始化：`if (window.wawlink?.ready) init(); else addEventListener('wawlink-ready', init, {once:true});`。状态为 `stopped`、`starting`、`running`、`stopping`、`failed`；监听 `wawlink-card-update` 并读取 `event.detail` 获取真实增量，主题/数据更新不会重载文档。调用 `wawlink.action('open' | 'start' | 'stop')` 可放置自己的打开、启停按钮；错误仍由原生真实结果反馈。卡片和完整功能页面均注入主题变量及离线 Material Symbols，可使用 `material-symbols-rounded`；桌面自动将名称解析为打包字形。
-
-动态卡片使用 `cardUrl`，与显式 `card` 互斥，且优先于自动发现的 `card.html`：
-
-```json
-{
-  "icon": "monitoring", "title": "服务器状态", "description": "查看当前服务",
-  "lifecycle": "container", "cardUrl": "/card/index.html", "cardSpan": 2, "cardHeight": 220
-}
-```
-
-`/card/index.html` 等单斜线绝对路径指向该功能真实服务，宿主在就绪后接入随机端口和访问令牌，保留查询与片段；不把端口或令牌写死在清单。页面按真实 URL 加载，保留相对脚本、样式、图片、`fetch` 和 WebSocket 的基址。亦支持带显式端口的 `http://127.0.0.1:端口/路径`、`http://localhost:端口/路径`，直接加载已有本地服务，不附带本功能令牌；该服务由实际所有者管理，不因卡片显示而伪造启动或接管生命周期。禁止清单自填保留的 `__wawlink_token` 参数。自身路径在服务停止后显示启动入口，等待启停时仅显示居中进度。
-
-推荐天气类使用 `cardSpan: 2`、`cardHeight: 176`，由 HTML 自行绘制整幅渐变、前景及天气图形；专注类使用半宽卡片，在完整视口中居中计时器。`html, body` 使用 `width:100%; height:100%; margin:0; overflow:hidden`，不要再嵌套一张有边距的卡片。需要主题配色时主动使用上述 CSS 变量，明确设置的颜色、渐变和非线性动画不会被宿主重写。天气、服务器指标必须来自真实接口；可以使用本地服务、外部 HTTPS API、WebSocket、常用前端框架或 Android 可信 LuaJ，正确处理网络失败、CORS 及系统权限，不把原型数据当实测数据。
-
-以下是可独立运行的专注卡片正文（放入 `card.html`，`cardSpan` 省略或设 `1`），计时使用实际截止时间，不因回调延迟漂移；不预装到用户容器：
-
-```html
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><style>
-*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden}
-body{background:radial-gradient(circle at 30% 20%,#ff8a65,#e5484d 70%);color:white;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
-  font-family:system-ui,sans-serif;user-select:none}
-button{position:relative;width:112px;height:112px;border:0;background:none;color:inherit;padding:0}
-svg{position:absolute;inset:0;transform:rotate(-90deg)}circle{fill:none;stroke-width:9}
-.track{stroke:rgba(255,255,255,.25)}.progress{stroke:white;stroke-linecap:round;stroke-dasharray:314}
-time{position:absolute;inset:0;display:grid;place-items:center;font-size:26px}
-p{margin:0;font-size:16px}
-</style></head><body>
-<button id="toggle" aria-label="开始或暂停专注"><svg viewBox="0 0 112 112" aria-hidden="true">
-<circle class="track" cx="56" cy="56" r="50"/><circle id="ring" class="progress" cx="56" cy="56" r="50"/>
-</svg><time id="clock">25:00</time></button><p id="label">点按开始专注</p>
-<script>
-const duration=25*60*1000;let remaining=duration,deadline=0,running=false;
-const clock=document.getElementById('clock'),ring=document.getElementById('ring'),label=document.getElementById('label');
-function draw(){
-  if(running)remaining=Math.max(0,deadline-Date.now());
-  const s=Math.ceil(remaining/1000);
-  clock.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
-  ring.style.strokeDashoffset=314*(1-remaining/duration);
-  if(running&&!remaining){running=false;label.textContent='完成';}
-}
-document.getElementById('toggle').onclick=()=>{
-  draw();if(!remaining)remaining=duration;
-  running=!running;if(running)deadline=Date.now()+remaining;
-  label.textContent=running?'专注中':'已暂停';draw();
-};
-const timer=setInterval(draw,250);addEventListener('pagehide',()=>clearInterval(timer),{once:true});draw();
-</script></body></html>
-```
-
-
-#### Android LuaJ 与系统调用
-
-卡片和完整功能页均提供 Promise API：`wawlink.lua(source)`、`wawlink.openBrowser(url)`、`wawlink.openUrl(url)`、`wawlink.share(text, title?)`、`wawlink.launchApp(packageName)`。Lua 使用真实 LuaJ 标准库及完整 `luajava` 互操作，不增加 WawLink 审批或 Android API 白名单；这是用户可信代码执行，仍受 Android 系统权限、应用 UID、系统版本和设备能力限制。
-
-Lua 提供 `context`、`activity` 和 `host`，并提供同名全局助手 `openBrowser`、`openUrl`、`share`、`launchApp`。需要 UI 线程的 Java 调用使用 `host.runOnUiThread(function)`；普通 Lua 在串行后台执行器运行。Lua 可返回 JSON 值或连续数组/字符串键表，多返回值变为数组；循环、非有限数字、函数和不可序列化 Java 对象会拒绝 Promise。导航和销毁取消旧文档任务，真实异常通过 Promise 拒绝返回，调用方应显示错误。例如：
-
-```javascript
-await wawlink.openBrowser('https://example.com');
-await wawlink.share('待分享的文字', '分享');
-const sdk = await wawlink.lua(`
-  local Build = luajava.bindClass('android.os.Build$VERSION')
-  return Build.SDK_INT
-`);
-```
-
-桌面支持 HTML、实时数据及卡片动作；Android Lua/系统助手明确拒绝，不伪造 Android API，原生 Lua 动作按钮在桌面置灰禁用。旧系统 WebView 缺少来源限定消息桥或文档起始注入能力时显示可定位错误，不回退到无来源保护的桥。
-
-启动脚本由 `/bin/sh` 在功能目录运行，需以前台方式 `exec` 真实服务，不使用 `nohup`、守护化或脱离进程组。容器需有 `setsid`（util-linux）。服务读取以下环境：
-
-| 环境变量 | 契约 |
-| --- | --- |
-| `WAWLINK_HOST` / `WAWLINK_PORT` | 只监听提供的 `127.0.0.1` 与每次启动分配的端口，不绑定公网地址或固定端口 |
-| `WAWLINK_TOKEN` | 每次启动独立令牌；校验请求的 `Authorization: Bearer …` 或 `X-WawLink-Token`，不写入代码、日志或持久配置 |
-| `WAWLINK_FEATURE_ID` / `WAWLINK_FEATURE_DIR` | 当前功能身份与客体目录 |
-| `WAWLINK_THEME_CSS` | 当前 Material 3 配色；页面使用注入的 `--md-sys-color-*` CSS 变量 |
-
-服务须在 30 秒内对根路径的带令牌 GET 返回 2xx/3xx；实际 HTTP 就绪后才打开 WebUI。Android 使用 WebView，Desktop 使用 JavaFX WebView。主文档导航和原生桥限定当前受信来源；资源与连接允许 loopback HTTP/WS、外部 HTTPS/WSS、接口及 CDN，仍遵守浏览器 CORS 和服务自身更严格的 CSP。关闭宿主 file/content 访问、子框架和 object；Android 可信 Lua/系统助手是显式宿主入口，不是 Web 跨域导航。外部脚本在受信页面内执行时拥有该页面桥能力，仅使用用户信任的依赖。网关支持同源资源、表单与 WebSocket；普通 HTTP 单次请求/响应上限 32 MiB，上传不接受 HTTP 分块传输。页面默认沿用白底、中文大字号、Material 3、离线 Material Symbols 与非线性动画，卡片按用户设计自由布局和配色。脚本及可信 Lua 不是不可信代码安全沙箱。
-
-应用在容器运行接入、原生 Agent 启动前或读取功能页时自动检查 `~/.omp/agent/skills/wawlink-functions/SKILL.md`；缺失时安装，在同目录 `.wawlink-builtin.sha256` 记录已安装正文的 SHA-256。软件内置内容更新后，容器正文仍匹配安装记录才原子同步新内容和哈希；用户修改过的正文及原记录保留不动，不仅改记录冒充内容已更新。没有记录的旧容器仅在正文精确匹配已发布内置版本时接管升级；之后支持跨软件版本更新，不再依赖单个写死的上一版哈希。更新中断可按暂存记录的前后哈希恢复；内容已一致时不重复写文件。检查不会重开已停止容器，也不伪造现有 Agent 的运行时重载，新 Agent 启动前会读取更新后的文件。Skill 包含 `container`、动态 `cardUrl`、外部接口/依赖及初始化时序契约，不强制 HTML 仅用内联资源。它**仅在用户明确要求“添加 WawLink 功能页卡片”或等价新增请求时触发**，普通网页、脚本、插件/技能或笼统功能请求不创建卡片。不预装示例卡片，不复制开发机认证。
-
-#### 容器内轻量调试命令
-
-`wawlink-feature` 复用容器已有 Bun，连接应用当前挂载的真实 WebView，无需 Chrome、Chromium、Playwright 或 ADB。应用为运行中的容器安装到当前用户 `~/.wawlink/bin/`，新建 Agent/终端进程的 PATH 包含此目录；旧 shell 可直接使用完整路径。更新 APK 不需要重新导入 Rootfs。
-
-```bash
-wawlink-feature list
-wawlink-feature inspect weather --surface card
-wawlink-feature logs weather --surface card
-wawlink-feature eval weather 'getComputedStyle(document.body).height' --surface card
-wawlink-feature screenshot weather --surface card --output /tmp/weather-card.png
-wawlink-feature reload weather --surface card
-wawlink-feature inspect weather --surface page
-wawlink-feature eval weather 'document.querySelector("button").click()' --surface page
-wawlink-feature screenshot weather --surface page --output /tmp/weather-page.png
-```
-
-将 `weather` 替换为实际功能 ID。`--surface card`（默认）选择功能列表中的 HTML 卡片，`--surface page` 选择打开后的完整功能页；按容器、功能 ID 与页面种类隔离，不根据标题或 URL 猜测。`inspect` 提供实际生命周期、服务状态、挂载状态、原生尺寸及 DOM 计算布局，便于区分未启动服务与高度为零等布局故障。`logs` 合并有界的服务输出、页面 console、JavaScript 异常、未处理 Promise 拒绝及资源错误；页面未挂载时仍能读取服务输出，不伪造页面日志。
-
-`eval` 返回实际 JSON 值并支持 Promise；异常和拒绝按真实错误退出。`screenshot` 保存当前可见 WebView 的实际 PNG 到客体路径，拒绝覆盖已有文件；不包含宿主 AppBar 或其他页面。`reload` 只重载所选文档，静态卡片重新读取当前 HTML，动态文档重新加载实际 URL，不冒充重启服务。服务端代码修改仍须按真实生命周期启停。
-
-调试不会自动启动容器、服务或打开页面。尚未加载或被手动隐藏的卡片、尚未进入的功能页可能未挂载，`inspect` 明确显示未挂载，执行、截图和重载返回可定位错误；不能用 HTTP 就绪或另一份离屏浏览器冒充应用画面已验证。日志有界且只覆盖已捕获范围，重载后的新文档与旧请求隔离。
-
-通道使用随机 loopback 端口和当前容器运行代次凭据，不向网页开放公共 CORS，容器停止或应用关闭即撤销；凭据不出现在命令结果中。`eval` 具有受信页面原有的 LuaJ/Java 桥权限，是可信代码执行，不是不可信脚本沙箱。新 Skill 强调天气、监控等随容器持续运行的托管服务应按需求显式声明 `lifecycle: container`；默认 `page` 不会因存在动态卡片而自动改变。
-
-
-## 独立嵌入 UI
-
-```bash
-./gradlew :agent-ui:assembleRelease :agent-ui:desktopJar \
-  :agent-protocol:assembleRelease :agent-protocol:desktopJar
-```
-
-Android AAR 位于各模块的 `build/outputs/aar/`，Desktop JAR 位于 `build/libs/`。外部宿主需同时引入协议库及 Compose / 协程等正常运行依赖；不需要引入 OMP 驱动或容器模块。
-
-富图形的 Android 宿主需要可用且较新的 Android System WebView。Desktop 同时需要当前平台的 OpenJFX 21.0.13 `base/graphics/controls/media/web` 运行依赖（兼容 JDK 17），Linux 需要 GTK 3 及 JavaFX WebKit 的原生库；Gradle 工程已按平台声明。富图形在桌面使用无窗口 WebView/Canvas 生成原生 Compose 图片，不嵌入 Swing 子窗口，不需要 interop blending 参数；全屏代码查看单独使用原生 Swing 代码组件。Mermaid 来源与 MIT 许可位于 `agent-ui/src/commonMain/composeResources/files/rich/`；分发 OpenJFX 运行库时保留其 GPL/ClassPath exception 及 WebKit 第三方通知。
-
-Desktop 宿主若使用全屏代码查看器，需在创建界面前设置 JVM 属性 `compose.interop.blending=true` 与 `compose.swing.render.on.graphics=true`，使混合画布中的三点菜单显示在原生编辑器上方；本项目桌面入口已设置。
-
-`dev.wawlink.ui` 的入口：
-
-| 入口 | 宿主提供的契约 |
-| --- | --- |
-| `AgentChatScreen` | `AgentSessionController`、`ProviderConfigRepository`、同容器/项目的 `AgentManagementRepository`、返回/新建/设置导航、挂起的主机与容器附件选择回调、可选 `AgentAppearance` |
-| `ProviderSettingsScreen` | `ProviderConfigRepository`、返回回调 |
-| `AgentManagementScreen` | `AgentManagementRepository`、`ProviderConfigRepository`、返回回调；可选会话、初始分区及返回处理注册 |
-| `AgentConfigScreen` | `AgentSettingsRepository`、返回回调；对应框架设置 |
-| `AgentTheme` | 宿主外观状态；设置页可置于同一主题内 |
-| `CodeDetailScreen` | 标题、原文、可选语言、返回回调；外层提供 `AgentTheme` |
-| `EditableCodeScreen` | 标题、原文、可选语言、返回及保存回调；可选错误、保存状态及返回处理注册。返回前确认未保存修改，保存期间禁用编辑与退出，失败保留草稿 |
-| `AgentActionSheet` / `AgentActionRow` | WawSSH 风格的全宽操作列表；标准拖拽条、可选标题、图标与标题/必要副标题，不嵌套纵向滚动容器 |
-| `LocalAgentImageSaveHandler` | 宿主提供 `suspend (name: String, mimeType: String, bytes: ByteArray) -> Boolean`；保存成功返回 `true`，取消返回 `false`，异常由查看器显示可重试错误。应用已接入 Android 系统文档选择器与 Desktop 原生保存窗口 |
-
-导航、文件选择、认证和 Agent 实现由宿主负责。协议使用 `StateFlow` / `Flow`；UI 只消费状态与控制契约，没有对具体驱动或容器的引用。
-
-`AgentSessionController.loadSlashCommands()` 负责按需加载目录，`ChatSessionUiState.slashCommands`/`slashCommandsError` 提供命令元数据与加载错误；目录不会作为历史重放。`respondAsk(nodeId, answers: List<AskAnswer>)` 一次接收同一原生请求的完整答案，以 `questionId` 对齐，不再按每道题分别调用。
-
-`AgentSessionController.sendPrompt()` 在运行中发送原生 steer；`enqueuePrompt(text, attachments)` 发送原生 follow-up。`takeQueuedPrompt(id)` 挂起到对应队列消息成功撤出后，返回可重新编辑的 `RestoredSessionPrompt`；已消费或移除失败则抛出原因，不先假移除。`QueuedPrompt.queue` 保留 steering/followUp 种类。
-
-`AgentChatScreen` 的 `onPickFiles` 与 `onPickContainerFiles` 均由宿主提供；容器选择返回 `source = AttachmentSource.CONTAINER` 的 `AttachmentFile`，`path` 必须是当前容器的真实绝对路径。驱动在容器内校验普通文件并读取图像字节，消息与历史保留附件来源；不把工作区之外的容器附件伪装成项目文件。
-
-文件路径交互由宿主通过 `LocalAgentFileLinkHandler` 提供当前会话的处理器；没有处理器时，不把文件路径交给系统 URI 打开。宿主须把相对路径解析到该会话工作区，再通过当前容器检查并流式打开/下载。Android 使用非导出 FileProvider 和临时读取授权交给系统查看器或 APK 安装器，仅共享应用缓存中的文件；Desktop 使用已有系统文件关联，APK 安装明确提示仅 Android 支持。
-
-## 预置环境与产物
-
-固定输入：Ubuntu Base 24.04.4 arm64、Bun 1.3.14、Node 22.22.2、OMP 18.12.6，以及 Git、ripgrep、fd、jq、Python、curl、xz、zstd。OMP 使用完整 npm 生产依赖及原生依赖，不以替身命令代替。初始项目位于 `/workspace`，默认工具策略为 `always-ask`。
-
-当前交付产物的实际体积（本轮未重建 Rootfs，保留已有归档与校验文件）：
-
-| 产物 | 字节 | MiB |
-| --- | ---: | ---: |
-| Rootfs 文件内容合计 | 1,543,298,008 | 1471.80 |
-| `build/outputs/ubuntu-main-debug.tar.zst` | 404,312,713 | 385.58 |
-| Android Debug APK（不含 Rootfs） | 56,412,538 | 53.80 |
-
-按已确认的完整功能优先策略，不执行原计划的 150–220 MB 硬上限。每次构建会重新生成 `.sha256` 与 `.sizes.json`，以后者的实际输出为准。构建缓存、Rootfs、APK、原生二进制和本地会话均不纳入源码提交，准备脚本可重建缺失输入。
-
-原生程序的版本、完整性、依赖加载和许可证，以及字体来源，见 [`scripts/USAGE.txt`](scripts/USAGE.txt)。Proroot 为上游专有许可证；本项目不修改其二进制。字体及原生组件的上游许可通知随资源保留。
-
-## 验证
-
-可重复、无计费请求的回归测试：
-
-```bash
-./gradlew :container-runtime:desktopTest :agent-driver-omp:desktopTest \
-  :agent-ui:desktopTest :agent-ui:testDebugUnitTest :app-desktop:desktopTest
-node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
-```
-
-常规单测不使用真实模型认证，不在后台发出计费请求。真实 RPC 验收使用单独的本地运行环境，与预置归档、APK 和默认用户数据隔离。
-
-已验证 Android 编译打包、独立 UI AAR/JAR、APK arm64-only 和 13 个上游原生程序逐字节校验。当前 APK 不含 Rootfs 归档，Rootfs 作为独立文件按 SHA256 校验。实际 Linux PRoot/QEMU 容器已验证发行版下载、三种归档导入、克隆、默认切换、Git 安装/卸载、绑定和环境变量、流式终端，以及停止时仅回收所属进程树。
-
-此前完整回归通过 95 项 Kotlin 测试（容器 19、驱动 68、UI 8；无失败或跳过），覆盖即时消息与失败回撤、重复文本隔离、排队编辑/删除、审批持久化、用户消息定位、Todo 内思考归属及流式/终态重放、展开状态保存，以及现有 DNS、归档、配置同步、原生历史、模型参数与 Markdown 边界。4 项 Node 测试通过，验证 Message 请求预算与跨服务隔离。
-
-真实模型验收仅使用用户确认的 `oc/deepseek-v4.1-flash`，已跑通双会话独立计时、Todo/扁平工具、审批、选择题、附件、排队编辑/删除、原生分支续聊和迁移续聊。桌面实际界面已检查主页展开/进展摘要、双层吸顶及回跳、工具详情、聊天标识符、容器终端和设置页；不把这些桌面结果替代为设备端验收。
-
-本次修复使用完整交付 Rootfs，在注入文件系统硬链接拒绝的条件下完成真实解包，并在新解包的 arm64 PRoot/QEMU 容器内运行 Node、OMP、Git 和报错涉及的 `string-width` 模块；文件内容、权限和修改时间均通过检查。这验证了兼容分支，不替代设备端验收。
-
-部署列表与符号链接修复另通过实际桌面界面验证：两个部署项目交替更新时保持原位，两份完整交付归档经由父目录别名并发导入成功，完成后部署记录移除；两个新容器的 Node、OMP、Git 与 `mnemopi --help` 均实际运行通过。该修复仅需更新 APK，现有 Rootfs 归档不变，不涉及下载源或 DNS 调整。
-
-模型预算扩展及 Agent 设置闪退修复已验证 APK 与驱动 AAR 的两份资源逐字节匹配源码；隔离加载 AAR 的 Android 驱动类，并仅从实际 APK 读取资源，完成设置 Schema 初始化、开关状态修改及 YAML 持久化。由该 APK 安装出的预算脚本已通过 Node 执行真实请求参数转换与跨服务隔离检查，无计费请求；不将这些检查视为 Android 真机点击验收。
-
-OMP 启动修复已在完整 arm64 Rootfs 内验证：先复现旧格式解析失败，再由实际会话启动流程自动修复配置；真实 `oc/deepseek-v4.1-flash` 返回指定内容且会话进入 `DONE`。该次推理通过本地隔离网关使用既有宿主认证，未将开发机认证复制进 Rootfs。另用真实主机 ELF 的 `libtalloc.so.2` 依赖及 PRoot/QEMU 验证无预加载启动、失效 APK 库路径更新和客体环境隔离；这不等同于验证 Android Bionic/SELinux。
-
-DNS 修复已在完整交付 Rootfs 的 arm64 PRoot/QEMU 容器内验证：先复现失效 DNS 超时，确认当前 Bun 保留旧进程的 DNS 缓存，再验证新进程解析公共域名、HTTPS 返回 200、断网保留有效 DNS 及显式 DNS 挂载优先。真实 `oc/deepseek-v4.1-flash` 会话在 DNS 变化后更换子进程，续接上下文并正确返回首轮记住的字符串；认证仅经隔离网关提供，未复制到 Rootfs。Rootfs 构建脚本不再将构建机的 systemd stub DNS 带入新归档，已有交付归档保持不变。
-
-会话体验调整已在完整 arm64 PRoot/QEMU 环境用真实 `oc/deepseek-v4.1-flash` 验证：首条消息在原生进程启动前可见，手动模式等待后切到免审批，随后 5 个工具审批均自动放行，完成 Todo、文件写入与读取；默认免审批的新会话执行真实 Bash 命令成功。另验证实际启动失败撤回消息、会话模式及历史恢复、应用默认值与外观设置交叉保存和重启。真实桌面检查开关默认开启、关闭后新会话模式及重启保持；该轮模型未返回思考块，Todo 内思考通过原生格式事件回放与回归用例验证，不将回放标为模型实际生成。
-
-本轮另运行真实桌面界面：展开 Todo、思考与工具、滚动聊天并输入草稿，往返模型设置及切换另一个会话后，原会话消息区域截图逐像素一致；另一会话没有串入草稿。已检查菜单动画中的阴影、整行模型选中背景、品牌图标切换，以及模型编辑保存后的上下文、输出、四项价格和最大思考档位。真实目录联网匹配、唯一别名与未知 ID 行为通过独立烟测；原生 OMP RPC 分别设置 `xhigh`、`max` 并由 `get_state` 回读确认，未发送 prompt 或产生模型推理请求。历史 journal 回放及重复终态快照保持“前置工具 → 用户消息 → 思考 → 后置工具”的 ID、顺序与所属 Todo。Android APK 和 Desktop JAR 构建通过；不将这些结果标为 Android 真机交互验收。
-
-模型图标修正另通过实际桌面检查：在同一 OpenAI 服务下切换三个未知模型和 DeepSeek，按钮与列表按模型独立呈现；像素采样确认同首字母同底色、不同首字母不同底色。3 项新增回归覆盖 ID 首字符、大小写/后缀无关的配色、26 个字母的颜色区分及文本对比度。UI 测试、Android Debug APK 和 Desktop JAR 构建均通过，无模型推理请求。
-
-Slash、Ask 与富媒体本轮回归通过 109 项 Kotlin 测试（驱动 74、UI 35，无失败或跳过），Android Debug APK 与 Desktop JAR 构建通过。真实 OMP RPC 发现 52 条命令（含临时扩展），运行 `/todo help`，并验证同次 ask 的两道题按原生顺序一次提交、历史恢复及过期命令目录不重放；没有模型推理或认证使用。
-
-实际桌面已操作动态命令菜单、未知命令发送、多问题前后切换、推荐单选、多选、自定义输入、切页保留、完整答案检查与提交；正文及 Ask 预览均显示 SVG、Mermaid 和 PNG 图像，图表渲染生成有效彩色像素且始终仅一个应用窗口。另检查无效 Mermaid、不安全 SVG 与本机文件图像地址均显示中文原因，不执行内容。Android 富媒体仅完成编译打包，未将其标为设备端 WebView 渲染验收。
-
-本轮八项体验优化回归通过 153 项 Kotlin 测试（容器 19、驱动 86、UI 48，无失败或跳过）；Android Debug APK 与 Desktop JAR 构建通过。实际 APK 仅含 arm64-v8a 原生库，包含新终端 JNI 和代码高亮许可，不含 Rootfs。
-
-桌面实际操作验证实时耗时、三层吸顶及回跳、流式思考展开/选择、思考 Markdown、正文与读取工具代码高亮、全屏只读和原文复制。流式输出时，阅读选择区域间隔 2.2 秒的截图逐像素一致；全屏复制的 7,011 个字符与原文一致，键入不能修改内容。原生格式事件烟测确认下一轮 Todo 未变仍只有一份计划、状态变化后才追加，并保留先前计划。
-
-真实 arm64 Alpine PRoot/QEMU 容器验证独立终端的 ANSI 颜色、`tty`、Ctrl-C、历史方向键和复制，窗口调整后 `stty size` 从 `45 48` 更新为 `50 85`。同一隔离容器实际完成 Git 安装/卸载；打开或取消确认时包数据库校验值不变，确认后才改变，版本只显示 `2.47.3`。另用隔离的长版本文本样本检查同一行卡片等高，样本已移除。本轮不使用模型认证或计费推理；Android 的 Sora、TerminalView/JNI 仅完成编译打包，不标为真机交互验收。
-
-后续十项优化通过 225 项 Kotlin 回归（Desktop UI 54、Android JVM UI 53、驱动 86、容器 27、文件服务 5，无失败或跳过），Android Debug APK 构建成功。实际 APK 仅含 arm64-v8a，61 份固定 TextMate 资源的字节数与 SHA256 全部匹配来源清单，包含终端字体与 OFL 许可，不含 Rootfs。
-
-桌面实际操作验证单选自动切题、多选停留、检查答案不跳顶、展开动画与恢复后的平滑思考、未展开命令高亮、发送后空闲用量保持，以及项目文件连续展开多级目录不重叠。真实容器界面验证文件浏览、HTML 原生全屏高亮与返回状态、工作区目录回填且不丢表单、取消附件选择保留草稿，以及跨工作区选择两个文件返回输入区。
-
-真实 arm64 Alpine PRoot/QEMU 烟测通过 10 MiB 原始字节导入导出、含空格/引号/换行的文件名、文本原文、复制重命名、非空目录删除预检、覆写拒绝、导入失败清理、链接拒绝与 ZIP 内容检查；实际终端运行 `id`、`groups`、`stty size`，缺失补充组名已修复且无 `cannot find name`。容器外部路径图像附件经真实客体读取，验证 RPC 请求字节、即时消息对齐、无效附件回撤与历史重放；RPC 回执使用受控传输，不标为真实模型验收。本轮没有模型推理请求或认证使用。
-
-Sora 实际 TextMate 词法器另在 JVM 上验证全部语言映射、HTML 内嵌 JS/CSS、多行状态、明暗主题及 CRLF/UTF-16 原文保留；Android 原生 Sora 视图和软键盘只完成编译打包，不标为真机交互验收。
-
-新增 Agent 设置已在完整 arm64 PRoot/QEMU 容器中验证：读取 OMP 18.12.6 的真实工具、Agent、模型与角色目录；全局/项目 Agent 定义读写、未知 frontmatter 保留、项目遮蔽及删除后回退；独立的 `xhigh` / `max` 持久化；模型模式思考后缀、Prewalk、顾问、请求预算、服务等级、压缩阈值与账号池覆盖的写入及清除；顾问共享配置的作用域隔离，以及原始配置版本冲突拒绝且保留外部修改。
-
-桌面实际新建 Agent、从原生目录选择 `read` 工具，通过全屏 RSyntaxTextArea 输入并保存多行中文 Markdown；写出的定义与原文及工具选择一致。该轮没有模型推理请求，也未复制开发机认证。Android 可编辑 Sora 仅完成编译打包，不标为设备端输入与软键盘验收。
-
-原生模型配置另先复现了同进程中写入后仍读取旧 YAML 的问题；修复后，自定义服务及模型新增、名称修改、删除均即时回流原生目录，角色预览读取新模型及 `max`，脱敏导出不含注入的测试标记。不可用的有效默认角色会在 AI 生成前明确拒绝请求；未将这一失败路径标为真实模型成功生成或 OAuth 登录验收。
-
-最终构建通过 225 项 Kotlin 回归（Desktop UI 54、Android JVM UI 53、驱动 86、容器 27、应用文件服务 5）及 4 项 Node 回归，无失败或跳过。Android Debug APK 和 Desktop JAR 构建成功；实际 APK 中四份原生管理桥资源逐字节匹配源码，仅含 arm64-v8a 原生库且不含 Rootfs。本次未重建或修改交付 Rootfs 归档。
-
-Agent 设置加载与闪退修复后通过 235 项 Kotlin 回归（Desktop UI 54、Android JVM UI 53、驱动 92、容器 27、应用 9）及 4 项 Node 回归，无失败或跳过。Android Debug APK 与 Desktop JAR 构建成功；实际 APK 的五份原生管理桥逐字节匹配源码，仅含 arm64-v8a，不含 Rootfs，交付 Rootfs 归档保持不变。
-
-真实 arm64 PRoot/QEMU 管理流程在 `-Xmx256m` 下读取 5,952 个模型、16 个角色和 8 个 Agent：配置首屏数据 8.9 秒就绪，完整模型目录 23.2 秒就绪，采样堆峰值 219 MiB。已实际验证按需读取完整模型、服务新增/修改/删除、脱敏导出、无效模型配置的就地修复和旧 YAML 格式迁移；未调用模型推理、登录或复制开发机凭据。这是桌面 JVM 的堆测量，不是 Android 真机内存测量。
-
-真实桌面另验证 360 / 460 像素窗口的默认密度、作用域锚定 popup menu、大目录模型搜索，以及原生管理子进程退出后界面保留配置和重试入口、无效模型配置下仍可进入模型服务。历史会话按需恢复及并发打开复用由实际状态断言回归覆盖；启动不再批量创建未打开历史的控制器。整体缩放在应用设置中持久化，原生代码视图、图表和终端按同一应用缩放协调。
-
-Provider 与默认缩放调整后通过 253 项 Kotlin 回归（Desktop UI 58、Android JVM UI 57、驱动 100、容器 27、应用 11）及 4 项 Node 回归，无失败或跳过；Android Debug APK 与 Desktop JAR 构建成功。实际 APK 的六份原生管理桥逐字节匹配源码，仅含 arm64-v8a 且不含 Rootfs。
-
-真实 arm64 PRoot/QEMU 读取 97 个原生 Provider，其中 5 个可用、23 个注册 OAuth；验证无凭据内置项禁用、认证目录获取及已有模型保留、禁用后重新启用、无自定义声明时的内置模型覆盖，以及非法字段诊断和拒绝写入。`-Xmx256m` 下再次读取 5,952 个模型，配置与完整目录分别在 8.4 秒、23.0 秒就绪，采样堆峰值 219 MiB。
-
-实际桌面检查新版默认 100%、360 / 460 像素布局、服务分组与禁用灰显、蓝色获取按钮、重开表单回顶、内置 OAuth 入口和模型编辑；点击“获取模型”产生受控服务记录的认证 GET，追加两项模型。实际非法保存显示缺失 `baseUrl` 的原生原因，原配置 SHA256 不变，API Key 与已编辑模型草稿仍保留，修复后可直接重试保存。本轮未执行模型推理、OAuth 登录或复制开发机凭据。
-
-另在桌面实际复现并修复了未显式声明协议、尚无模型的服务保存后从列表消失；重开应用后的原生目录与用户列表均保留该服务，未把未知协议伪装成 Chat。
-
-模型设置的“使用默认值”只移除覆盖，不创建 `thinking: {}` 或补写控制方式；清除控制方式时移除整个可选思考对象，必填结构未完成时在模型表单内提示。默认选项在当前值及菜单中用灰字显示原生实际默认值，例如“使用默认值 对话”；默认值按需调用 OMP 原生模型构建与目录继承读取，不物化为配置。没有固定值时显示未指定或跟随会话。放弃同时恢复模型 ID、字段与认证选择，清除保存错误并关闭提示；错误提示避开底部操作栏。
-
-本轮通过 234 项 Kotlin 回归（Desktop UI 62、Android JVM UI 61、驱动 100、应用 11）及 4 项 Node 回归，构建 Android Debug APK 与 Desktop JAR。真实 arm64 PRoot/QEMU 验证未配置思考可省略、空对象被拒绝，以及普通、内置引用与 Runner API 的原生默认值；真实桌面 360 / 460 像素验证默认值灰字、重复默认选择不产生草稿及文件变更、模型 ID/名称放弃恢复、默认选择后成功保存、整段清除思考覆盖，以及错误提示仍显示时立即放弃。保存前后由原生 Schema 检查配置，未编辑模型保留原值，拒绝保存时原文件哈希不变；未调用模型推理或 OAuth 登录。
-
-模型选择器固定按 OMP 原生 `available` 状态过滤，服务筛选同样只列有可用模型的服务，移除可关闭的“仅可用”开关；默认/自定义角色、Agent、顾问、预设、允许范围、故障转移和当前会话的管理选择入口共用该规则。聊天输入区的快捷菜单同样读取当前容器/项目的原生目录，仅列可用的对话模型，包含未写入自定义模型文件但已通过原生认证的模型。管理目录与已有绑定保留，不删除配置，也不限制手动高级选择器。Desktop 与 Android JVM 的 123 项 UI 回归通过；真实桌面验证未配置认证的 DeepSeek 等内置模型从候选及搜索结果消失，原生可用的免认证模型仍可选入角色草稿。
-
-新会话在首次发送前，通过同容器、同项目共享的原生管理桥读取默认角色的独立服务/模型 ID，而不是从带路由信息的显示选择器拆分。加载时使用 Material 3 标准进度组件；成功后直接显示当前模型品牌图标及选中项，失败仍可进入模型设置，不显示空 ID 的问号。晚到的结果不覆盖手动选择、历史或运行中 RPC 状态；预览不写配置，也不把默认模型作为显式启动参数，真正启动仍遵循 OMP 原生默认/恢复逻辑。
-
-本轮最终通过 237 项 Kotlin 回归（驱动 103、Desktop UI 62、Android JVM UI 61、应用 11），包含默认模型发送前可见、迟到默认值不覆盖手动选择、选择历史重放及配置失败结束加载；修复前新增默认模型用例超时失败。真实桌面 360 / 460 像素已验证新会话从标准加载组件切换到 DeepSeek 图标，菜单选中 `oc/deepseek-v4.1-flash`；最终构建验证聊天原生目录加载、当前模型选中，以及切换后菜单选中项和按钮图标同步，过程中未发送消息。Android Debug APK 与 Desktop JAR 构建通过，APK 中六份原生管理资源与源码逐字节匹配。
-
-真实 arm64 PRoot/QEMU + OMP 验证：发送前为 `oc/deepseek-v4.1-flash` / `MAX`，聊天进程数为 0；两个会话共用 1 个原生模型桥，手动选择仍保留。预览后把默认角色改为另一可用模型，再仅加载原生 Slash 目录，OMP 无显式模型参数启动，`get_state` 最终同步为更新后的模型，返回 51 项原生命令且无消息/推理执行；验收结束恢复原配置。
-
-本轮完成内联代码与文件路径交互、WawSSH 文件浏览器对齐、递归安全删除、Proroot 显式绑定、首问标题、长按多选、容器详情原型样式、已有用户身份、全局蓝色/莫奈/自定义配色及会话内直接新建。最终通过 299 项 Kotlin 回归（Desktop UI 71、Android JVM UI 70、驱动 103、容器 30、应用 25），无失败、错误或跳过；Android Debug APK 与 Desktop JAR 构建成功。本轮未重建 Rootfs，已有归档及其校验文件保持不变。
-
-实际 APK 仅含 arm64-v8a 原生库且不含 Rootfs，Material Color Utilities 完整许可与源码逐字节一致；打包后的 Manifest 已确认 APK 安装权限、非导出 FileProvider 及 URI 读取授权配置。既有 Rootfs 归档 SHA-256 校验通过。
-
-真实桌面已验证蓝色浅色界面、深主色内联代码、长按多选、首问自动标题、无表单的当前上下文新建、容器按钮/工具链卡片/挂载 bottom sheet、已有 `nobody` 用户保存、自定义 HEX 明暗配色及跨重启保持。文件链接实际下载 APK，下载文件与容器原文件 SHA-256 一致；PNG 通过隔离配置的系统关联交给原生 feh 查看器打开。已实际删除前一历史目录，再继续返回有效路径，未陷入导航循环。Desktop 系统配色的默认蓝色回退已检查；Android 系统莫奈取色及 APK 安装未冒充设备验收。
-
-真实 arm64 PRoot/QEMU 另验证 root 身份和宿主补充组、非空目录递归删除、整批删除前的链接子树拒绝且其他目标不受影响、宿主绑定文件删除被拒绝且哨兵不变、显式允许的挂载导入、PNG 字节流及数字 UID 65534 解析为 `nobody` 与其实际 HOME。未调用模型推理、登录或复制开发机凭据。
-
-2026-10-24 已在 Android 真机、同一份已导入 Ubuntu Rootfs 上验证 Proroot/Bun 修复：极小内联 `openat` 探针保留 x16/x17，Bun 1.3.14 的 `stat/readFile/readdir` 正常，原生模块版本导出为 `18.12.6`；默认缓存下 `omp --version` 返回 `omp/18.12.6`，`rpc-ui --no-session` 的 `get_state` 和原生命令目录请求均成功。原生 TUI `omp --no-session` 正常显示版本、模型与输入区，Ctrl-D 正常退出。未发送模型推理请求、未复制认证、未使用模拟器；本次不将 Rootfs 手动导入、其他 Android UI 交互或 Root/chroot 挂载卸载标为已验收。
-
-本次通过 30 项容器回归，无失败、错误或跳过；Android Debug APK 构建与签名校验通过，仅含 arm64-v8a 原生库、不含 Rootfs。APK 内五库与上述真机验收的上游原文件逐字节一致。真机验证使用独立临时目录，未覆盖安装用户现有应用；交付更新 APK 后重新打开应用及容器终端即可，无需重导入 Rootfs。
-
-符号诊断以当前 `PROROOT_LIB_PATH` 指向的实际 runtime 为准，并原样保留直接调用 libc 的对比结果；后者在新版 Proroot 中仍返回空地址，不能用它断言 OMP 缺少 N-API。实际 runtime 的符号解析与真实原生模块加载均已通过。探针使用 64 位整数保留主程序伪句柄 `-2`，避免经 FFI 指针浮点转换后截断。
-
-Markdown 代码胶囊与表格视觉参数参照 [Kelivo 的固定版本](https://github.com/Chevey339/kelivo/tree/199647a5d718ed47783dde405007e4c080efdec5/dependencies/markstream)，使用 Compose 独立实现，未复制其 AGPL 代码或资源；正文及 Ask 共用图像全屏与原文件保存入口。
-
-本轮通过 74 项 Android JVM UI 回归，无失败、错误或跳过；Android Debug APK 构建成功，APK 签名校验通过，最低 API 26，仅含 arm64-v8a 原生库。按用户要求暂停 Desktop 验收，未启动模拟器；图片全屏、手势、实际保存及跨胶囊选择复制留待用户真机实测，不将 JVM 测试和编译打包视为设备端交互验收。
-
-本轮操作面板、设置 popup、模型通用立方体图标及服务列表间距调整后，通过 80 项 Android JVM 回归（UI 74、容器文本保存 6），无失败、错误或跳过；Android Debug APK 构建及签名校验通过。使用该轮编译的 Android 共享运行时代码，在真实 arm64 PRoot/QEMU 客体中验证 UTF-8 编辑、权限保留、外部修改拒绝、链接与挂载根保护、目录 ZIP 与原文件字节导出。未调用模型、未重建 Rootfs；按要求未做 Desktop UI 或 Android 模拟器验收，操作面板视觉、系统打开/安装及原生编辑器手势和返回交互待用户真机实测。
-
-会话回车与转场调整通过 102 项 Desktop 回归（UI 77、宿主 25，无失败或跳过），Android Debug APK 编译打包通过。实际桌面使用键盘连续输入三行、Slash 候选打开时回车换行、Tab 选择、点击发送按钮执行本地 `/cost`，以及排队消息换行并点击勾选保存；多行草稿在返回会话后保持。逐帧检查页面进入、返回聊天/设置、Agent 设置中的服务详情返回，以及主页底栏双向滑动；未发送模型推理请求，未使用 Android 模拟器，不将桌面结果等同于真机软键盘验收。
-
-聊天状态栏同色调整通过 Android Debug APK 与 Desktop JAR 编译。使用真实 Compose 聊天界面和临时 24 px 顶部安全区进行离屏渲染，逐帧检查状态栏区域与顶栏同色，覆盖顶部、滚动、回到顶部、自定义主色、深色主题及宽屏；确认顶部安全区只应用一次，并检查真实宿主的主页与应用设置页面。未连接 Android 真机，未使用模拟器；这些渲染结果不替代设备端状态栏验收。
-
-OMP 安装引导本轮通过 182 项 Kotlin 回归（容器 32、驱动 121、应用 29，无失败、错误或跳过），Android Debug APK 构建与签名校验通过；APK 内安装脚本逐字节匹配源码，仅含 arm64-v8a 原生库，不含 Rootfs。真实桌面与新下载的 Ubuntu arm64 PRoot/QEMU 镜像已验证：缺失 OMP 弹窗、取消不安装、确认后进入真实 PTY 自动安装，以及无 CA 基础镜像的签名证书引导；安装完成后 OMP 18.12.6、Bun 1.3.14、原生模块和 RPC 自检均通过。另实际移走 Bun 并触发原生管理进程故障，界面显示“修复 OMP”，确认后自动重装并恢复 `READY`；界面重组不重复执行安装，原配置与保留文件的 SHA256 始终不变。未启动 Android 模拟器，编译打包不替代 Android 真机点击验收；本轮未重建交付 Rootfs，未使用模型认证或计费推理。
-
-单容器与功能页本轮未运行自动化测试或 Android 模拟器；Android Debug APK、Desktop JAR 编译打包成功。真实桌面已操作单容器选中边框、双列功能、插件与技能页面、规则新建/原生全屏编辑/保存/重新打开/删除，以及自定义卡片的 JavaFX WebUI 与同源按钮请求。真实 arm64 PRoot/QEMU + OMP 18.12.6 验证空会话不持久化、本地插件链接与卸载、设置与秘密值脱敏、启停、可选功能恢复默认、用户/项目覆盖隔离，以及技能创建/原文字节/保存/版本冲突/范围隔离/删除。真实 WebUI HTTP 返回 200，未认证访问返回 403；页面生命周期离页停止且进程回收，手动生命周期离页保留并可明确停止。临时卡片、插件、技能及规则均在检查后移除，没有模型推理请求。
-
-以上不替代 Android 真机交互验收；Sora/软键盘、WebView、实际系统返回及手机上的进程回收仍需真机验证。联网市场与账号发布操作未作为本轮实际成功证据，不把预检、缓存目录或配置保存冒充在线安装、公开发布或运行时重载。真机检查入口：更新 APK 后选择容器 → 新建空会话后返回 → 功能页规则编辑 → 插件/技能用户级管理与聊天项目级管理 → 明确要求 Agent 添加功能卡片并检查其启停和主题色；不需要重新导入 Rootfs。
-
-追加的底栏位置已在真实桌面逐项点击确认：中间进入功能，右侧进入容器并保留安装/导入操作，左侧返回会话。桌面嵌入 WebUI 使用宿主显示密度计算 Swing 坐标，不将应用内容缩放重复用于原生视口；默认缩放下已观察到页面填满可用区域，原生面板与 WebKit Scene 尺寸一致，同源按钮实际返回“就绪”。
-
-技能市场修复（2026-10-24）未运行自动化测试或 Android 模拟器；Android Debug APK、Desktop JAR 编译打包及 APK 签名校验通过。真实 arm64 PRoot/QEMU + OMP 18.12.6 的官方 `https://skills.omp.sh` 首页统计返回 packages、versions、publishers 均为 0；ClawHub 真实浏览、cursor 翻页、搜索、精确版本详情和资源预览成功。临时项目安装 `pskoett/self-improving-agent@4.0.5`，全部 16 个资源逐文件 SHA256 与公开版本清单一致；再次安装明确拒绝同名目录，原生重新发现显示正确来源与版本，用户范围及官方包声明/锁状态未变化，检查后移除整个临时项目。
-
-桌面实际操作了默认 ClawHub 浏览、ClawHub/官方 Skillshare 锚定来源切换与官方空态、搜索 `skill-vetter`、发布者限定的详情、完整资源清单、安全预览、安装风险确认及返回保留查询；最终构建的发布时间显示为可读日期，未在用户目录进行无意安装。第三方技能不保证 OMP 兼容或安全。GitHub-backed 公开交接分支依据官方固定提交源码实现，本轮未取得对应真实可安装样本；429、待审核及恶意拦截未主动制造，不列为本轮实测成功证据。Android 真机仍需验证市场来源切换、预览、风险确认及安装后的技能发现；无需重新导入 Rootfs。
-
-### 聊天性能回归处理（2026-10-25）
-
-上一轮曾根据用户真机反馈按回归处理普通滑动掉帧和长思考展开卡死/闪退；用户随后更正：回退之前也会闪退，目前版本仍然很卡，因此不能认定闪退由上一轮优化引入。上一轮桌面窗口和微基准结果不能证明 Android 表现，也不作为当前实现的性能结论。
-
-先前提交 `161ead9` 采用了保守回退：
-
-- 撤回 `FeedRenderIndex`、自定义几何 Map 包装及源列表视图，恢复原有列表快照、消息位置、展开状态维护和原生 `SnapshotStateMap`。自定义 Map 的结构相等还可能使两个空会话的 CompositionLocal 复用旧值；恢复原生状态容器的身份语义。
-- 撤回每段 Markdown 的两层长期增量解析缓存及关联行模型，恢复此前的解析和布局路径。新增缓存会保留源文本、`StringBuilder`、行起点与块条目，展开时仍在 UI 线程集中创建；这些新增持有与分配已移除，但没有崩溃堆栈，不能断言用户闪退一定是 OOM。
-- 保留有限距离追尾、运行计时标签隔离、按需生成工具复制内容和事件归并的局部更新；不截断思考或历史，不关闭动画、富媒体、选择复制与吸顶回跳。
-
-按用户要求，本轮未运行桌面端或移动端测试、性能基准、UI 烟测或模拟器；仅静态排查并运行 `./gradlew :app-android:assembleDebug --console=plain`，APK 构建成功，由用户真机复测。构建通过只说明可打包，不代表卡顿、卡死或闪退已通过设备验证；无需重新导入 Rootfs。
-
-### 长聊天持续掉帧与渲染退出处理（2026-10-25）
-
-本轮直接处理当前路径中的可确认开销，不再把回退当作修复依据：
-
-- 折叠思考不再每次把全文转为超长单行并无限宽测量；根据实际视口逐步取足预览，保留全文、语义、全屏及复制来源。长分隔线改为迭代识别，避免递归正则匹配的栈增长。
-- 吸顶几何保留原生状态 Map 的身份语义，位置改为相对所属根行，结合 Lazy 布局偏移定位；普通滚动不触发所有节点坐标写入，候选仅取可见根项，历史计划二分查找，概况观察隔离于聊天与输入区。
-- 普通 Markdown 行可独立跳过重组；无代码段落不再使用 `BoxWithConstraints`，无链接段落不再维护点击及文字布局观察。大块正文在有界后台队列拆分，不持有逐段字符构建器。思考未闭合围栏只扫描新完整行，平滑输出在追平后挂起。
-- Android 行内 TextMate 按明暗两套注册表串行复用；原生编辑器仍独立持有分析器。高亮缓存查询/字符串键计算移出 UI 线程。
-- Android Mermaid 文档不再逐张复制整套离线引擎，改为精确 URL 拦截共享打包字节，其余资源请求仍被拒绝。WebView 创建/释放随原生视图生命周期；SVG 栅格化串行执行并等待桥回执，不再周期查询。图形渲染进程退出会结束等待、释放失效视图并展示真实失败/重试入口；不吞掉 OOM 或其他 `Error`。
-- 原生事件归并按稳定 ID 定位，只复制变更节点的祖先兄弟列表，去掉重复终态/工具渲染；事件日志逐条写入并关闭 UTF-8 writer，不额外复制整条记录字节。主页不再随每个聊天增量排序历史会话，持久化会话不再反复扫描已接收消息。
-
-按当前授权只做静态排查与 APK 构建，不运行测试、基准、桌面/手机界面验收、模型请求或模拟器。新增分隔线、流式围栏/SVG 及重写的回归用例未执行。没有 Android 崩溃堆栈，不能将 WebView 退出处理、去掉超长单行测量或降低分配写成“已证明修复用户闪退”；真机掉帧和闪退仍由用户使用本轮 APK 验证。无需重新导入 Rootfs。
-
-本轮 `./gradlew :app-android:assembleDebug --console=plain` 已在只含本次修改的隔离源码快照上构建成功（35 秒）；未运行测试任务。产物：`app-android/build/outputs/apk/debug/wawlink-chat-performance-debug.apk`，51,209,557 bytes；SHA-256：`612e055bc4e54586587c631e6f717628b3b350e20acc571ed1a1defb2d6dc4f7`。
-
-
-### Session 历史树与 Agent Hub（2026-10-25）
-
-本轮新增界面及原生接入通过 6 项针对性驱动回归，覆盖分支返回、消息 ID、多展示节点关联和正文复制边界；Android Debug APK 与 Desktop JAR 构建成功。APK 内 `session.mjs`、`explorer.mjs`、`explorer-history.mjs`、`explorer-runtime.mjs` 与源码逐字节一致，仅含 arm64-v8a 原生库、不含 Rootfs，APK v2 签名验证通过。
-
-实际 arm64 PRoot/QEMU 中的 OMP 18.12.6 发行版 CLI 已验证历史读取、标签写入、Hub 及停放子会话读取；状态模块经过原生扩展加载器共享真实注册表，而不是另建源码单例。实际 Kotlin 宿主另验证标签、回退草稿、消息定位、子代理历史 Ask、只读边界、HTML 导出、独立分支接入及源会话保留，并在没有本地消息日志的隔离数据目录中完成首次恢复。
-
-直接使用原生 SDK 的离线冒烟验证全部分支、图片草稿、工具批次分支、历史多题 Ask 重答、递归子会话及派发定位、顾问只读、纯浏览不唤醒、真实子会话 Ask/工具审批及响应隔离、HTML 导出、停止/终止与失效实例拒绝。使用真实离线模型目录并禁止联网，最终网络尝试为零；没有伪造工具执行或模型成功结果。需要推理的摘要、续写和冷恢复成功路径未作为本轮模型验收，仅验证无可用模型时的真实失败边界；没有复制开发机认证，没有启动 Android 模拟器，没有重建交付 Rootfs。
-
-真实桌面已逐项操作聊天 AppBar 的历史树与 Hub 两个入口、历史节点正文预览及逐级返回、Hub 层级列表与实例菜单、取消终止，以及独立子代理的会话、详情、活动和后台任务页面。界面读取真实停放实例、递归子代理及顾问记录；历史与活动时间按本地时区展示，页面使用当前应用主题。Android 真机的系统返回、触摸与软键盘交互仍需设备验证。
-
-上述为本轮新增历史/Hub 功能验证，不是聊天性能、Android 真机流畅度或闪退修复结论。
-
-本轮交付 APK：`app-android/build/outputs/apk/debug/wawlink-session-explorer-debug.apk`，58,300,992 bytes；SHA-256：`118d257fa59e4f9e9b9b8a2fa9d566476c5855d5e546f081760b7eba2d335b0e`。更新 APK 即可使用已有容器，无需重新导入 Rootfs。
-
-
-### 历史树与 Hub 加载改造（2026-10-25）
-
-将“读取全部正文并重建所有预览后显示”替换为原生 `SessionManager` 的完整轻量索引、按需详情和版本增量。分页固定会话身份、当前叶子与版本，收齐同一快照后再发布；分页期间新增条目留给下一次增量，不丢弃其他分支。历史 Ask 只读取所在祖先路径的工具调用，避免不同分支中相同工具 ID 串题；精确定位只传选定消息，不重传整份历史。Hub 注册表首屏、持久发现、活动摘要和实例正文分离，未变化的摘要复用缓存，活动与通信使用有界偏移读取。
-
-通过 9 项针对性 Kotlin 驱动回归，覆盖完整匹配快照、版本变化/过期响应、可见正文复制、Hub 与历史解耦、分支及消息身份。Android Debug APK 和 Desktop JAR 构建成功。真实 arm64 PRoot/QEMU 中的 OMP 18.12.6 发行版验证 1,020 个节点分 4 页完整返回、分页中追加后的稳定快照与后续增量、12,073 字符的选定正文、原始记录、跨分支 Ask、标签、导航、独立分支及停放实例发现；未执行模型推理或使用开发机凭据。
-
-实际跨进程侧通道连续完成首次索引和版本增量往返，并验证应用原子写入可触发原生请求处理。真实桌面已打开历史树、节点按需预览、独立 Hub 的 3 个真实实例和子代理正文。未启动 Android 模拟器；这些结果不代表 Android 真机的加载耗时、流畅度或闪退已验证，仍需设备复测。
-
-用户随后要求停止 Desktop 验证，已关闭本轮应用和隔离显示进程，此后不再启动桌面验收。以上回归和桌面观察均发生在该要求之前；最终交付 APK 由用户真机验证。
-
-本轮交付 APK：`app-android/build/outputs/apk/debug/wawlink-session-explorer-loading-debug.apk`，56,413,507 bytes；SHA-256：`b9f1c312530e6b392dfed86e1d5666819740df42f07aa8836d83de4e3c81ec23`。APK v2 签名验证通过，5 份管理桥与源码逐字节匹配，仅含 arm64-v8a 原生库、不含 Rootfs。更新 APK 即可继续使用已有容器，无需重新导入 Rootfs。
-
-### 小会话历史树与 Hub 管理通道修复（2026-10-25）
-
-静态排查发现管理扩展在首次排空请求前调用 `fs.watch`，而固定 Bun 的 Linux 实现直接使用原始 `inotify_add_watch` syscall；当前固定 Proroot runtime 的路径翻译表未覆盖该 syscall。[INFERENCE] 这可导致扩展初始化失败、聊天 RPC 却仍正常，与只有一句“你好”也无法加载历史树或 Hub 的现象吻合；尚无真机日志确认本次设备的具体断点。
-
-管理请求改为会话生命周期内的顺序定时扫描，每轮完成后再调度下一轮，不叠加扫描或依赖文件通知；保留原子请求/响应和 Explorer 并发处理。通道就绪及排空错误使用原生进程实例身份隔离，已知管理扩展错误不再被聊天 RPC 存活状态掩盖。本地等待超时改为普通操作失败，保留真实页面取消传播；Hub 读取失败结束发现进度，历史消息定位不再被周期性 loading 翻转反复取消。活动索引改用原生规范包导入，不硬编码安装目录。
-
-本轮仅做静态排查、两份管理桥的 `node --check` 与 Android APK 构建；`./gradlew :app-android:assembleDebug --console=plain` 在 43 秒内成功，未运行测试、Desktop 应用或 Android 模拟器。APK 签名验证通过，两份变更后的管理桥与源码逐字节一致。`adb devices -l` 未发现已连接设备，加载耗时、流畅度与本次故障是否消除仍由用户真机验证，不能以构建成功替代。
-
-交付覆盖默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`，58,308,296 bytes；SHA-256：`048d72d7eb9780935fca41f6df27cdafd8548ad09136bed1f69fd02310b431c6`。未创建新命名 APK，更新现有应用即可保留容器与会话，无需重新导入 Rootfs。
-
-
-### 功能卡片与 Android LuaJ 桥接（2026-10-25）
-
-实现原生/HTML 卡片、按容器保存的颜色/隐藏/排序、多选与拖动、隐藏项恢复和停服卸载；生命周期文案移除，功能启动使用居中标准进度组件。Android 卡片及完整页接入 LuaJ 标准库、完整 Java 互操作、UI 线程调度及系统 Intent 助手；随 APK 打包 LuaJ 的 MIT 许可，不修改已有 Rootfs 或覆盖用户 Skill。
-
-通过 2 项卡片偏好回归，覆盖容器隔离、卡片暂时消失后的设置保留、恢复及磁盘失败不发布未保存状态。真实 PRoot 中完成声明扫描不启动脚本、带令牌 HTTP 服务启动、实际进程组 RSS、manual/page 离页行为、停服卸载及外部链接目标保留。真实 WebKit 完成首个脚本的数据可用性、事件更新不重载、原生动作、离线图标字形和桌面 Android API 明确拒绝；实际桌面操作了多选、拖动、隐藏、设置恢复、HTML 启停和原生弹层。桌面改用混合 ComposePanel，字体和映射只加载一次，实时更新不重复传输字体内容。
-
-实际 APK 编译字节码的 LuaJ 求值器通过 Java 反射、JSON 编解码、循环返回拒绝及文档代际取消烟测；此烟测不构造 Android Activity/Context，也不验证 WebMessage 或 Intent 投递。未启动 Android 模拟器，未执行真实模型推理；Android 浏览器、分享、启动其他应用及设备 WebView 的端到端行为仍需真机验收，不能用 JVM 结果或构建成功替代。
-
-最终 `:app-android:assembleDebug`、Desktop JAR 及针对性偏好回归构建通过；默认交付文件为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`a47a808826bfd3e52ebf8e416185f09530dabd5328f4f5f153a4ba09e6ca2d10`，APK v2 签名验证通过。真实界面确认调色保存及隐藏项恢复，加载区没有生命周期/加载说明文字；本轮桌面和隔离显示进程已关闭，临时诊断已移除。
-
-
-### 卡片配色与布局修订（2026-10-25）
-
-6 项配色回归通过，新增覆盖同色系深色与 4,096 个 RGB 背景的正文对比度边界；Android APK 与 Desktop JAR 构建通过。实际桌面确认蓝色/绿色卡片的文字和图标同步配色、图标标题同排且描述在下方、原生自定义卡片不附带启停按钮，HTML 自定义按钮仍按卡片原始设计显示；调色提交及点击进入真实容器文件浏览器正常。未启动 Android 模拟器，Android 真机显示仍待用户复测。
-
-默认 APK 为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`264e489b19933708bc8d8be6e10e2a82da8c26e00adfc2333e50b236ac91ba1d`，v2 签名验证通过；不新增命名 APK，不改已有 Rootfs。
-
-
-### 功能页原型与可配置原生按钮（2026-10-25）
-
-功能页按 `ref-plan/feature-cards.html` 重构，保留既有拖动的抬起、跟手、边缘滚动和非线性换位。原生及 HTML 卡片均支持 `cardSpan: 1/2`；原生按钮只按清单显式声明，一行最多三个且等宽等高，半宽三个按钮仅显示图标并保留无障碍名称。调色、编辑操作栏与容器选择使用原型布局，HTML 自行绘制完整卡片，不额外叠加原生标题、内边距或配色。
-
-原生按钮接入真实打开、启停、日志、容器脚本及 Android LuaJ。脚本按当前身份执行并在取消时回收进程组；原生 Lua 与网页复用宿主引擎，不创建隐藏 WebView，每次原生执行隔离 globals，保留完整标准库、`luajava` 和 Android 助手。内置 Skill 及本文补充单双列配置、按钮契约、天气式整行和专注式半宽 HTML 推荐写法，不预装演示卡片或覆盖用户修改。
-
-9 项定向回归通过：7 项运行时/动作边界和 2 项偏好持久化。真实桌面操作确认单按钮脚本生成归档、单双列混排、原生/HTML 整行跨行拖动及排序落盘、调色与持久化、容器选择和真实运行状态。修复了原生 WebKit 盖住调色弹层的问题；编辑/弹层使用同一 WebView 的合成快照，恢复后时钟和专注倒计时继续运行，未重载文档。
-
-对 APK 编译产生的真实原生 LuaJ 执行器完成 JVM 烟测，验证算术、Java 对象方法、JSON 返回、实际 Lua 错误、globals 隔离、`pcall` 循环取消及取消后的后续执行。仅 Android 类型使用 JVM 替身；未验证设备 Context/Activity、UI 线程调度、WebMessage 或 Intent 投递。未启动 Android 模拟器、未执行模型推理；Android 浏览器、分享及其他应用调用仍需真机验收。本轮桌面应用、原型浏览器和隔离显示进程已关闭，临时验证程序已移除。
-
-`:app-android:assembleDebug` 与 Desktop JAR 构建通过，默认 APK 为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`6762cec402c77d87b5389075d08fd0c1d4bedf57e7534d61df712ad84fc10fef`，v2 签名验证通过。不新增命名 APK，不改交付 Rootfs，更新应用无需重新导入容器。
-
-### 功能卡片设置随容器携带（2026-10-26）
-
-功能页与应用设置恢复入口改为按需读写容器用户 `~/.wawlink/feature-cards.json`，每次修改重新读取客体最新内容，同目录暂存后原子替换，成功才更新界面状态。配置损坏、符号链接、特殊文件、超过 2 MiB 或外部内容冲突会报错，不以默认值覆盖原文件；不再读取或写入旧的软件侧卡片设置，不保留迁移或兼容分支。
-
-20 项定向回归通过：4 项客体存储边界、6 项卡片偏好以及 10 项既有功能运行时回归，无失败或跳过。真实原生 x86_64 PRoot 隔离容器完成调色、隐藏、排序保存、实际 Rootfs 导出、全新软件数据目录下导入、新容器 ID 读取、克隆、重启与恢复显示/默认色，设置均保持一致。Android Debug APK 构建及签名校验通过，产物仍为 `app-android/build/outputs/apk/debug/app-android-debug.apk`；未启动 Android 模拟器，未执行 Android 真机界面验收或模型请求。
-
-### Android 动态天气卡片白屏（2026-10-26）
-
-通过用户转发的 ADB 检查实际天气卡片：清单为 `lifecycle: page`，因此显示启动入口而不随容器自动运行；仅将该卡片清单的生命周期改为 `container`，其余字段和天气代码保留。应用不根据卡片内容猜测或擅自更改生命周期。
-
-白屏另为应用侧 WebView 布局问题：真机文档已收到真实天气数据，脚本正常执行，但 `html/body` 高度为 0，`100vh` 也为 0，`overflow:hidden` 将内容裁掉。Android 共享功能 WebView 现显式使用宽高 `MATCH_PARENT`，由 Compose 分配实际尺寸，保留作者原始 HTML/CSS，不注入固定像素高度补丁。
-
-`:app-android:assembleDebug` 构建成功，默认 APK 已覆盖安装并保留原有数据；用户确认真机实际显示正常、手动验证通过，随后按要求停止进一步验证。未启动模拟器、未运行模型请求、未重建或重新导入 Rootfs。本次未新增自动化测试，设备 WebView 布局以本轮真机排查与用户验收为证据。
-
-### 容器内轻量卡片与功能页调试（2026-10-26）
-
-新增 `wawlink-feature`，复用已有 Bun 与应用实际挂载的 WebView，提供 `list`、`inspect`、`logs`、`eval`、`screenshot`、`reload`；卡片和完整功能页通过 `--surface card/page` 独立选择。内置 Skill 补充真实调试流程和生命周期选择，不安装浏览器或依赖 ADB，不为调试自动启服、打开页面或改写功能清单。
-
-14 项定向 Kotlin 回归通过（调试通道 4、既有功能运行时 10），无失败或跳过。真实 x86_64 PRoot 客体通过命令 PATH 调用宿主的桌面 JavaFX WebView，验证卡片与完整页的独立身份、DOM 点击、Promise 成功与拒绝、首个页面脚本的 console、真实 Bun 服务输出、两种页面的 PNG 实际像素、已有文件与符号链接拒绝覆盖、静态客体 HTML 重新读取及完整页 URL 重载、导航取消旧 Promise、遮挡时保留页面但拒绝截图、销毁后拒绝执行。临时容器、界面及烟测入口均已关闭或移除。
-
-Android Debug APK 构建通过，默认产物为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，65,053,733 bytes，SHA-256：`b7b55216f74a2fd4ecc8ffb42414cb837f197a89e32afd6df1dd090e527908dc`。本轮未运行 Android 模拟器、Android 真机调试命令或模型请求；桌面结果不替代设备端 WebView、LuaJ/Intent 与 PNG 截图验收。更新 APK 即可继续使用已有容器，无需重新导入 Rootfs。
-
-### 预置 Skill 自动更新（2026-10-26）
-
-预置 Skill 改为比较软件正文、容器实际正文与持久化安装哈希，自动升级未修改版本，同时更新哈希记录；未知同名 Skill、用户修改、链接和无效记录均保留。安装记录随容器携带，后续软件版本不必逐次补写“上一版哈希”。已有入口继续在容器运行接入、功能页读取及 Agent 启动前执行检查，不新增轮询或为升级唤醒已停止容器。
-
-18 项定向回归通过（预置 Skill 4、既有功能运行时 10、调试通道 4），无失败或跳过。真实 x86_64 PRoot 开启 `link2symlink` 后，使用本轮编译的生产安装脚本验证 6 个已发布 Skill 正文的无记录接管升级、后续未列入历史清单的新版本更新、用户修改及原哈希记录保留、正文缺失后重新安装；临时程序与客体已移除。另有回归覆盖更新中断前后两侧恢复、当前内容幂等及权限保留。
-
-Android Debug APK 构建及 v2 签名校验通过，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 65,053,733 bytes，SHA-256：`d5eae4db478f4d916ac2ef04ea3cd8f4d735b2d70537f7bbaabd6521b884c80a`。未运行 Android 模拟器、Android 真机验收或模型请求；更新 APK 无需重新导入 Rootfs。
-
-### 可分发容器信息（2026-10-26）
-
-容器详情新增删除按钮左侧的编辑入口与 Material 3 bottom sheet，支持标题、描述、独立分发版本及内置/图片图标。17 项定向回归通过（容器信息 9、动作运行身份 1、引擎与脚本边界 7），Desktop 测试源码编译与 Android Debug APK 构建通过；删除既有引擎测试中已失效的固定默认 PATH 断言，不改变当前 PATH 行为。
-
-真实 x86_64 PRoot 读取 `~/.wawlink/container.json`，保存图标和文字期间原有客体进程存活且运行代次未变；外部改写被拒绝覆盖，Rootfs 导出/导入保留四字段，克隆只改变明确输入的标题，新运行时读取不启动容器。实际桌面操作验证 460 / 360 像素布局、内置图标、系统图片选择/缩放/保存、多行描述、放弃修改、冲突保留草稿及确认重新读取后的重试保存。临时 smoke Rootfs 文件字节合计 1,577,744 bytes、归档 753,428 bytes，仅用于验证，不替换交付 Rootfs。
-
-默认 APK `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 65,053,733 bytes，SHA-256：`2bed4278b055fc1e32a57861c9a61643a0a3c159881f3a8691f810bb7f8ee18f`，APK v2 签名通过。未运行 Android 模拟器、Android 真机验收或模型请求；桌面检查不替代手机图片选择、软键盘与系统返回验收。更新 APK 即可使用已有容器，无需重新导入 Rootfs。
-
-### 国内下载与多发行版安装（2026-10-26）
-
-官方源位于最左并默认选中。国内选择联动 Rootfs、系统软件源、Bun 和 OMP/npm 下载；Fedora 41 缺少同版本可校验的国内 Rootfs 时明确报错，不回退国外或更换发行版。来源、完整性依据及 x86_64 ONNX 额外依赖的国内路径见上方安装说明。
-
-本轮在隔离 Linux PRoot/QEMU 客体中实际下载并用生产导入器导入六种 ARM64 Rootfs，执行完整系统依赖与 OMP 安装。Ubuntu 24.04、Debian 12、Arch ARM、Alpine 3.21、Fedora 41、Kali 均通过 OMP 18.12.6 / Bun 1.3.14、真实原生模块加载及 RPC `ready/get_state` 检查；Fedora 使用显式官方源，其余五种发行版走国内下载。另在原生 x86_64 Alpine 验证隔离 glibc、国内 ONNX 完整依赖及真实 RPC。没有禁用原生模块、跳过生命周期脚本或复制开发机认证。
-
-导入期间发现 LXC 的合法 systemd 文件名含字面反斜杠，已修复导入器错误拒绝该名称的问题，保留目录穿越和链接边界。最小 BusyBox 的 Skill 引导、Arch 密钥环与 PRoot 下载沙箱、Fedora SQLite/Node ABI 均已在对应真实客体安装中验证。
-
-本轮实际下载归档与安装完成后的客体体积如下。后者是解压、系统依赖及 OMP 安装后所有普通文件的逻辑字节合计，包含当时的包缓存，不是仅基础镜像的解压大小，也不是重新打包的交付归档；未为限制体积删减依赖。
-
-| ARM64 发行版 | 基础 Rootfs 归档（MiB） | 完整安装后客体（MiB） |
-| --- | ---: | ---: |
-| Ubuntu 24.04 | 28.55 | 1963.98 |
-| Debian 12 | 90.61 | 2031.37 |
-| Arch ARM | 170.01 | 2471.77 |
-| Alpine 3.21 | 3.65 | 1301.42 |
-| Fedora 41 | 30.49 | 1549.48 |
-| Kali | 73.97 | 2271.20 |
-
-`container-runtime:desktopTest` 的 85 项及 `agent-driver-omp:desktopTest` 的 134 项全部通过，无失败或跳过。消息发送测试的隔离客体现在真实执行短生命周期 Skill 引导，不再将其误接为聊天 RPC 进程。实际桌面界面确认官方源最左且默认选中；本轮未使用 Android 模拟器、Android 真机或真实模型推理，客体和桌面结果不替代手机端验收。
-
-默认 APK `app-android/build/outputs/apk/debug/app-android-debug.apk` 构建及 v2 签名校验通过，65,053,733 bytes，SHA-256：`dcc6cecf351172dd6b8ea0b93460182f50879ef1814290614717b38441a20639`。更新 APK 即可使用新安装/修复逻辑，已有容器不需要重新导入；Rootfs 仍与 APK 分开。
-
-### 容器切换与启停的预期中断（2026-10-26）
-
-容器在回收进程前发布停止代次，OMP 会话、管理请求、自检和功能操作保留各自的原代次；旧进程的 EOF、延迟回执及快速重启后的旧检查按预期中断处理，不生成会话错误或安装/修复提示。终端与功能页离开、启动中取消只回收对应操作；管理操作队列取消后仍可继续处理下一次操作。已接收消息保留，未接收的乐观消息按原身份撤回。真实故障仍报告，后台诊断仅使用运行中进程入口，显式打开新会话仍可按需发现原生默认模型。
-
-本轮 92 项定向 Kotlin 回归通过（运行时 22、驱动 60、应用 10，无失败或跳过），覆盖停止/快速重启、启动中取消、过期检查和授权、迟到进程、消息归属、真实故障保留及停止容器的新会话默认模型预览。真实 ARM64 PRoot/QEMU 烟测启动了 PTY、Bun 功能服务、OMP RPC 命令目录和原生管理桥；停止并重启后，终端结束、卡片转为 STOPPED，协调层错误通知与修复对话框状态均为空。另确认启动中取消静默结束、强制终止 OMP 仍触发修复提示、服务退出码 23 仍为 FAILED 并报告错误。
-
-RPC 烟测复用安装自检的临时无认证、loopback 模型元数据，仅操作原生协议与进程，不发送用户消息或执行真实模型验收，也未复制开发机认证。未使用 Android 模拟器或进行 Android 真机界面验收；客体与协调层结果不替代手机复测。临时烟测程序与隔离客体已清理。
-
-默认 APK `app-android/build/outputs/apk/debug/app-android-debug.apk` 构建及 v2 签名校验通过，65,053,733 bytes，SHA-256：`b32379fc17d4bbc0ae212275e280e2f4b99206dd81fcd330ec538699a25e4406`。更新 APK 即可保留现有容器和会话，无需重新导入 Rootfs。
-
-### 四项交互与稳定性定向修复（2026-10-29）
-
-- 模型服务列表仍固定全局作用域，开关从 `readDocument("global")` 的原始完整 `disabledProviders` 规则增删指定服务裸字符串，保留对象型路径规则与无关项，不再将合并后的有效配置写回全局。
-- 协议兼容项、远程压缩及其嵌套对象未实质修改时保持原草稿，直接点“完成”不新增空对象或物化继承值；真实修改保留未知字段，清空移除对应覆盖。
-- Android 卡片和完整功能页共用的 WebView 处理 `onRenderProcessGone`，撤销本实例调试注册/请求及 Lua 桥任务，脱离并幂等销毁旧视图；停止旧视图更新，显示错误并在重新进入时恢复，不自动循环重建。
-- 启动期停止复用主动中断路径，异常完成 `ready` 等待并跳过未就绪进程的 abort RPC；停止屏障先于唤醒建立，保留队列与后续交互，已就绪进程仍沿用原生 abort 路径。
-
-13 项配置回归及 8 项会话启动/停止回归通过（含新增 2 项，无失败或跳过）。隔离 YAML 烟测确认路径规则与无关设置保留、项目文件字节不变、无修改子表单不产生覆盖。真实主机管道子进程不发送 `ready` 时，实际会话控制器停止到进程退出及后续模型选择可响应耗时 5 ms，排队输入保留；此烟测不是 OMP 原生启动或模型推理验收。实际 Android 编译字节码的 WebView holder 回收烟测覆盖失效标记、调试/桥关闭、脱离/销毁幂等及死 renderer 路径不调用活视图方法；Android 框架与桥/调试协作者使用 JVM 替身，不代表设备 WebView 或 LuaJ 端到端验收。
-
-Debug APK 构建和 v2 签名校验通过，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`，56,876,405 bytes，SHA-256：`399f3cf49559a5a8c26fbeb1d0cedda090cca3d904c24f4861690bdb7e47ec17`。未启动模拟器或 Desktop 界面，未执行真实模型；渲染进程退出与恢复仍需 Android 真机验证。本轮不修改 Cookie 端口隔离、文件清理拉起、IPC 遗留文件、加载期并发编辑或其他审查边界。
-
-### 文件操作与会话管理的实例边界（2026-10-29）
-
-- 文件导入和文本保存保留首次客体进程的停止/运行代次；首个进程仍可按需启动容器，后续提交及 `finally` 清理只使用原运行实例。运行时在进程准入锁内复核身份，停止、移除或快速重启后不重新拉起容器，不进入新实例提交或清理旧暂存文件；跳过清理时保留原始操作错误。
-- 账户管理和历史探索的每条文件请求/响应携带 OMP 进程 `instance`。原生轮询在业务分发和凭据读取前删除缺失/旧实例请求；调用方也核对响应实例及当前 attempt，不再仅依赖就绪文件判断归属。
-
-59 项定向 Kotlin 回归通过（文件文本 9、文件服务 12、会话发送与停止 38，无失败或跳过）。生产 `session.mjs` 轮询回归通过，单独运行入口：`node --experimental-vm-modules --test agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs`；同一回归加载修复前模块时，实际观察到遗留请求触发凭据 reload、pin 和 explorer 分发。
-
-真实 x86_64 host-bind PRoot 烟测对比修复前后：正常导入和保存均成功；停止后导入不再提交或重开容器，快速重启及进程准入前竞态均拒绝旧提交，已保存文本的清理不再重开容器。另在既有 ARM64 PRoot/QEMU 客体运行已安装的 OMP 18.12.6，启动前后合计 8 条缺失/旧实例请求被删除且没有响应，当前实例的账户和原生历史请求成功并返回正确实例。RPC 仅复用安装自检的临时无认证 loopback 模型元数据，没有发送模型提示或复制开发机认证。
-
-临时程序、隔离数据和进程已清理。本轮未构建 APK，未启动 Desktop 界面、Android 模拟器或进行真机验收；上述 JVM 与 Linux 客体结果不替代 Android 真机验证。
-
-### 附件交互与预览（2026-10-31）
-
-附件路径说明与用户原始文字分离，主会话和子代理的即时回显、原生回执、队列编辑/撤回/停止恢复及历史回退均保留纯净文字与附件。旧格式记录可在无内存缓存时恢复容器附件；标题、搜索与复制不混入路径后缀，原生记录保留真实 wire 内容用于身份匹配和原始记录查看。
-
-定向验证最终通过 168 项 Kotlin 回归及 3 项生产历史/子代理桥 Node 场景；首次运行发现两项新子代理用例未等待异步更新，补上状态同步后通过。覆盖附件-only/空白原文、旧记录、重复内容身份、队列匹配与撤回失败、UTF-8/二进制/64 KiB 边界、图片真实解码和 SVG 拒绝、三种来源的有界读取及停止/快速重启旧结果拒绝。`:app-android:compileDebugKotlin` 通过。
-
-实际 Desktop Compose 附件表面连接真实本机文件及生产客体文件命令，已观察混合输入卡、队列胶囊、相册/文件卡、只读 JSON/Kotlin 高亮预览及图片全屏；放大、复位和保存复用原字节，保存期间图片读取次数未增加。客体读取采用 Shell 契约夹具，不代表真实容器引擎验收；未进行 Android 模拟器或真机验收，未使用模型认证或推理。
-
-本次使用编译后的生产 JVM 代码烟测双附件的原文和 MIME 还原、wire 往返与无效路径原文保留；仅处理路径字符串，不涉及实际文件读取。
-
-完整回归通过 575 项 Kotlin 单元测试（容器运行时 135、驱动 189、UI 209、应用 42，无失败或跳过）及 8 项 Node 扩展测试。默认路径 Debug APK 构建成功，55,577,669 bytes，SHA-256：`3cda33bcbf64649c43090694094004b628b9c0373f8644f29d868e9bc831dec3`。完整回归及构建命令：
-
-```bash
-./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
-  :agent-driver-omp:desktopTest :agent-ui:desktopTest :agent-ui:testDebugUnitTest \
-  :app-desktop:desktopTest
-node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
-node --experimental-vm-modules --test \
-  agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs \
-  agent-driver-omp/src/jvmSharedTest/resources/explorer-attachments.test.mjs
-./gradlew :app-android:assembleDebug
-```
-
-APK 默认输出：`app-android/build/outputs/apk/debug/app-android-debug.apk`。上述命令不启动模拟器，编译与 JVM/桌面结果不替代 Android 真机交互验收。
-
-附件烟测窗口及其进程已正常退出，临时源程序、编译产物、截图与隔离文件已清理。
-
-### 聊天消息快捷操作与同名容器更新（2026-10-31）
-
-定向回归通过 81 项 Kotlin 测试（容器运行时 56、聊天快捷操作 9、导入交互控制器 16），无失败、错误或跳过。覆盖全文与空白保留、Ask 原生问题身份、冷索引刷新、独立面板关闭、运行中禁止分支、摘要失败/取消及草稿附件恢复；容器覆盖双名称和多目标冲突、重命名同时落盘、全部个人数据保护范围、普通文件/卡片/分发信息更新、损坏归档和预检失败零写入、链接/HOME/架构边界、取消和停止代次恢复。首次验证修正了部署进度测试中对并发进度快照的竞态断言，不再要求另一个下载的进度停止变化。
-
-另通过 3 个临时烟测场景：实际 Desktop Compose 表面点击用户/助手/Ask 的复制按钮并核对系统剪贴板，操作消息菜单、独立复制面板、分支草稿恢复、运行中禁用和显式历史定位；实际 Material 3 冲突对话框展示输入名称/归档标题的两个目标及 1.0/2.0 分发版本，点击选择目标和覆盖按钮后生产运行时保留工作区并更新分发信息；真实本地归档通过生产运行时完成 SHA256 校验、标题冲突、覆盖、重命名和损坏拒绝。聊天探索使用受控会话契约夹具，未执行真实 OMP 摘要或模型推理；归档烟测无需启动容器引擎，运行代次恢复回归使用受控进程命令边界，不冒充 Android 引擎验收。
-
-完整单元测试通过 618 项：容器运行时 Desktop 143 项、Android JVM 10 项，OMP 驱动 Desktop 189 项，UI Desktop 116 项、Android JVM 102 项，桌面应用 58 项；无失败、错误或跳过。
-
-Debug APK 构建成功，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk`，57,212,686 bytes，SHA-256：`754e5372f5deb2f6ebb8c50e77cba9acb63a5b142635c184b16ff90fe90024ff`。构建日志提示 Kotlin 默认层级模板警告。完整回归及构建命令：
-
-```bash
-./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
-  :agent-driver-omp:desktopTest :agent-ui:desktopTest :agent-ui:testDebugUnitTest \
-  :app-desktop:desktopTest
-./gradlew :app-android:assembleDebug
-```
-
-本轮未使用 Android 模拟器或真机。桌面/JVM 与编译结果不替代 Android 系统剪贴板、触摸、返回及真实容器恢复的设备端验证。
-
-### chroot 宿主与客体所有权修复（2026-10-31）
-
-修复 `Feature debugger installation failed: Debugger directory has a different owner`，同时覆盖发送消息的 `OmpProcessPool.ensureStarted()` 路径：宿主创建会话和工作区、注入 Skill/调试器、发布配置与管理扩展、再启动 OMP。共享权限同时作用于宿主请求和客体响应/通道文件，不把 `.omp` 整体交给客体后丢失宿主访问，也不以 777 或关闭所有权校验处理问题。内置 Skill 的未修改正文在 chroot 下通过暂存替换取得共享读写权限；用户修改仍保留。偏好文件仍完全经客体进程读取和保存，历史探索的本机图片缓存不参与客体所有权修复。
-
-定向 Kotlin 回归通过 192 项（运行时 93、OMP 驱动 99），生产 `session.mjs` 的私有/共享组两种通道场景通过 2 项，无失败、错误或跳过。覆盖 root/非 root 模拟身份、HOME 覆盖与系统目录根拒绝、启动前后新建目录、配置与扩展、发送/会话历史、Skill、调试器真实 CLI/HTTP、私有模式、软/硬链接、挂载保留、目录替换竞态及权限失败回滚。首次运行修正了一处新增测试对调试列表返回身份字段的误用，使用现有 `featureId` 契约后重跑通过。
-
-隔离烟测从已编译生产代码取得所有权脚本和调试器安装/客户端，实际执行 Shell、Node 和生产 Kotlin loopback 认证端点；观察到共享目录 2770、配置 660、调试程序 700、凭据 600，宿主离线元数据仍可写，软链、硬链接别名及排除的挂载数据未被修改。临时端点与烟测文件均已清理。
-
-验证边界：开发机未获得可用的免交互 Root，user namespace 的 UID 映射也被系统拒绝；跨 UID/GID 接管由测试夹具模拟，真实权限烟测使用当前 `1000:1000`。另从本次编译的生产类取得权限脚本，在隔离目录执行，确认 HOME 2770、配置 660、调试器私有目录/文件 700/600，链接目标及排除子树未改变。Node 仅替代 Bun 执行相同生产 JavaScript；没有 Android 真机、模拟器、真实特权 chroot、WebView 或模型推理验收。
-
-最终完整回归通过 639 项 Kotlin 测试（容器 Desktop 160、容器 Android JVM 10、驱动 193、UI Desktop 116、UI Android JVM 102、应用 Desktop 58）及 9 项 Node 测试（模型参数 4、会话通道 2、历史附件 3），无失败、错误或跳过。两项命中 Gradle 缓存的 UI 测试任务另以 `--rerun` 实际执行。
-
-Debug APK 构建成功，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 57,212,686 bytes，SHA-256：`66c920df66a31b345fe41e7aefc684d783345c037294b8617089aea9bcd7b606`。构建及 JVM/Linux 烟测不替代 Android 真机 chroot 验证。
-
-最终回归与打包命令：
-
-```bash
-./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
-  :agent-driver-omp:desktopTest :agent-ui:desktopTest :agent-ui:testDebugUnitTest \
-  :app-desktop:desktopTest
-./gradlew :agent-ui:desktopTest --rerun :agent-ui:testDebugUnitTest --rerun
-node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
-node --experimental-vm-modules --test \
-  agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs \
-  agent-driver-omp/src/jvmSharedTest/resources/explorer-attachments.test.mjs
-./gradlew :app-android:assembleDebug
-```
-
-### Android chroot 宿主 mksh / Toybox 兼容修复（2026-10-31）
-
-针对真机启动报错 `chroot 权限路径在打开时已改变`，本机另行解包 mksh R59 和 Toybox 0.8.9，配合已安装的 BusyBox 1.36.1 验证宿主 shell 差异，不安装到系统、不使用 Android 模拟器。mksh 的 `exec 3<` 描述符不会传给外部命令；两套工具的 `readlink -f -- /proc/self/fd/3` 均不能取得该对象，而 fd 0 可以正常继承。当前验证版本都接受 `readlink -f --`，因此未将 `--` 错判为本次根因；权限脚本仍改用绝对路径及 `./` 参数，移除不必要的选项结束符依赖。
-
-`RuntimeChrootOwnership.kt` 的目录修复及父目录创建使用固定子 shell 的 cwd，`chown/chgrp/chmod` 操作 `.`，`mkdir` 使用单层 `./名字`。当前普通文件固定父目录后直接操作 `./名字`，复核设备/inode、普通文件及单硬链接；不再采用上一轮的 stdin/proc fd 固定方式。原路径的 HOME/Rootfs、软链及挂载检查继续保留，也不改用子 shell 中仍指向父进程的 `$$`。最新范围收敛、线程修复及验证结果见下一节。
-
-上一轮工具探针还发现：非递归且不带 `-h` 的 Toybox `chown/chgrp` 会修改 proc 链接指向的目标，而非链接本身（实现参见 [Toybox 0.8.9 chgrp.c](https://raw.githubusercontent.com/landley/toybox/0.8.9/toys/posix/chgrp.c)）；符号模式 `chmod` 则可能从 proc 链接模式计算并误加执行位。本轮取消文件 proc fd 访问后，不再使用该路径或其模式计算；文件命令操作真实父目录中的名字。
-
-同类排查：`RuntimeEngines.kt` 和宿主停止/快照脚本没有其他私有 fd 传给外部命令的依赖；`ContainerFeatureSkill.kt` 在客体 `/bin/sh` 中执行，已有真实 BusyBox 安装/升级回归；`ContainerFeatureDebugClient.kt` 在客体 Bun 中直接调用 fstat/fchown/fchmod，不经过 Toybox。功能服务及脚本动作的 fd 3 仅供 shell 内建 `read` 使用，并在外部服务启动时显式关闭，本机 mksh 的同类 watcher 探针也已通过，未盲目替换这些不同语义的描述符。
-
-`RuntimeChrootMountTest` 支持 `WAWLINK_TEST_HOST_SHELL` 与 `WAWLINK_TEST_HOST_TOOLS`，分别指定宿主 shell 及 Toybox/BusyBox 多调用二进制的绝对路径；工具在隔离 PATH 下执行，不回退 GNU 工具。测试新增同路径文件 inode 被替换时的拒绝场景，并校验配置精确内容/660、可执行文件执行位、私有 700/600、软/硬链接、挂载排除、目录替换与失败回滚。路径示例需按本机安装位置替换；`--rerun` 确保更换工具链后实际重跑：
-
-```bash
-WAWLINK_TEST_HOST_SHELL=/usr/bin/mksh \
-WAWLINK_TEST_HOST_TOOLS=/usr/bin/toybox \
-./gradlew :container-runtime:desktopTest --rerun \
-  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest'
-WAWLINK_TEST_HOST_SHELL=/usr/bin/mksh \
-WAWLINK_TEST_HOST_TOOLS=/usr/bin/busybox \
-./gradlew :container-runtime:desktopTest --rerun \
-  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest'
-```
-
-以下为上一轮验证记录；本轮最终结果及不打包约束见下一节：
-
-| 环境 | 通过 | 失败 / 错误 / 跳过 |
-|---|---:|---:|
-| 默认 dash / GNU：chroot、引擎、身份、元数据、Skill、调试器及偏好回归 | 65 | 0 |
-| mksh R59 / Toybox 0.8.9：chroot 回归 | 14 | 0 |
-| mksh R59 / BusyBox 1.36.1：chroot 回归 | 14 | 0 |
-
-上一轮烟测曾从生产类取得权限脚本，在 mksh / Toybox 与 mksh / BusyBox 下将真实 GID 从当前 1000 改为已有补充组 4，确认内容、私有权限、链接及挂载排除。该轮曾把工作区 0751 脚本改为 0770；此行为已由本轮“只准备工作区顶层”替代，项目文件不再参与修复。两轮开发机结果均不代表 Android Root、挂载命名空间、SELinux 或厂商工具的真机验收。
-
-最终完整回归通过 640 项 Kotlin 测试（容器 Desktop 161、容器 Android JVM 10、驱动 193、UI Desktop 116、UI Android JVM 102、应用 Desktop 58）及 9 项 Node 测试（模型参数 4、会话通道 2、历史附件 3），无失败、错误或跳过。两项命中 Gradle 缓存的 UI 测试任务另以 `--rerun` 实际执行。另以隔离的 mksh / Toybox 和 mksh / BusyBox 各重跑 14 项 chroot 回归，并执行上述生产权限脚本烟测。
-
-Debug APK 构建成功，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 57,212,686 bytes，SHA-256：`c3d6ec30990e605fe5b56c6c6cee699d49c397ef91f5d2714bbc16e85edc294a`。构建及 JVM/Linux 烟测不替代 Android 真机 chroot、Root、挂载或 SELinux 验证。
-
-最终完整回归与打包命令：
-
-```bash
-./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
-  :agent-driver-omp:desktopTest :agent-ui:desktopTest :agent-ui:testDebugUnitTest \
-  :app-desktop:desktopTest
-./gradlew :agent-ui:desktopTest --rerun :agent-ui:testDebugUnitTest --rerun
-node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
-node --experimental-vm-modules --test \
-  agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs \
-  agent-driver-omp/src/jvmSharedTest/resources/explorer-attachments.test.mjs
-./gradlew :app-android:assembleDebug
-```
-
-默认环境定向命令为：
-
-```bash
-./gradlew :container-runtime:desktopTest --rerun \
-  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
-  --tests 'dev.wawlink.runtime.RuntimeEnginesTest' \
-  --tests 'dev.wawlink.runtime.RuntimeIdentityTest' \
-  --tests 'dev.wawlink.runtime.ContainerFeatureSkillTest' \
-  --tests 'dev.wawlink.runtime.ContainerFeatureDebugTest' \
-  --tests 'dev.wawlink.runtime.ContainerFeaturePreferencesTest' \
-  --tests 'dev.wawlink.runtime.ContainerMetadataTest'
-```
-
-### Android chroot 启动超时与后台线程隔离修复（2026-10-31）
-
-真机日志中的 `HostCommands.run` 读取线程在命令超时、进程被终止后收到 `InterruptedIOException`，未处理异常可触发 Android 全进程退出。此前权限脚本递归进入 HOME/工作区，对依赖树逐文件派生多条外部命令，放大了触及 45 秒命令期限的风险。该期限保留，没有用加长超时掩盖遍历问题。
-
-- `HostCommands` 的读取线程包含完整异常边界。关闭、超时及退出时的管道异常正常结束；真实活动读取失败回传调用方并终止命令。收尾有界等待实际进程退出、结束读取并关闭管道，避免仅发送 SIGKILL 就返回。正常 UTF-8 输出、真实非零退出诊断及父进程退出后仍被后代持有的 stdout 管道均经过生产类烟测。
-- 权限准备不递归 HOME 或工作区。`.wawlink` 只处理容器信息、布局、调试程序/凭据和明确目录；`.omp` 与 `agent` 只读取浅层配置文件，额外仅扫描 `wawlink`、原生 `sessions`、`rules`、`prompts`、`agents`、`advisors` 等共享数据及内置 Skill 文件。不遍历第三方插件/技能、Bun/npm/缓存、项目 `.git`/`node_modules`；必要管理目录内也剪枝依赖和挂载。原生 find 先筛出 UID/GID/模式确需修复的条目，再分批进行路径与身份复核；无任意历史深度截断。
-- 文件固定父目录后直接执行 `chown -h`/`chmod ./名字`，保留普通文件、单硬链接、设备/inode 和路径边界检查，不再读取或操作 `/proc/self/fd/0`。私有调试文件保持 700/600，共享文件保留原有属主/组执行位，工作区项目文件保持原权限。路径式 chmod 不是 fd 原子操作，不能把身份复核宣称为可抵御最后一次系统调用前的任意恶意并发置换。
-- 同类线程边界一并处理：终端输入/输出/等待线程、JNI PTY 等待线程、调试服务和网关的 accept/提交/worker/tunnel、Lua 桥提交失败，以及 keeper 输出协程。关闭/拒绝提交回收真实 socket/任务；活动请求与终端仍报告实际失败，JNI 等待失败返回 -1 并释放等待者，正常 PTY EIO/EOF 不覆盖真实退出码。不安装全局吞异常处理器。原生 Lua 执行器已有 FutureTask 和提交/关闭锁，未增加重复包装。
-- `LocalContainerRuntime` 的 start/openProcess/update 路径已有 IO 调度边界，prepare/validate 未改到主线程。现有证据不足以把日志中的掉帧归因为某个主线程调用，未据此声称真机掉帧已消除。
-
-mksh / BusyBox 验证还暴露并修正两项工具差异：BusyBox 的括号内 `-exec … +` 未执行积累的任务，因此批处理保留在表达式顶层；裸 `sh` 会被当作 BusyBox 内置 ash 执行，因此先解析宿主 sh 的绝对路径再交给 find，保证使用所选解释器。
-
-最终定向结果均无失败、错误或跳过：
-
-| 环境 / 范围 | 通过 |
-|---|---:|
-| 默认宿主：chroot、引擎、身份、功能运行时/网关、调试器、Skill、偏好与 LocalContainerRuntime | 90 |
-| mksh R59 / Toybox 0.8.9：chroot 与命令故障回归 | 18 |
-| mksh R59 / BusyBox 1.36.1：同组回归 | 18 |
-
-新增回归覆盖真实 sleep 命令超时、超时关闭引发 InterruptedIOException、活动读取错误的原始 cause、5,400 项依赖/项目文件不被改权，以及等待上游响应头时停服和执行器拒绝后的真实连接关闭。定向阶段 Android `compileDebugKotlin` 与终端 `compileDebugJavaWithJavac` 通过；最终 APK 构建结果见下文。
-
-另直接调用编译后的生产权限脚本，在每套宿主工具下放置 6,000 个依赖/项目文件：Toybox 首次/再次为 0.138/0.075 秒，BusyBox 为 0.087/0.050 秒，仅为本开发机测量。真实 GID 从 1000 改为已有补充组 4；确认 HOME/工作区顶层 2770、配置 660、受管可执行文件 770、私有目录/文件 700/600，项目 0751、软/硬链接目标及排除挂载保持不变。必要管理数据首次修复仍与待修复条目数量有关，不承诺任意历史规模固定时长。
-
-终端生产类的独立 JVM 故障注入通过：reader/writer/waiter 失败均回收进程与流、返回 -1 且只通知一次；正常管道中断保留退出码 9；JNI 等待失败释放两种 waitFor；EIO 早于 native waiter 的竞态分别保留退出码 0 与 7。该烟测只替代 Android/JNI/渲染依赖，使用真实修改后的 TerminalSession、AndroidPtyProcess 和队列，不代表真实 Android PTY 或界面验证。
-
-最终完整回归通过 646 项 Kotlin 测试（容器 Desktop 167、容器 Android JVM 10、驱动 193、UI Desktop 116、UI Android JVM 102、应用 Desktop 58）及 9 项 Node 测试（模型参数 4、会话通道 2、历史附件 3），无失败、错误或跳过。两项命中 Gradle 缓存的 UI 测试任务另以 `--rerun` 实际执行。
-
-最终隔离烟测直接运行生产 `HostCommands`：UTF-8 输出、非零退出诊断、1 秒超时与真实进程回收均通过，读取线程没有未捕获异常。另在 mksh / Toybox 和 mksh / BusyBox 下各执行两次生产权限脚本，实际切换到已有补充 GID 4，确认受管权限和私有权限、1,200 个依赖文件、项目文件、链接及排除挂载边界；不以本机耗时保证设备性能。
-
-Debug APK 构建成功，默认产物 `app-android/build/outputs/apk/debug/app-android-debug.apk` 为 57,212,973 bytes，SHA-256：`8adfc951e3a526829f40d2cd747df0803c5d5db9fd3da8aac129d0da48a5bb44`。
-
-本轮未获得真实特权 chroot/跨 UID 接管验证；相关单元夹具明确模拟特权挂载及跨 UID 元数据。未运行 Android 模拟器、真机界面验收或模型请求；JVM/Linux 烟测及 APK 构建不代表 Android 真机 chroot、PTY、SELinux 或性能验收。
-
-定向命令：
-
-```bash
-./gradlew :container-runtime:desktopTest --rerun \
-  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
-  --tests 'dev.wawlink.runtime.RuntimeEnginesTest' \
-  --tests 'dev.wawlink.runtime.RuntimeIdentityTest' \
-  --tests 'dev.wawlink.runtime.ContainerFeatureRuntimeTest' \
-  --tests 'dev.wawlink.runtime.ContainerFeatureDebugTest' \
-  --tests 'dev.wawlink.runtime.ContainerFeatureSkillTest' \
-  --tests 'dev.wawlink.runtime.ContainerFeaturePreferencesTest' \
-  --tests 'dev.wawlink.runtime.LocalContainerRuntimeTest' \
-  :terminal-emulator:compileDebugJavaWithJavac :app-android:compileDebugKotlin
-# 更换为本机解包工具的实际绝对路径，两套工具分别运行：
-WAWLINK_TEST_HOST_SHELL=/path/to/mksh WAWLINK_TEST_HOST_TOOLS=/path/to/toybox \
-  ./gradlew :container-runtime:desktopTest --rerun --tests 'dev.wawlink.runtime.RuntimeChrootMountTest'
-WAWLINK_TEST_HOST_SHELL=/path/to/mksh WAWLINK_TEST_HOST_TOOLS=/path/to/busybox \
-  ./gradlew :container-runtime:desktopTest --rerun --tests 'dev.wawlink.runtime.RuntimeChrootMountTest'
-```
-
-最终完整回归与打包命令：
-
-```bash
-./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
-  :agent-driver-omp:desktopTest :agent-ui:desktopTest :agent-ui:testDebugUnitTest \
-  :app-desktop:desktopTest
-./gradlew :agent-ui:desktopTest --rerun :agent-ui:testDebugUnitTest --rerun
-node --test agent-driver-omp/src/jvmSharedTest/resources/model-payload.test.mjs
-node --experimental-vm-modules --test \
-  agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs \
-  agent-driver-omp/src/jvmSharedTest/resources/explorer-attachments.test.mjs
-./gradlew :app-android:assembleDebug
-```
-
-### Release 容器权限与辅助初始化隔离修复（2026-11-01）
-
-本轮针对外部分发 Rootfs 的调试器 `fchown EPERM`、管理目录/布局 `EACCES`，以及辅助安装失败阻断 OMP 的问题。0700 本身不是故障：PRoot/Proroot 不恢复归档 UID，App 拥有的 0700 目录保持私有且可访问；补齐的是 App 所有管理路径缺失的 owner 权限，不把客体映射 root 当作真实 Root。
-
-- 调试器安装和客户端复核 inode、fd、类型及真实 HOME 边界后，仅对当前/明确映射的 App 属主容忍不支持的 fchown；真正异主、未知错误、链接/硬链接别名及用户修改仍拒绝。
-- HOME、`.wawlink`、必要 `.omp` 管理数据和未挂载 workspace 顶层在启动前准备；配置与会话的宿主先行写入沿用同一策略。并发创建父目录后重新校验，不再把其他写入者先创建目录视为失败。依赖、项目、宿主挂载与第三方技能不做全树改权。
-- chroot 布局与内置 Skill 正文沿用共享 2770/660，PRoot/Proroot 不套用 chroot 共享规则；调试凭据与 Skill 安装记录保持私有。更新 Skill 仍保留原文冲突和原子替换检查。
-- Skill 与调试器分别尝试、分别报告失败，安装失败不阻断聊天发送或原生配置桥；停止取消及旧代次回执隔离保留。管理桥本无此辅助依赖，未为其增加另一套启动路径。
-
-最终相关模块回归均无失败、错误或跳过：
-
-| 范围 | 通过 |
-|---|---:|
-| container-runtime Desktop JVM | 182 |
-| container-runtime Android JVM | 10 |
-| agent-driver-omp Desktop JVM | 196 |
-
-执行命令同时包含 Android Kotlin 编译，全部成功；没有打包 APK：
-
-```bash
-./gradlew :container-runtime:desktopTest :container-runtime:testDebugUnitTest \
-  :agent-driver-omp:desktopTest :app-android:compileDebugKotlin \
-  --continue --no-daemon --console=plain
-```
-
-另以真实上游 PRoot 5.5.0、Node 执行生产安装脚本和已安装 CLI，映射 root 与普通用户两种身份均完成 Skill 安装、生产布局 API 读写及连接生产 Kotlin loopback 调试端点的 list 请求。原生 OMP 使用独立 HOME 和 loopback-only 模型配置，收到真实 ready 及成功 get_state 回执；没有模型请求或复制开发机认证。
-
-未运行 Android 模拟器、真机界面、真实 Proroot 或特权 chroot 跨 UID 验收。chroot 挂载/跨 UID 元数据与不支持的 fchown 分支由夹具明确模拟；真实 PRoot、Linux/JVM 脚本与编译结果不代表 Android UID、SELinux 或厂商引擎验收。
-
-### Android 前台服务启动契约与状态时序修复（2026-11-01）
-
-针对 realme RMX6688 / Android 17 报告的 `ForegroundServiceDidNotStartInTimeException`，采用立即前台化、合并启动请求、仅延迟空闲停服的方案；不延迟首次启动、不改变容器/会话生命周期，也不以其他服务类型绕过平台限制。
-
-- `ContainerForegroundService` 创建时先提交基础前台通知，每条启动命令重新确认；空闲宽限为 300 ms，先以最新 startId 的 `stopSelfResult` 确认停服，再移除通知。通知构建失败尝试真实最小通知，可选 `mediaPlayback` 被拒绝时回落合法基础类型并停用音频。
-- `WawLinkApplication` 直接观察已包含 Android 保活偏好的 `AppCoordinator.active`，合并待确认启动及当前实例，不发送交叉 `stopService`；原生启动返回 null、权限/清单失败均保留原因并清除待启动状态。
-- 独立烟测发现并补齐快速“重新开启 → 新启动命令 → 关闭”的资源漏释放边界：每条启动命令重建状态观察，避免旧 StateFlow 观察者合并中间状态后漏掉关闭；不影响仍在执行的工作。新增回归在修复前的 API 34–37 上均失败，修复后全部通过。
-- 不能保证非法清单、系统拒绝、Android 17 后台音频限制或厂商策略下仍能前台化。已知基础类型/权限错误在请求 FGS 前检查；不可恢复拒绝如实报告、有界回收，不假报运行或无限重启。`specialUse` 不构成后台启动或商店政策豁免。
-
-本轮 Kotlin 编译通过；以下 JVM 验证均无失败、错误或跳过：
-
-| 验证范围 | 通过 |
-|---|---:|
-| Service 回归，API 26 及 34–37 | 37 |
-| Application 客户端回归，API 34–37 | 44 |
-| API 37 独立生命周期烟测，含 25 次启动命令/CPU 锁获取释放循环 | 1 |
-
-烟测执行生产 Application/Service，观察到活动工作与前台通知保留、无 Application 交叉停止/重复前台启动请求，以及最终最新 startId 停服与通知移除。系统服务接收/startId 与主线程时钟由 Robolectric 夹具建模，不是 Android 系统超时或真机保活验收；临时烟测脚本不进入仓库。
-
-完整 `lintDebug` 仍被既有 `src/main/res/values/styles.xml:10` 的 `NewApi` 错误阻断，报告共 1 个错误、27 个警告；本轮未修改该资源、提高 minSdk 或添加 Lint 屏蔽。未运行 Android 模拟器、真机或 APK 打包，线上设备仍需复测。
-
-仓库内持久回归和静态检查的复跑命令（Android JVM 测试另需 JDK 21）：
-
-```bash
-./gradlew :app-android:testDebugUnitTest :app-android:compileDebugKotlin \
-  --continue --no-daemon --console=plain
-./gradlew :app-android:lintDebug --no-daemon --console=plain
-```
-
-### chroot 首轮后失去 OMP 文件访问的切换（2026-11-02）
-
-针对 Poco F6 / 澎湃 2.0.208.0 / Android 15 的“应用内首轮后失败、新会话与 Slash 失效、模型配置未知，但终端正常”反馈，核对了提供的 Rootfs 归档元数据及其中 OMP 18.12.6 源码，未改写原归档或读取其中的认证正文。OMP 原生 `assertOwnerPrivateDir` 会把自身目录从 2770 收紧为 0700；chroot 的客体 UID 与 App UID 不同，启动时共享组 chmod 无法保证原生运行后 App 仍能遍历。该机制与反馈一致，但尚未取得故障设备的 UID、SELinux 与挂载现场，不能宣称已证明所有设备差异的唯一原因。
-
-- `OmpGuestFiles` / `guest-files.mjs` 用当前客体账户执行配置、会话历史、模型扩展、附件和管理通道文件操作。按容器运行代次复用文件进程，文件分块传输、目录分批读取；不把 `EACCES` 当成不存在或空配置，不把文件进程异常退出当作用户停止。
-- 配置保持 YAML 注释、未知字段和认证值，SHA-256 版本冲突拒绝覆盖，写入采用同目录暂存与替换；跨文件失败仅尝试回滚本次仍未被外部改动的写入，不承诺整组文件的磁盘事务。拒绝链接、危险类型、硬链接写入、受保护根和只读挂载。
-- 会话、配置、提交、清理及后续原生启动绑定停止/运行代次；停止或快速重启后旧操作不能重新拉起容器或提交到新实例。取消单次读取、暂存写入或历史响应等待不关闭整个共享文件进程，未交付的句柄与暂存文件会清理；已完成的原子提交不伪装为回滚。原生请求/响应继续校验 OMP 实例。
-- 移除 OMP 通道及 Skill 的共享组放宽分支；HOME/容器信息/布局的离线访问契约不变，不使用 777、递归修复全 HOME、吞权限错误或重建 Rootfs。
-
-已在隔离 HOME 的真实 arm64 PRoot/QEMU + Bun 中调用 OMP 原生私有目录检查，观察到 2770 → 700；随后生产客体文件进程连续两轮创建、读取私有会话文件，内容正确且文件保持 600。真实 OMP RPC 连续两轮完成 `ready`、`get_state`、`get_available_commands`，通过生产 `session.mjs` 与文件进程完成实例隔离的 `pins` 请求/响应；仅使用隔离 HOME 和 loopback 模型配置，未发送模型请求或导入开发机认证。另有 Linux Node 生产进程烟测覆盖创建、替换、原生收紧后的继续读写和过期版本拒绝。BusyBox 路径下的权限准备与 Skill 定向回归通过。开发机 user namespace UID 映射被系统拒绝，未获得真实特权 chroot/跨 UID 或 Android SELinux 验证；未使用 Android 模拟器，不把 JVM/Linux 与 APK 构建结果当作问题设备已修复。
-
-本轮验证结果：
-
-| 范围 | 通过 | 失败 / 错误 |
-| --- | ---: | ---: |
-| `agent-driver-omp:desktopTest` | 216 | 0 |
-| `container-runtime:desktopTest` | 182 | 0 |
-| `container-runtime:testDebugUnitTest` | 10 | 0 |
-| 原生会话通道 Node 回归 | 1 | 0 |
-
-```bash
-./gradlew :agent-driver-omp:desktopTest :container-runtime:desktopTest \
-  :container-runtime:testDebugUnitTest :app-android:assembleDebug --continue --console=plain
-node --experimental-vm-modules --test agent-driver-omp/src/jvmSharedTest/resources/session.test.mjs
-env WAWLINK_TEST_HOST_TOOLS=/usr/bin/busybox WAWLINK_TEST_BUSYBOX=/usr/bin/busybox \
-  ./gradlew :container-runtime:desktopTest --rerun \
-  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
-  --tests 'dev.wawlink.runtime.ContainerFeatureSkillTest' --console=plain
-```
-
-默认 Debug APK 为 `app-android/build/outputs/apk/debug/app-android-debug.apk`，本轮构建与 `apksigner verify` 通过，57,216,080 字节。它使用 Android Debug 签名，与正式 Release 不同，不能据此承诺覆盖安装；复测不得通过卸载正式版丢弃原容器数据。
-
-### 逻辑属主、离线迁移与归档保真（2026-11-02）
-
-在前一节客体 OMP 文件访问切换之上，移除剩余离线元数据/布局的共享组依赖，覆盖 Rootfs 生命周期，而非继续靠启动时 chmod 对抗原生私有目录。
-
-- 解压时保存 tar 的逻辑 UID/GID 和完整 `07777`，物理文件仍归 App；包装目录扁平化、导入、克隆和覆盖同步清单。导出以逻辑身份填写 tar 头，保留 suid/sgid/sticky、链接及客体后来修改的模式，不归档宿主私有清单。
-- PRoot/Proroot 新增且缺少逻辑记录的路径按同一规则补全；不修改固定原生引擎，不承诺追踪 PRoot 运行期任意模拟 chown。老容器无清单本身不构成拒绝切换的理由，只有真实 Root、路径、挂载或迁移安全条件不满足时拦截。
-- PRoot/Proroot 与 chroot 之间停服后离线迁移；先检查真实 Root、根目录/挂载边界、全部路径及硬链接计划，再记录迁移身份并修改属主，chown 后恢复模式。配置仅在迁移成功后提交；中断保留目标和设备/inode/链接数/类型证据，重试不得对已替换对象继续旧计划。预检不是磁盘故障下的整树事务回滚。
-- 旧容器的启发式处理只执行一次：按有效账户及 HOME 推断属主，恢复明确的临时目录 sticky、sudo suid、SSH/VNC/认证状态私有权限；不宣称能精确恢复已丢失的原始 UID/GID。后续启动不全树扫描或重复重设模式；PRoot/Proroot 的正常启动仍能先修复有限管理路径的 owner 访问。
-- `RootfsHostFiles` 统一元数据、布局、DNS 和组数据库的离线读写。chroot 走 Root，完成私有暂存后设定逻辑属主并恢复完整模式，复核内容哈希和 inode/属主/模式后原子替换；同 Rootfs 的提交与 finalizer 隔离。拒绝外部修改、链接/硬链接写入、实际挂载和失效根/父目录，清理失败保留真实错误；不承诺路径式 Shell 操作能抵御任意恶意并发置换，或内容与 sidecar 跨文件事务。
-- chroot 私有内容通过可取消、失败可回收的 Root tar 流导出，脱敏继续隔离 HOME、保护路径及硬链接别名。完整导出不要求解析 passwd、不修改源文件模式；新文件的属主推断支持当前配置用户的 HOME 覆盖。
-- Root 扫描以 NUL 分隔路径，按最多 128 项/16 KiB 调用 worker；每批使用一次 native stat，不在 worker 内逐 inode 启动 stat。校验生产者完成标记，避免 BusyBox `find -exec … {} +` 超过参数上限或把生产者失败误当完整结果。链接目标精确保留，包括真实尾随换行，不混入 `readlink` 的输出分隔符；整树快照使用单独的 300 秒/256 MiB 上限，普通命令限制不扩大。
-
-对提供的完整 `IDADroid-v0-1-1.tar.zstd` 使用生产解压/导出/再解压：导入清单有 57,104 项，`/root/.omp/agent` 保留逻辑 `0:0` 和 700；在隔离 PRoot/QEMU + 原有 Bun 内调用 OMP 的真实 `assertOwnerPrivateDir`，观察目录收紧为 700，再连续两轮原子替换并读取 600 文件；往返后保留文件正文及逻辑 `0:0:600`。只使用隔离烟测 HOME，不加载认证或发送模型请求，原归档未修改。
-
-同一完整解压树的生产 Shell 扫描与 JVM 快照逐条比对：GNU 工具、BusyBox ash/工具、mksh 59c + Toybox 0.8.9 均为 57,102 项且完全一致，覆盖链接目标和完整元数据；不是仅比较数量。另用 mksh 分别搭配 BusyBox 和 Toybox 执行 `RuntimeChrootMountTest`，两种组合均为 20 项通过；夹具的隔离 PATH 明确提供实际依赖，不靠 BusyBox ash 绕过 PATH 的内置 applet 隐式补齐工具。
-
-| 完整归档烟测 | 字节数 |
-| --- | ---: |
-| 输入归档 | 1,698,120,070 |
-| 解压普通文件合计 | 3,964,834,227 |
-| 往返归档 | 1,698,354,608 |
-
-本轮没有真实特权 chroot、跨 UID 内核或 Android SELinux/ROM 验收，不使用 Android 模拟器；Shell/UID 夹具和 PRoot/QEMU 结果不能写成 Poco F6 真机已修复。
-
-### 启动与导入校验等待回归修复（2026-11-02）
-
-针对覆盖安装后容器长时间启动、Rootfs 导入长期显示校验的反馈，定位到 `5a43f26` 新增的确定性开销：首次 chroot 接入与导入注册执行整树属主迁移，扫描 worker 和迁移脚本逐 inode 启动外部命令；chroot 体积统计还复用了包含 UID/GID、链接目标等字段的完整快照。导入页准备状态同时覆盖解压检查和后续提交，不能仅凭“校验”文字断言卡在 SHA-256。所附 Android 日志没有容器异常栈、ANR 或 FATAL EXCEPTION，厂商 ColorX/Oplus 日志不足以证明容器失败原因。
-
-扫描现改为有界多路径 native stat；迁移按同父目录、目标属主和模式分组，固定父目录 cwd，批量复核完整元数据、执行 `chown -h`、恢复模式并复核结果；物理属主和模式已满足目标时不重写。全树预检、硬链接计划、挂载边界、迁移 journal、取消检查和旧 inode 拒绝均保留，不用删校验或放宽权限换速度。
-
-体积统计只传输普通文件类型与大小，不构造完整 Entry/属主/链接快照，由 Kotlin checked Long 求和。Android 类 mksh 的算术会在 32 位溢出，因此不在宿主 shell 中累加大文件体积，也不把 `du` 的磁盘块数当逻辑字节。硬链接仍逐路径计数，不跟符号链接，排除配置、实际及运行时挂载；find 或任一 worker 失败都不能发布部分统计或覆盖成功缓存。专用扫描仍限制为 300 秒/256 MiB，不扩大普通命令限额。
-
-在同一开发机对 518 个条目的真实文件迁移进行前后对照；Root 授权预检显式模拟，文件、模式、native 命令与已有补充 GID 的实际切换均真实执行：
-
-| 同一隔离迁移 | 修复前 | 修复后 |
-| --- | ---: | ---: |
-| 扫描 stat 进程 | 518 | 5 |
-| 迁移 stat 进程（含扫描及管理读取） | 3,655 | 110 |
-| chown 进程 | 518 | 20 |
-| chmod 进程 | 517 | 19 |
-| 本机迁移耗时（毫秒） | 6,512 | 413 |
-
-GNU/dash、mksh R59c + Toybox 0.8.9、mksh + BusyBox 三套隔离工具链均完成生产扫描、迁移和 `4 GiB + 7` 稀疏文件体积读取。定向回归 165 项通过，无失败、错误或跳过，覆盖完整元数据、批次边界、私有权限与归档、迁移中断/恢复、同批文件被替换时拒绝修改其他成员、挂载排除、超过 8 GiB 的精确逻辑体积、生产者/worker 失败及旧结果隔离：
-
-```bash
-./gradlew :container-runtime:desktopTest \
-  --tests 'dev.wawlink.runtime.Rootfs*' \
-  --tests 'dev.wawlink.runtime.LocalContainerRuntimeTest' \
-  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
-  --tests 'dev.wawlink.runtime.RuntimeEnginesTest' \
-  --tests 'dev.wawlink.runtime.RuntimeIdentityTest' \
-  --tests 'dev.wawlink.runtime.ContainerMetadataTest' --continue --console=plain
-```
-
-本轮没有使用 Android 模拟器，没有改动原始 Rootfs 归档，也没有真实特权 chroot、跨 UID 内核或 Android ROM/SELinux 验收。本机耗时不能外推为手机启动时限，仍需反馈设备覆盖安装后验证已有容器启动及同一归档导入；不要求卸载、清数据或重新导入原有容器。
-
-### 统一错误详情、容器进度与链接扫描优化（2026-11-02）
-
-- 聊天、历史树/Hub、模型与 Agent 设置、插件/技能、文件和容器等运行时错误入口共用 `ErrorDetails.kt`：原位保留简洁摘要，点击“查看详情”打开可滚动、选择与复制的 Material 3 Dialog。不移除原有关闭、重试、修复与草稿恢复操作。
-- 显示与复制共用凭据脱敏，覆盖 Authorization/Bearer/Basic、URL userinfo 及常见 token/api_key/password/secret 字段；保留 errno、文件路径与错误原因。它不是任意秘密扫描，分享诊断前仍应核对内容。
-- 宿主取得 Throwable 时，有界保留最多 32,768 字符诊断，包含可得的 cause/suppressed 异常链并明确标记截断，不附加命令参数或环境；原生仅返回错误文本时不虚构异常栈。Root 命令错误补充实际操作阶段与对应期限，保留原始原因。
-- 容器列表、详情与 Rootfs 导入页显示实际阶段；传输有真实总量时显示百分比，属主迁移显示已完成项数，解压等未知总量阶段使用标准不定进度与可得字节。启动等待、引擎切换、克隆和导出也发布阶段，不用计时伪造百分比。表单取消、离页及迟到回调沿用操作代次隔离，失败保留草稿和真实错误。
-- 属主扫描改为相对路径、最多 512 项/32 KiB 的 native stat 批次。mksh 使用内建 `print -rN` 输出 NUL 字段，不再逐条启动外部 `printf`，其他 Shell 保留标准 `printf`。支持 `find -printf` 的工具先批量输出链接目标，再与 stat 的 inode 对齐；链接替换、遗漏、重复、部分输出或生产者失败均拒绝。链接目标按 NUL 字段传输，保留换行、反斜杠及尾部控制字符。不支持 `-printf` 的 BusyBox 使用有界 stat/readlink 路径，不屏蔽工具失败。
-- 全量预检、挂载排除、硬链接计划、完整模式、迁移 journal、取消与旧 inode 拒绝均保留；扫描仍为 300 秒/256 MiB，普通 Root 命令仍为 45 秒，不以加长超时掩盖开销。
-
-独立桌面烟测实际打开生产错误组件的 Dialog，检查长详情滚动至末尾、cause/suppressed 展示和剪贴板原文；复制结果保留第 80 个检查点并脱敏 Bearer 与含空格密码。另检查标准不定/定量进度组件的呈现；布局用固定输入，不冒充真实容器进度数据。验证窗口与进程已关闭。Android 模拟器、真机、特权 chroot 与 SELinux/ROM 尚未验收，桌面组件观察不能写成 Poco F6 已修复。
-
-
-使用前文同一完整 `IDADroid-v0-1-1.tar.zstd`，生产导入耗时 14,419 ms，并实际观察到读取、已知总量传输、安全解压、检查发行版/ELF/容器信息、保存配置与统计体积等阶段。GNU/dash、mksh R59 + Toybox 0.8.9、mksh + BusyBox 三套工具得到的 57,102 项快照均与 JVM 逐项完全一致，逻辑体积也相等；另检查了含引号/反斜杠的路径与尾部换行/控制字符链接目标的精确保留。下表是同一开发机单次整树扫描对照，不包含导入，不是 Android 启动时限承诺：
-
-| 宿主工具链 | 外部 printf 逐项输出（ms） | mksh 内建 NUL 输出（ms） |
-| --- | ---: | ---: |
-| mksh + Toybox | 131,873 | 11,799 |
-| mksh + BusyBox | 150,413 | 43,351 |
-
-完整导入后，通过生产 `LocalContainerRuntime.start/stop` 执行真实 PRoot/QEMU 启停，观察到四个启动阶段及最终停止状态；未读取归档认证正文或发送模型请求。真实 `sleep` 超时烟测同时确认异常保留阶段、配置扫描期限和原始命令超时原因，Root 授权未在该烟测中执行。临时烟测代码不进入仓库。
-
-本轮定向回归 177 项通过，无失败、错误或跳过：运行时 151、UI 诊断 6、应用协调与导入 20；Android Kotlin 编译通过，没有构建新 APK。包含链接目标原文、两遍间链接置换、生产者部分输出失败，以及取消导入后的迟到进度不得覆盖新重试。持久回归可使用下列命令复跑：
-
-```bash
-./gradlew :container-runtime:desktopTest \
-  --tests 'dev.wawlink.runtime.Rootfs*' \
-  --tests 'dev.wawlink.runtime.LocalContainerRuntimeTest' \
-  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
-  --tests 'dev.wawlink.runtime.RuntimeEnginesTest' \
-  :agent-ui:desktopTest \
-  --tests 'dev.wawlink.ui.ErrorDetailsRedactionTest' \
-  --tests 'dev.wawlink.ui.ChatErrorDiagnosisTest' \
-  :app-desktop:desktopTest \
-  --tests 'dev.wawlink.app.RootfsImportControllerTest' \
-  --tests 'dev.wawlink.app.AppCoordinatorInterruptionTest' \
-  :app-android:compileDebugKotlin --continue --console=plain
-```
-
-### chroot 扫描误用普通 Root 限额回归修复（2026-11-03）
-
-针对新增权限转译后出现的“阶段=其他 Root 操作；超时=45秒；原因=系统命令输出读取失败：su：系统命令输出超过上限：su”，已通过生产 `RuntimeEngines.rootCommand` 和 `HostCommands` 复现：扫描脚本嵌入多行 worker 后，`trimIndent()` 无法去掉标记行的全部缩进，旧分发器的首字符 `startsWith` 未命中，实际落入普通命令的 45 秒/4 MiB 限额。报错中的 45 秒是配置期限，不表示本次确实等满了 45 秒；输出超限会主动结束命令。详情只有这条异常不等于 UI 截断了完整日志，读取器没有把已读的大量扫描数据附加到该异常。
-
-分发器现在按首个非空白字符识别开头的扫描标记，不复制或改写原脚本；阶段、期限和输出上限共用同一个分类。属主扫描与体积扫描恢复原本已定义的 300 秒/256 MiB，普通命令仍为 45 秒/4 MiB；脚本中途出现标记文本不能取得扫描限额。未删除属主转译、挂载隔离、完整元数据、生产者完成标记、硬链接预检或迁移 journal，也未扩大既有扫描上限。
-
-新增持久回归在子 JVM 的 PATH 中提供不提权的 `su` 适配器，真实运行生产分发器、Shell 脚本和输出收集器，不用注入的 `runRootCommand` 绕过限额选择。修复前，超过 4 MiB 的完整快照复现上述同文错误，扫描失败也被错误归类；修复后，完整快照逐项指纹比对、普通命令超限拒绝、属主/体积扫描失败的正确阶段/期限及原始原因保留均通过。连同挂载、属主快照、迁移生命周期和体积缓存等定向回归，共 61 项通过，无失败、错误或跳过：
-
-```bash
-./gradlew :container-runtime:desktopTest \
-  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
-  --tests 'dev.wawlink.runtime.RootfsOwnershipTest' \
-  --tests 'dev.wawlink.runtime.RootfsOwnershipLifecycleTest' \
-  --tests 'dev.wawlink.runtime.LocalContainerRuntimeTest' --console=plain
-```
-
-另以生产解压器读取完整 `IDADroid-v0-1-1.tar.zstd`（1,698,120,070 字节），在隔离副本通过未覆盖限额的生产 Root 分发路径扫描。GNU/dash、mksh R59 + Toybox 0.8.9、mksh + BusyBox 的 57,102 项快照均与 JVM 逐项一致，普通文件逻辑体积均为 3,964,834,227 字节；属主标记前有 16 个空白字符，体积标记前有 12 个，三套工具都正确命中扫描类别：
-
-| 宿主工具链 | 完整属主扫描输出（字节） |
-| --- | ---: |
-| GNU/dash | 6,409,180 |
-| mksh + Toybox | 6,409,180 |
-| mksh + BusyBox | 6,315,941 |
-
-三套体积扫描均返回 485,135 字节并通过精确总量比对。原归档未修改，不读取或输出认证正文，不发送模型请求；该烟测的 `su` 仅适配到真实宿主 Shell，不获取 Root，不证明 Android 特权 chroot、SELinux 或 ROM 行为。未使用 Android 模拟器，仍需用户用原容器真机复测；修复本身不要求重新导入 Rootfs。
-
+<p align="center">
+  Made with ❤️ by <a href="https://github.com/wsdx233">wsdx233</a>
+</p>

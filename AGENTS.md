@@ -209,7 +209,8 @@
   - `ref-plan/session-history.html`、`ref-plan/agent-hub.html` 为本会话历史树与运行时 Agent Hub/子代理详情的完整视觉和交互原型；保留原文件，不修改演示数据。
   - `ref-plan/feature-cards.html`：功能页卡片、编辑工具栏、调色与切换容器的用户原型；原文保留，拖动仍使用既有实现，不引入原型演示业务。
   - `ref-plan/attachment-preview.html`：附件输入条、排队胶囊、用户内嵌相册与文件卡、文件快速预览及图片全屏的用户视觉原型；原文保留，不引入演示数据。
-- `README.md`：构建运行、独立 UI 接入、能力边界、产物与已验证范围。
+- `README.md` / `README_EN.md`：项目介绍、界面预览、快速上手、构建运行与架构说明。
+- `doc/images/`：README 图标与界面预览截图。
 - `scripts/USAGE.txt`：固定输入、免 Docker 构建、原生程序加载与上游许可说明。
 
 ### 索引维护
