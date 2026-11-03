@@ -150,7 +150,7 @@ class LocalContainerRuntime internal constructor(
     private fun ensureOpen() = check(!closed && !closing) { "容器运行时已关闭" }
     private fun config(id: String): ContainerConfig = configurations[id] ?: error("找不到容器：$id")
     private fun sizeOf(config: ContainerConfig, appOwnedRoot: Boolean = false): Long {
-        if (config.engine == ContainerEngineType.CHROOT && !appOwnedRoot) return RootfsArchives.privilegedSize(config, engines::rootCommand)
+        if (RootfsAccess.requiresRoot(config) && !appOwnedRoot) return RootfsArchives.privilegedSize(config, engines::rootCommand)
         val excluded = RootfsOwnership.exclusions(config).map { it.removePrefix("/") }.toSet()
         return measureRootfs(File(config.rootfsPath).canonicalFile, excluded)
     }
@@ -280,7 +280,7 @@ class LocalContainerRuntime internal constructor(
             try {
                 report("保存容器配置", null)
                 configurations[config.id] = config.copy(rootfsPath = root.path, isDefault = config.isDefault || configurations.isEmpty())
-                if (config.engine == ContainerEngineType.CHROOT) {
+                if (config.engine == ContainerEngineType.CHROOT && !config.ownershipMigrationDeferred) {
                     val manifest = RootfsOwnership.load(root)
                     if (manifest == null || manifest.physical != ContainerEngineType.CHROOT || manifest.pending != null) {
                         val context = currentCoroutineContext()
@@ -411,16 +411,18 @@ class LocalContainerRuntime internal constructor(
         if (asRoot) engines.rootCommand(command) else HostCommands.run(listOf("sh", "-c", command))
     }
 
-    override suspend fun update(config: ContainerConfig) = withContext(Dispatchers.IO) { trackOperation(config.id, config.displayName, "检查引擎设置") { report ->
+    override suspend fun update(config: ContainerConfig, migrateOwnership: Boolean) = withContext(Dispatchers.IO) { trackOperation(config.id, config.displayName, "检查引擎设置") { report ->
+        val target = config.copy(ownershipMigrationDeferred = !migrateOwnership)
         val migration = mutex.withLock {
             ensureOpen(); ensureAvailable(config.id)
             if (config.isDefault) ensureDefaultAvailable(config.id)
             val previous = config(config.id)
             require(File(previous.rootfsPath).canonicalPath == File(config.rootfsPath).canonicalPath) { "请通过导入/克隆更换 rootfs，不能直接修改路径" }
+            if (!migrateOwnership) RootfsOwnership.requireStable(previous)
             engines.validate(config)
             val manifest = RootfsOwnership.load(File(config.rootfsPath))
-            val needed = RootfsOwnership.mapped(previous.engine) != RootfsOwnership.mapped(config.engine) ||
-                manifest?.pending != null || (manifest != null && manifest.physical != RootfsOwnership.mapped(config.engine))
+            val needed = migrateOwnership && (RootfsOwnership.mapped(previous.engine) != RootfsOwnership.mapped(config.engine) ||
+                manifest?.pending != null || (manifest != null && manifest.physical != RootfsOwnership.mapped(config.engine)))
             if (needed) RootfsOwnership.preflight(engines::rootCommand)
             needed
         }
@@ -429,14 +431,14 @@ class LocalContainerRuntime internal constructor(
             withStoppedRootfs(config.id, restore = false) { previous ->
                 val operation = mutex.withLock { rootfsOperations.getValue(config.id) }
                 val context = currentCoroutineContext()
-                RootfsOwnership.migrate(previous, config, engines::rootCommand, report) {
+                RootfsOwnership.migrate(previous, target, engines::rootCommand, report) {
                     context.ensureActive()
                     check(!closing && !closed && !wasInterrupted(config.id, operation.stopGeneration)) { "容器已停止或关闭；属主迁移已保留，可重新保存目标引擎继续" }
                 }
                 withContext(NonCancellable) { mutex.withLock {
                     ensureOpen()
                     check(configurations[config.id] === previous && stopGenerations[config.id] == operation.stopGeneration) { "容器操作已过期，未提交目标引擎配置" }
-                    commitConfiguration(config, previous)
+                    commitConfiguration(target, previous)
                     operation.config = configurations.getValue(config.id)
                     committedGeneration = operation.stopGeneration
                 } }
@@ -452,9 +454,11 @@ class LocalContainerRuntime internal constructor(
         } else mutex.withLock {
             ensureOpen(); ensureAvailable(config.id)
             val previous = config(config.id)
+            RootfsOwnership.requireStable(previous)
             val running = keepers[config.id]?.process?.isAlive == true
             if (running) stopLocked(config.id)
-            commitConfiguration(config, previous)
+            if (!migrateOwnership) RootfsOwnership.retainPhysicalIdentity(previous)
+            commitConfiguration(target, previous)
             if (running) startLocked(config.id)
         }
         }
@@ -493,7 +497,7 @@ class LocalContainerRuntime internal constructor(
         // Registered developer/user-owned external trees are never recursively deleted.
         if (root.toPath().startsWith(rootfsDir.canonicalFile.toPath()) && root != rootfsDir.canonicalFile) {
             val ownership = RootfsOwnership.load(root)
-            if (ownership?.physical == ContainerEngineType.CHROOT || ownership?.pending != null || existing.engine == ContainerEngineType.CHROOT) {
+            if (ownership?.physical == ContainerEngineType.CHROOT || ownership?.pending != null || (ownership == null && existing.engine == ContainerEngineType.CHROOT)) {
                 RootfsOwnership.deleteRootfs(existing, engines::rootCommand)
             } else RootfsArchives.deleteTree(root)
         }
@@ -539,7 +543,7 @@ class LocalContainerRuntime internal constructor(
                 report("统计克隆容器体积", null)
                 val size = sizeOf(copied, appOwnedRoot = true)
                 currentCoroutineContext().ensureActive()
-                if (copied.engine == ContainerEngineType.CHROOT) {
+                if (copied.engine == ContainerEngineType.CHROOT && !copied.ownershipMigrationDeferred) {
                     val context = currentCoroutineContext()
                     RootfsOwnership.migrate(stagingConfig, copied, engines::rootCommand, report) { context.ensureActive() }
                 }
@@ -768,7 +772,8 @@ class LocalContainerRuntime internal constructor(
                     engines.validateRoot(original)
                     engines.validateRoot(candidate.copy(engine = original.engine))
                     require(candidate.arch == engines.guestArch(original.arch)) { "更新归档的 ELF 架构与原容器配置不兼容" }
-                    val privileged = original.engine == ContainerEngineType.CHROOT
+                    val physicalConfig = original.copy(engine = RootfsOwnership.physical(original))
+                    val privileged = physicalConfig.engine == ContainerEngineType.CHROOT
                     if (privileged) report("扫描原容器文件属主", null)
                     val snapshot = if (privileged) RootfsOwnership.snapshot(original, engines::rootCommand) else null
                     val homes = snapshot?.let { RootfsOwnership.exportHomes(original, it, engines::rootCommand) }
@@ -783,7 +788,7 @@ class LocalContainerRuntime internal constructor(
                     finally {
                         if (privileged) try {
                             // Restore only ownership, never start a guest after cancellation or manual stop.
-                            withContext(NonCancellable) { RootfsOwnership.migrate(mapped, original, engines::rootCommand, report) }
+                            withContext(NonCancellable) { RootfsOwnership.migrate(mapped, physicalConfig, engines::rootCommand, report) }
                         } catch (failure: Throwable) { if (overlayFailure != null) overlayFailure.addSuppressed(failure) else throw failure }
                     }
                     report("统计容器体积", null)

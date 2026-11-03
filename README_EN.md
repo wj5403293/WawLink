@@ -108,6 +108,8 @@ Create a session on the home screen and tell the Agent what you need. It will au
 | **Agent Engine** | Native Oh My Pi (OMP) + Bun runtime |
 | **Code Highlighting** | Sora Editor + offline TextMate grammars on Android; RSyntaxTextArea on Desktop |
 
+Switching between PRoot/Proroot and chroot from container details first explains physical ownership conversion and its potentially long duration. Starting conversion stops the container, checks and converts ownership, then saves the engine. Deferring saves the target engine while retaining physical ownership; later starts do not silently perform the conversion. The target engine may fail to start or access files until you explicitly resume conversion from container details. Dismissing the dialog leaves the configuration unchanged. An unfinished migration cannot be bypassed by deferring.
+
 ## Build from Source
 
 WawLink uses a standard Gradle build system with Docker-free preparation scripts.

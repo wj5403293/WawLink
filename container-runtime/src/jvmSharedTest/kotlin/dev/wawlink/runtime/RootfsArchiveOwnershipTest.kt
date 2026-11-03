@@ -207,6 +207,25 @@ class RootfsArchiveOwnershipTest {
         assertEquals("target", stored.getValue("/alias").link)
     }
 
+    @Test fun privilegedMappedTarRetainsLogicalIdsAndCurrentSpecialModes() = fixture { directory ->
+        val input = File(directory, "mapped-native.tar")
+        writeTar(input.outputStream(), listOf(
+            member("./", ChrootHostIdentity.uid.toLong(), ChrootHostIdentity.gid.toLong(), "755"),
+            member("./home/alice/payload", ChrootHostIdentity.uid.toLong(), ChrootHostIdentity.gid.toLong(), "6751", "portable"),
+            hardlink("./alias", "./home/alice/payload"),
+        ))
+        val output = File(directory, "mapped-native.tar.zst")
+        RootfsArchives.exportFromTar(output, input.inputStream(), mapOf(
+            "/" to LogicalOwner(0, 0, "755".toInt(8)),
+            "/home/alice/payload" to LogicalOwner(1001, 2001, "600".toInt(8)),
+        ))
+        val stored = snapshot(output)
+        assertEquals(LogicalOwner(1001, 2001, "6751".toInt(8)), stored.getValue("/home/alice/payload").owner)
+        assertEquals(stored.getValue("/home/alice/payload").owner, stored.getValue("/alias").owner)
+        assertEquals("portable", stored.getValue("/home/alice/payload").text)
+        assertTrue(stored.getValue("/alias").hardlink)
+    }
+
     @Test fun streamsNativeTarWithPrivateOwnersAndSanitizesHardlinkAliases() = fixture { directory ->
         val payload = "private-data\n".repeat(30_000)
         val input = File(directory, "native.tar")

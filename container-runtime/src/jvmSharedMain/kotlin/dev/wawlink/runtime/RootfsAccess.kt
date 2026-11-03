@@ -15,10 +15,10 @@ internal object RootfsAccess {
     private val reservedRoots = setOf("/", "/home", "/root", "/usr", "/etc", "/var", "/tmp", "/dev", "/proc", "/sys", "/data", "/data/data", "/data/user", "/data/user/0")
 
     fun requiresRoot(config: ContainerConfig): Boolean {
-        if (config.engine == ContainerEngineType.CHROOT) return true
         val root = File(config.rootfsPath)
         val ownership = RootfsOwnership.load(root)
         if (ownership?.physical == ContainerEngineType.CHROOT || ownership?.pending != null) return true
+        if (ownership == null && config.engine == ContainerEngineType.CHROOT) return true
         return try {
             for (file in listOf(root, File(root, "etc"), File(root, "bin/sh"))) {
                 Files.readAttributes(file.toPath(), BasicFileAttributes::class.java)

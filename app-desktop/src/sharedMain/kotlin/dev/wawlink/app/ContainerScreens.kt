@@ -169,10 +169,46 @@ internal fun ContainerOperationProgress(progress: DeploymentProgress, modifier: 
 }
 @Composable private fun ShellSelector(value: String, onChange: (String) -> Unit) { HostChips(listOf("/bin/bash", "/bin/zsh", "/bin/sh"), value, { it.substringAfterLast('/').replaceFirstChar(Char::uppercase) }, onChange, "terminal") }
 
+@Composable
+internal fun EngineOwnershipConversionDialog(
+    onConfirm: () -> Unit,
+    onDefer: () -> Unit,
+    onDismiss: () -> Unit,
+    enabled: Boolean = true,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("切换运行引擎与权限转换") },
+        text = {
+            Text(
+                """
+                切换到 chroot（或从 chroot 切换到其他引擎）需要转换容器文件的物理属主：
+
+                • 为什么需要转换？
+                PRoot 运行在应用私有权限下，由启动器在内存中模拟用户身份；而 chroot 直接由系统内核进行真实的权限校验，容器内的文件物理属主必须真实变更为系统 root 及对应用户。
+
+                • 耗时提醒
+                需完整扫描容器内所有文件并分批修正物理属主与权限。若容器内文件较多（如安装了较多开发依赖或软件包），转换耗时可能较长（数分钟至数十分钟）。
+
+                转换期间容器将处于停止状态，请耐心等待，切勿强退应用。
+
+                暂不转换可能导致目标引擎启动或文件访问失败；后续启动不会自动补做转换。
+                """.trimIndent(),
+                Modifier.verticalScroll(rememberScrollState()),
+            )
+        },
+        confirmButton = { TextButton(onConfirm, enabled = enabled) { Text("开始转换") } },
+        dismissButton = { TextButton(onDefer, enabled = enabled) { Text("暂不转换") } },
+    )
+}
+
 @Composable internal fun ContainerDetailScreen(app: AppCoordinator, files: HostFiles, info: ContainerInfo, onBack: () -> Unit, onTerminal: (String) -> Unit, onFiles: (String) -> Unit) {
     val c = info.config
     val deployments by app.runtime.deployments.collectAsState()
     val operation = deployments.firstOrNull { it.id == c.id }
+    val appBusy by app.busy.collectAsState()
+    var updateBusy by remember(c.id) { mutableStateOf(false) }
+    var pendingEngine by remember(c.id, c.engine) { mutableStateOf<ContainerEngineType?>(null) }
     var tools by remember(c.id) { mutableStateOf<List<ToolchainInfo>?>(null) }
     var probeError by remember(c.id) { mutableStateOf<String?>(null) }
     var toolBusy by remember { mutableStateOf<String?>(null) }
@@ -192,7 +228,36 @@ internal fun ContainerOperationProgress(progress: DeploymentProgress, modifier: 
     val uiScope = rememberCoroutineScope()
     suspend fun probe() { probeError = null; try { tools = withContext(Dispatchers.IO) { app.runtime.probeToolchains(c.id) } } catch (e: Exception) { probeError = e.message ?: e.toString() } }
     LaunchedEffect(c.id, c.engine, c.user) { probe() }
-    fun update(next: ContainerConfig) { app.launch { app.runtime.update(next) } }
+    fun configurationBusy(): Boolean = updateBusy || app.busy.value > 0 || toolBusy != null ||
+        app.runtime.deployments.value.any { it.id == c.id && it.error == null && (it.progress?.let { fraction -> fraction < 1f } ?: true) }
+    fun update(next: ContainerConfig, migrateOwnership: Boolean = !next.ownershipMigrationDeferred, onSuccess: () -> Unit = {}) {
+        if (configurationBusy() || pendingEngine != null) return
+        updateBusy = true
+        app.launch {
+            try {
+                app.runtime.update(next, migrateOwnership)
+                onSuccess()
+            } finally { updateBusy = false }
+        }
+    }
+    fun selectEngine(target: ContainerEngineType) {
+        if (configurationBusy() || pendingEngine != null) return
+        val latest = app.runtime.containers.value.firstOrNull { it.config.id == c.id }?.config ?: return
+        if (latest.engine != c.engine) return
+        if (target == latest.engine && !latest.ownershipMigrationDeferred) return
+        if (target == latest.engine || (target == ContainerEngineType.CHROOT) != (latest.engine == ContainerEngineType.CHROOT)) {
+            pendingEngine = target
+        } else update(latest.copy(engine = target))
+    }
+    fun confirmEngine(target: ContainerEngineType, migrateOwnership: Boolean) {
+        if (pendingEngine != target || configurationBusy()) return
+        pendingEngine = null
+        val latest = app.runtime.containers.value.firstOrNull { it.config.id == c.id }?.config ?: return
+        if (latest.engine != c.engine) return
+        update(latest.copy(engine = target), migrateOwnership)
+    }
+    val engineEnabled = !updateBusy && appBusy == 0 && toolBusy == null &&
+        (operation == null || operation.error != null || operation.progress?.let { it >= 1f } == true)
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         AgentTopBar(c.displayName, onBack, actions = {
             AgentIconButton("edit", "编辑容器信息", { metadataEditor = true })
@@ -236,7 +301,8 @@ internal fun ContainerOperationProgress(progress: DeploymentProgress, modifier: 
                 }
             }
             SectionLabel("运行引擎", "deployed_code")
-            DetailSegments(ContainerEngineType.entries, c.engine, { it.name.lowercase() }, { update(c.copy(engine = it)) }, enabled = { app.isAndroid || it != ContainerEngineType.PROROOT })
+            DetailSegments(ContainerEngineType.entries, c.engine, { it.name.lowercase() }, { selectEngine(it) }, enabled = { engineEnabled && pendingEngine == null && (app.isAndroid || it != ContainerEngineType.PROROOT) })
+            if (c.ownershipMigrationDeferred) TextButton({ selectEngine(c.engine) }, enabled = engineEnabled && pendingEngine == null) { Text("权限转换已暂缓 · 开始转换") }
             Text("切换引擎或配置会停止相关进程并应用新配置。chroot 需要 Root 权限。${if (!app.isAndroid) "proroot 仅支持 Android。" else "proroot 支持 root 与普通用户。"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
             SectionLabel("预装工具链", "construction", action = { TextButton({ uiScope.launch { probe() } }, enabled = toolBusy == null) { Text("重新探测") } })
             if (tools == null && probeError == null) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在容器内探测实际工具版本", Modifier.padding(12.dp)) }
@@ -280,6 +346,14 @@ internal fun ContainerOperationProgress(progress: DeploymentProgress, modifier: 
             c.environment.forEach { (key, value) -> DetailRow(key, value, "data_object", { envEditor = key to value; addEnv = true }) { AgentIconButton("close", "删除变量", { update(c.copy(environment = c.environment - key)) }) } }
         }
     }
+    pendingEngine?.let { target ->
+        EngineOwnershipConversionDialog(
+            onConfirm = { confirmEngine(target, true) },
+            onDefer = { confirmEngine(target, false) },
+            onDismiss = { pendingEngine = null },
+            enabled = engineEnabled,
+        )
+    }
     if (metadataEditor) key(c.id, c.rootfsPath, c.user, c.environment["HOME"]) {
         ContainerMetadataSheet(app, files, c) { metadataEditor = false }
     }
@@ -316,18 +390,25 @@ internal fun ContainerOperationProgress(progress: DeploymentProgress, modifier: 
     if (clone) AgentSheet("克隆容器", { clone = false }) { HostField("新容器名称", cloneName, { cloneName = it }); HostAction("开始克隆", "content_copy", { app.launch { app.runtime.clone(c.id, cloneName); clone = false } }, Modifier.fillMaxWidth(), enabled = cloneName.isNotBlank()) }
     if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text("删除容器 ${c.displayName}？") }, text = { Text("将停止相关进程并删除此容器。受管导入的 rootfs 会永久删除；外部注册的开发 rootfs 将保留。存在关联会话时请先切换或删除会话。") }, confirmButton = { TextButton({ app.launch { app.deleteContainer(c.id); delete = false; onBack() } }) { Text("删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton({ delete = false }) { Text("取消") } })
     if (addMount) MountSheet(mountEditor, c.engine == ContainerEngineType.CHROOT, files, { addMount = false }) { mount ->
-        app.runtime.update(c.copy(mounts = if (mountEditor == null) c.mounts + mount else c.mounts.map { if (it == mountEditor) mount else it }))
-        addMount = false
-    }
-    if (addEnv) EnvironmentSheet(envEditor, { addEnv = false }) { key, value ->
-        app.launch {
-            app.runtime.update(c.copy(environment = c.environment - listOfNotNull(envEditor?.first).toSet() + (key to value)))
-            addEnv = false
+        if (!configurationBusy() && pendingEngine == null) {
+            updateBusy = true
+            try {
+                app.runtime.update(c.copy(mounts = if (mountEditor == null) c.mounts + mount else c.mounts.map { if (it == mountEditor) mount else it }))
+                addMount = false
+            } finally { updateBusy = false }
         }
     }
+    if (addEnv) EnvironmentSheet(envEditor, { addEnv = false }) { key, value ->
+        update(c.copy(environment = c.environment - listOfNotNull(envEditor?.first).toSet() + (key to value)), onSuccess = { addEnv = false })
+    }
     if (userEditor) ExistingUserSheet(userName, { userName = it }, { userEditor = false }) { name ->
-        withContext(Dispatchers.IO) { app.runtime.update(c.copy(user = name)) }
-        userEditor = false
+        if (!configurationBusy() && pendingEngine == null) {
+            updateBusy = true
+            try {
+                withContext(Dispatchers.IO) { app.runtime.update(c.copy(user = name)) }
+                userEditor = false
+            } finally { updateBusy = false }
+        }
     }
 }
 

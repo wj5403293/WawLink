@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFalse
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** Production runtime, shell, files, modes and tar; Root/UID/GID and the engine probe are modelled. */
@@ -20,7 +21,9 @@ class RootfsOwnershipLifecycleTest {
         val tools = File(directory, "tools").apply { mkdir() }
         private val state = File(directory, "owners.json").apply { writeText("{}") }
         var mutations = 0
-        val runtime: LocalContainerRuntime
+        var scans = 0
+        var failMutation = false
+        var runtime: LocalContainerRuntime
         init {
             for (name in listOf("stat", "chown")) {
                 File(tools, name).apply {
@@ -75,7 +78,11 @@ class RootfsOwnershipLifecycleTest {
             environment()["PATH"] = tools.path + ":" + environment()["PATH"]
         }.start()
         fun run(command: String): String {
-            if (command.contains("apply()")) mutations++
+            if (command.contains(OWNERSHIP_SCAN_MARKER)) scans++
+            if (command.contains("apply()")) {
+                mutations++
+                check(!failMutation) { "injected ownership batch failure" }
+            }
             return HostCommands.collect(start(command), "ownership-fixture", 120)
         }
         fun put(root: File, name: String, content: String = "content") = File(root, name).apply {
@@ -91,7 +98,229 @@ class RootfsOwnershipLifecycleTest {
         }
         fun mode(file: File) = (Files.getAttribute(file.toPath(), "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and 0xFFF
         fun owner(file: File) = run("stat -c '%u:%g:%a' -- ${shellQuote(file.path)}").trim()
+        fun restart() {
+            runtime.close()
+            runtime = LocalContainerRuntime(RuntimePaths(data, hostProot = File(tools, "proot-probe").path), RootfsArchives::size,
+                startRootProcess = ::start, runRootCommand = ::run)
+        }
         override fun close() { runtime.close(); RootfsArchives.deleteTree(directory) }
+    }
+
+    private fun skippedSwitch(fromChroot: Boolean) = runBlocking {
+        Fixture().use { f ->
+            val initial = f.root("deferred")
+            val root = File(initial.rootfsPath)
+            val payload = f.put(root, "var/lib/payload", "retain bytes and inode")
+            Files.setAttribute(payload.toPath(), "unix:mode", "4751".toInt(8))
+            f.runtime.register(initial)
+            if (fromChroot) f.runtime.update(initial.copy(engine = ContainerEngineType.CHROOT))
+            val previous = f.runtime.containers.value.single().config
+            val beforeManifest = RootfsOwnership.load(root)
+            val owner = f.owner(payload)
+            val inode = Files.getAttribute(payload.toPath(), "unix:ino", NOFOLLOW_LINKS)
+            val scans = f.scans
+            val mutations = f.mutations
+            val targetEngine = if (fromChroot) ContainerEngineType.PROOT else ContainerEngineType.CHROOT
+            f.runtime.update(previous.copy(engine = targetEngine), migrateOwnership = false)
+            assertTrue(f.runtime.containers.value.single().config.ownershipMigrationDeferred)
+            assertEquals(targetEngine, f.runtime.containers.value.single().config.engine)
+            assertEquals(scans, f.scans)
+            assertEquals(mutations, f.mutations)
+            assertEquals(owner, f.owner(payload))
+            assertEquals(inode, Files.getAttribute(payload.toPath(), "unix:ino", NOFOLLOW_LINKS))
+            val retained = RootfsOwnership.load(root)!!
+            assertEquals(RootfsOwnership.mapped(previous.engine), retained.physical)
+            if (beforeManifest == null) {
+                assertTrue(retained.entries.isEmpty())
+                assertEquals("physical-only-v1", retained.origin)
+            } else assertEquals(beforeManifest, retained)
+            f.restart()
+            assertTrue(f.runtime.containers.value.single().config.ownershipMigrationDeferred)
+            f.runtime.update(f.runtime.containers.value.single().config.copy(autoSleep = false))
+            assertTrue(f.runtime.containers.value.single().config.ownershipMigrationDeferred)
+            assertFalse(f.runtime.containers.value.single().config.autoSleep)
+            assertEquals(retained, RootfsOwnership.load(root))
+            assertEquals(owner, f.owner(payload))
+            assertEquals(scans, f.scans)
+            assertEquals(mutations, f.mutations)
+            val archive = File(f.directory, "deferred.tar.zst")
+            f.runtime.exportRootfs(initial.id, archive.path)
+            val restored = File(f.directory, "restored")
+            RootfsArchives.extract(archive, restored)
+            assertEquals(LogicalOwner(0, 0, "4751".toInt(8)), RootfsOwnership.load(restored)!!.entries["/var/lib/payload"])
+            assertEquals("retain bytes and inode", File(restored, "var/lib/payload").readText())
+            val beforeClone = f.mutations
+            val clone = f.runtime.clone(initial.id, "Deferred clone")
+            assertTrue(clone.ownershipMigrationDeferred)
+            assertEquals(targetEngine, clone.engine)
+            assertEquals(ContainerEngineType.PROOT, RootfsOwnership.load(File(clone.rootfsPath))!!.physical)
+            assertEquals(beforeClone, f.mutations)
+            val current = f.runtime.containers.value.first { it.config.id == initial.id }.config
+            f.runtime.update(current, migrateOwnership = true)
+            assertFalse(f.runtime.containers.value.first { it.config.id == initial.id }.config.ownershipMigrationDeferred)
+            assertEquals(targetEngine, RootfsOwnership.load(root)!!.physical)
+            assertEquals(null, RootfsOwnership.load(root)!!.pending)
+            assertEquals("4751".toInt(8), f.mode(payload))
+            val expectedOwner = if (fromChroot) "${ChrootHostIdentity.uid}:${ChrootHostIdentity.gid}" else "0:0"
+            assertEquals(expectedOwner, f.owner(payload).substringBeforeLast(':'))
+            f.restart()
+            assertFalse(f.runtime.containers.value.first { it.config.id == initial.id }.config.ownershipMigrationDeferred)
+        }
+    }
+
+    @Test fun mappedToChrootCanDeferWithoutScanningAndConvertLater() = skippedSwitch(fromChroot = false)
+
+    @Test fun chrootToMappedCanDeferWithoutScanningAndConvertLater() = skippedSwitch(fromChroot = true)
+
+    @Test fun returningToMappedAfterADeferredChrootChoiceKeepsPortableUserIdentity() = runBlocking {
+        Fixture().use { f ->
+            val config = f.root("return-mapped")
+            val root = File(config.rootfsPath)
+            val alice = f.put(root, "home/alice/private")
+            Files.setAttribute(alice.toPath(), "unix:mode", 384)
+            f.runtime.register(config)
+            f.runtime.update(config.copy(engine = ContainerEngineType.CHROOT), migrateOwnership = false)
+            f.runtime.update(f.runtime.containers.value.single().config.copy(engine = ContainerEngineType.PROOT), migrateOwnership = true)
+            assertEquals(LogicalOwner(1001, 1002, 384), RootfsOwnership.load(root)!!.entries["/home/alice/private"])
+            assertFalse(f.runtime.containers.value.single().config.ownershipMigrationDeferred)
+        }
+    }
+
+    @Test fun failedConversionCannotBeBypassedBySkipAndExplicitConversionResumes() = runBlocking {
+        Fixture().use { f ->
+            val config = f.root("pending")
+            val root = File(config.rootfsPath)
+            f.put(root, "home/alice/private")
+            f.runtime.register(config)
+            f.runtime.update(config.copy(engine = ContainerEngineType.CHROOT), migrateOwnership = false)
+            val deferred = f.runtime.containers.value.single().config
+            f.failMutation = true
+            assertFails { f.runtime.update(deferred, migrateOwnership = true) }
+            val journal = RootfsOwnership.load(root)!!
+            assertTrue(journal.pending != null)
+            assertTrue(f.runtime.containers.value.single().config.ownershipMigrationDeferred)
+            val before = f.runtime.containers.value.single()
+            assertFails { f.runtime.update(deferred.copy(engine = ContainerEngineType.PROOT), migrateOwnership = false) }
+            assertEquals(before.config, f.runtime.containers.value.single().config)
+            assertEquals(before.stopGeneration, f.runtime.containers.value.single().stopGeneration)
+            assertEquals(journal, RootfsOwnership.load(root))
+            assertFails { f.runtime.start(config.id) }
+            f.failMutation = false
+            f.runtime.update(deferred, migrateOwnership = true)
+            assertEquals(null, RootfsOwnership.load(root)!!.pending)
+            assertFalse(f.runtime.containers.value.single().config.ownershipMigrationDeferred)
+            assertEquals("1001:1002", f.owner(File(root, "home/alice/private")).substringBeforeLast(':'))
+        }
+    }
+
+    @Test fun mappedPrepareDoesNotUndoDeferralAndStillRejectsPendingJournal() = runBlocking {
+        Fixture().use { f ->
+            val config = f.root("prepare-mapped")
+            val root = File(config.rootfsPath)
+            val payload = f.put(root, "var/lib/private")
+            Files.setAttribute(payload.toPath(), "unix:mode", 384)
+            f.runtime.register(config)
+            f.runtime.update(config.copy(engine = ContainerEngineType.CHROOT))
+            f.runtime.update(config, migrateOwnership = false)
+            val deferred = f.runtime.containers.value.single().config
+            val before = RootfsOwnership.load(root)!!
+            val owner = f.owner(payload)
+            val mutations = f.mutations
+            val scans = f.scans
+            val engines = RuntimeEngines(RuntimePaths(f.data, hostProot = File(f.tools, "proot-probe").path), f::run)
+            engines.prepare(deferred)
+            assertEquals(mutations, f.mutations)
+            assertEquals(scans, f.scans)
+            assertEquals(before.physical, RootfsOwnership.load(root)!!.physical)
+            assertEquals(owner, f.owner(payload))
+            RootfsOwnership.save(root, before.copy(pending = OwnershipMigration(ContainerEngineType.CHROOT, ContainerEngineType.PROOT)))
+            assertFails { engines.prepare(deferred) }
+            assertEquals(mutations, f.mutations)
+            assertEquals(scans, f.scans)
+        }
+    }
+
+    @Test fun chrootPreparePreservesDeferredMappedTreeAndPropagatesMountFailure() = runBlocking {
+        Fixture().use { f ->
+            val config = f.root("prepare-chroot")
+            val root = File(config.rootfsPath)
+            val payload = f.put(root, "var/lib/private")
+            f.runtime.register(config)
+            f.runtime.update(config.copy(engine = ContainerEngineType.CHROOT), migrateOwnership = false)
+            val deferred = f.runtime.containers.value.single().config
+            val before = RootfsOwnership.load(root)
+            val owner = f.owner(payload)
+            val mutations = f.mutations
+            val scans = f.scans
+            val mountFailure = IllegalStateException("mount refused by fixture")
+            val engines = RuntimeEngines(RuntimePaths(f.data)) { command ->
+                if (command.contains("mount -t proc")) throw mountFailure
+                f.run(command)
+            }
+            val failure = assertFails { engines.prepare(deferred) }
+            assertSame(mountFailure, failure.cause)
+            assertEquals(before, RootfsOwnership.load(root))
+            assertEquals(owner, f.owner(payload))
+            assertEquals(mutations, f.mutations)
+            assertEquals(scans, f.scans)
+        }
+    }
+
+    @Test fun deferredChrootExportsMappedLogicalIdsAndModesAndWritesMetadataWithoutConverting() = runBlocking {
+        Fixture().use { f ->
+            val config = f.root("portable").copy(user = "alice")
+            val root = File(config.rootfsPath)
+            val payload = f.put(root, "home/alice/payload", "portable")
+            Files.setAttribute(payload.toPath(), "unix:mode", "6751".toInt(8))
+            RootfsOwnership.save(root, OwnershipManifest(mapOf("/home/alice/payload" to LogicalOwner(1001, 2001, "6751".toInt(8)))))
+            f.runtime.register(config)
+            val owner = f.owner(payload)
+            f.runtime.update(config.copy(engine = ContainerEngineType.CHROOT), migrateOwnership = false)
+            val deferred = f.runtime.containers.value.single().config
+            val snapshot = f.runtime.readMetadata(config.id)
+            f.runtime.saveMetadata(config.id, snapshot.value.copy(title = "Offline deferred edit"), snapshot.revision)
+            assertEquals("Offline deferred edit", f.runtime.readMetadata(config.id).value.title)
+            assertEquals(ContainerEngineType.PROOT, RootfsOwnership.load(root)!!.physical)
+            val document = File(root, "home/alice/.wawlink/container.json")
+            assertEquals(ChrootHostIdentity.uid.toLong(), (Files.getAttribute(document.toPath(), "unix:uid") as Number).toLong())
+            assertEquals(0, f.mutations)
+            assertEquals(0, f.scans)
+            val archive = File(f.directory, "portable.tar.zst")
+            f.runtime.exportRootfs(config.id, archive.path)
+            val restored = File(f.directory, "restored-portable")
+            RootfsArchives.extract(archive, restored)
+            assertEquals(LogicalOwner(1001, 2001, "6751".toInt(8)), RootfsOwnership.load(restored)!!.entries["/home/alice/payload"])
+            assertEquals(owner, f.owner(payload))
+            assertTrue(deferred.ownershipMigrationDeferred)
+            val clone = f.runtime.clone(config.id, "Portable clone")
+            assertTrue(clone.ownershipMigrationDeferred)
+            assertEquals(LogicalOwner(1001, 2001, "6751".toInt(8)), RootfsOwnership.load(File(clone.rootfsPath))!!.entries["/home/alice/payload"])
+            assertEquals(0, f.mutations)
+        }
+    }
+
+    @Test fun legacyChrootSkipRecordsOnlyActualPhysicalIdentityUntilExplicitConversion() = runBlocking {
+        Fixture().use { f ->
+            val config = f.root("legacy").copy(engine = ContainerEngineType.CHROOT, ownershipMigrationDeferred = true)
+            val root = File(config.rootfsPath)
+            val alice = f.put(root, "home/alice/private")
+            f.run("chown -h 1001:1002 ${shellQuote(alice.path)}")
+            f.runtime.register(config)
+            assertEquals(null, RootfsOwnership.load(root))
+            val owner = f.owner(alice)
+            f.runtime.update(config.copy(engine = ContainerEngineType.PROOT), migrateOwnership = false)
+            val marker = RootfsOwnership.load(root)!!
+            assertEquals(ContainerEngineType.CHROOT, marker.physical)
+            assertTrue(marker.entries.isEmpty())
+            assertEquals(owner, f.owner(alice))
+            assertEquals(0, f.scans)
+            assertEquals(0, f.mutations)
+            f.runtime.update(f.runtime.containers.value.single().config, migrateOwnership = true)
+            val converted = RootfsOwnership.load(root)!!
+            assertEquals(ContainerEngineType.PROOT, converted.physical)
+            assertEquals(1001, converted.entries.getValue("/home/alice/private").uid.toInt())
+            assertEquals(1002, converted.entries.getValue("/home/alice/private").gid.toInt())
+        }
     }
 
     @Test fun switchingBothWaysRetainsNativeChmodAndEveryUsersIdentity() = runBlocking {

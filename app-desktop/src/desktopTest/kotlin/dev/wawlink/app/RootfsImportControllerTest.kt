@@ -59,7 +59,7 @@ class RootfsImportControllerTest {
                 discarded += inspectionId
                 liveHandles -= inspectionId
             }
-            override suspend fun update(config: ContainerConfig) {
+            override suspend fun update(config: ContainerConfig, migrateOwnership: Boolean) {
                 if (failUpdates > 0) { failUpdates--; error("配置暂时不可写") }
                 updates += config
                 containers.value = containers.value.map { if (it.config.id == config.id) it.copy(config = config) else it }

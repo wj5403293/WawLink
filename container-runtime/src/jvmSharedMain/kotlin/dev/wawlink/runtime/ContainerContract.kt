@@ -26,6 +26,8 @@ data class ContainerConfig(
     val autoSleep: Boolean = true,
     val mounts: List<ContainerMount> = emptyList(),
     val environment: Map<String, String> = emptyMap(),
+    /** Explicit engine switches may leave physical ownership unchanged until a later conversion. */
+    val ownershipMigrationDeferred: Boolean = false,
     @kotlinx.serialization.Transient val metadata: ContainerMetadata = ContainerMetadata(),
 ) {
     val displayName: String get() = metadata.title.ifBlank { name }
@@ -86,7 +88,7 @@ interface ContainerRuntime : AutoCloseable {
     val catalog: List<DistroSpec>
     suspend fun start(id: String)
     suspend fun stop(id: String)
-    suspend fun update(config: ContainerConfig)
+    suspend fun update(config: ContainerConfig, migrateOwnership: Boolean = !config.ownershipMigrationDeferred)
     suspend fun readMetadata(id: String): ContainerMetadataSnapshot
     suspend fun saveMetadata(id: String, metadata: ContainerMetadata, expectedRevision: String?): ContainerMetadataSnapshot
     suspend fun delete(id: String)

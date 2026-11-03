@@ -108,6 +108,8 @@ WawLink 是基于 Kotlin Multiplatform、Compose Multiplatform 与 Material 3 �
 | **Agent 核心** | 原生 Oh My Pi (OMP) + Bun 运行时，离线管理通道 |
 | **代码高亮** | Android 内置 Sora Editor + TextMate 离线语法库，桌面使用 RSyntaxTextArea |
 
+在容器详情页切换 PRoot/Proroot 与 chroot 时，会先解释物理属主转换及可能的长耗时。“开始转换”会停止容器、检查并转换权限后再保存引擎；“暂不转换”保留文件物理属主，只保存目标引擎及暂缓状态，后续启动不会自动补做转换。暂缓可能导致启动或文件访问失败，可在详情页再次选择开始转换；关闭提示则保持原配置。未完成的迁移不能通过暂缓绕过。
+
 ## 从源码构建
 
 项目采用标准 Gradle 构建系统，预置免 Docker 与免 Root 自动化准备脚本。

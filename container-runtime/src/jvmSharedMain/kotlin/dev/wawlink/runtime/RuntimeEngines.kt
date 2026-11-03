@@ -263,8 +263,8 @@ internal class RuntimeEngines(
         RootfsOwnership.requireStable(config)
         val ownership = RootfsOwnership.load(File(config.rootfsPath))
         val expected = RootfsOwnership.mapped(config.engine)
-        if ((config.engine == ContainerEngineType.CHROOT && ownership == null) ||
-            (ownership != null && ownership.physical != expected)) {
+        if (!config.ownershipMigrationDeferred && ((config.engine == ContainerEngineType.CHROOT && ownership == null) ||
+            (ownership != null && ownership.physical != expected))) {
             RootfsOwnership.migrate(config, config, ::rootCommand, onProgress)
         }
         val root = validateRoot(config)
@@ -313,7 +313,9 @@ internal class RuntimeEngines(
             rootCommand(owned.joinToString(" && ") { "mountpoint -q ${shellQuote(it.path)}" } + " || { echo 'su 挂载命名空间不共享，无法安全运行 chroot' >&2; exit 1; }")
             onProgress("准备容器登录权限", null)
             val user = loginIdentity(config, this::rootCommand)
-            prepareChrootOwnership(config, root, user.uid, user.gid, loginHome(config, user), ::rootCommand)
+            if (config.ownershipMigrationDeferred && ownership?.physical == ContainerEngineType.PROOT) {
+                prepareMappedOwnership(config, root, loginHome(config, user))
+            } else prepareChrootOwnership(config, root, user.uid, user.gid, loginHome(config, user), ::rootCommand)
         } catch (failure: Throwable) {
             try { unmount(config.id) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
             throw failure
@@ -476,7 +478,7 @@ internal class RuntimeEngines(
     }
 
     private fun filesystemRootRunner(config: ContainerConfig): ((String) -> String)? =
-        if (RootfsAccess.requiresRoot(config)) this::rootCommand else null
+        if (config.engine == ContainerEngineType.CHROOT || RootfsAccess.requiresRoot(config)) this::rootCommand else null
 
     fun rootCommand(command: String): String {
         val stage = rootCommandStage(command)

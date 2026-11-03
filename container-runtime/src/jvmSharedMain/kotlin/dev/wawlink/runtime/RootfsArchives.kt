@@ -273,7 +273,7 @@ internal object RootfsArchives {
                     val uid = (actual.getValue("uid") as Number).toLong() and 0xFFFFFFFFL
                     val gid = (actual.getValue("gid") as Number).toLong() and 0xFFFFFFFFL
                     val recorded = manifest?.entries?.get(guestPath)
-                    var owner = (recorded ?: if (uid != ChrootHostIdentity.uid.toLong()) {
+                    var owner = (if (manifest?.physical == ContainerEngineType.CHROOT) LogicalOwner(uid, gid, mode) else recorded ?: if (uid != ChrootHostIdentity.uid.toLong()) {
                         LogicalOwner(uid, gid, mode)
                     } else rules.infer(guestPath, mode, attrs.isDirectory, attrs.isSymbolicLink)).copy(
                         mode = if (attrs.isSymbolicLink) recorded?.mode ?: mode else mode,
@@ -310,7 +310,7 @@ internal object RootfsArchives {
     }
 
     /** Transcodes the privileged producer's tar without copying or reading private rootfs paths as App. */
-    fun exportFromTar(archive: File, input: InputStream, exclude: (String) -> Boolean = { false }) {
+    fun exportFromTar(archive: File, input: InputStream, logicalOwners: Map<String, LogicalOwner> = emptyMap(), exclude: (String) -> Boolean = { false }) {
         val root = java.nio.file.Paths.get("/wawlink-archive")
         val entries = linkedMapOf<Path, TarArchiveEntry>()
         val owners = mutableMapOf<Path, LogicalOwner>()
@@ -329,7 +329,10 @@ internal object RootfsArchives {
                     val previous = entries.put(path, entry)
                     require(previous == null || previous.isDirectory && entry.isDirectory) { "归档包含重复或冲突路径：${entry.name}" }
                     val normalized = name(path)
-                    val owner = LogicalOwner(entry.longUserId, entry.longGroupId, entry.mode and 0xFFF)
+                    val actualMode = entry.mode and 0xFFF
+                    val recorded = logicalOwners[if (path == root) "/" else "/$normalized"]
+                    val owner = recorded?.copy(mode = if (entry.isSymbolicLink) recorded.mode else actualMode)
+                        ?: LogicalOwner(entry.longUserId, entry.longGroupId, actualMode)
                     require(owner.uid >= 0 && owner.gid >= 0) { "归档包含非法 UID/GID：${entry.name}" }
                     if (entry.isSymbolicLink) {
                         val link = entry.linkName

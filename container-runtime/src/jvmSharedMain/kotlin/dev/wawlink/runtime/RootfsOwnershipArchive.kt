@@ -19,7 +19,7 @@ internal suspend fun exportOwnedRootfs(
     RootfsOwnership.requireStable(config)
     val root = File(config.rootfsPath).canonicalFile
     require(!archive.canonicalFile.toPath().startsWith(root.toPath())) { "导出文件不能位于容器 Rootfs 内" }
-    val privileged = config.engine == ContainerEngineType.CHROOT
+    val privileged = RootfsOwnership.physical(config) == ContainerEngineType.CHROOT || RootfsAccess.requiresRoot(config)
     if (privileged) RootfsOwnership.preflight(rootCommand)
     val entries = RootfsOwnership.snapshot(config, rootCommand.takeIf { privileged })
     val protected = RootfsOwnership.exclusions(config, rootCommand.takeIf { privileged })
@@ -66,7 +66,11 @@ internal suspend fun exportOwnedRootfs(
                 } }
             }
             try {
-                runInterruptible(Dispatchers.IO) { process.inputStream.use { RootfsArchives.exportFromTar(archive, it, ::skip) } }
+                val manifest = RootfsOwnership.load(root)
+                val logicalOwners = if (manifest?.physical == ContainerEngineType.PROOT) {
+                    RootfsOwnership.refresh(config, rootCommand, entries).entries
+                } else emptyMap()
+                runInterruptible(Dispatchers.IO) { process.inputStream.use { RootfsArchives.exportFromTar(archive, it, logicalOwners, ::skip) } }
                 check(runInterruptible(Dispatchers.IO) { process.waitFor(30, TimeUnit.SECONDS) }) { "容器归档进程未按期退出" }
                 val error = errors.await()
                 check(process.exitValue() == 0) { "容器私有文件归档失败：${error.trim()}" }

@@ -348,6 +348,12 @@ internal object RootfsOwnership {
     }
     private fun migrationIdentity(entry: Entry): String = "${entry.identity}:${entry.links}:${entry.kind}"
     fun mapped(engine: ContainerEngineType): ContainerEngineType = if (engine == ContainerEngineType.CHROOT) engine else ContainerEngineType.PROOT
+    /** A physical-only legacy marker deliberately carries no reconstructed logical history. */
+    fun retainPhysicalIdentity(config: ContainerConfig) {
+        val root = File(config.rootfsPath)
+        if (load(root) == null) save(root, OwnershipManifest(emptyMap(), physical = mapped(config.engine), origin = "physical-only-v1"))
+    }
+    fun physical(config: ContainerConfig): ContainerEngineType = load(File(config.rootfsPath))?.physical ?: mapped(config.engine)
     fun requireStable(config: ContainerConfig) {
         check(load(File(config.rootfsPath))?.pending == null) { "容器属主迁移尚未完成；请重新保存目标引擎设置以继续迁移，不能启动或归档半迁移的 Rootfs" }
     }
