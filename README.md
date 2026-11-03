@@ -1155,3 +1155,29 @@ GNU/dash、mksh R59c + Toybox 0.8.9、mksh + BusyBox 三套隔离工具链均完
   :app-android:compileDebugKotlin --continue --console=plain
 ```
 
+### chroot 扫描误用普通 Root 限额回归修复（2026-11-03）
+
+针对新增权限转译后出现的“阶段=其他 Root 操作；超时=45秒；原因=系统命令输出读取失败：su：系统命令输出超过上限：su”，已通过生产 `RuntimeEngines.rootCommand` 和 `HostCommands` 复现：扫描脚本嵌入多行 worker 后，`trimIndent()` 无法去掉标记行的全部缩进，旧分发器的首字符 `startsWith` 未命中，实际落入普通命令的 45 秒/4 MiB 限额。报错中的 45 秒是配置期限，不表示本次确实等满了 45 秒；输出超限会主动结束命令。详情只有这条异常不等于 UI 截断了完整日志，读取器没有把已读的大量扫描数据附加到该异常。
+
+分发器现在按首个非空白字符识别开头的扫描标记，不复制或改写原脚本；阶段、期限和输出上限共用同一个分类。属主扫描与体积扫描恢复原本已定义的 300 秒/256 MiB，普通命令仍为 45 秒/4 MiB；脚本中途出现标记文本不能取得扫描限额。未删除属主转译、挂载隔离、完整元数据、生产者完成标记、硬链接预检或迁移 journal，也未扩大既有扫描上限。
+
+新增持久回归在子 JVM 的 PATH 中提供不提权的 `su` 适配器，真实运行生产分发器、Shell 脚本和输出收集器，不用注入的 `runRootCommand` 绕过限额选择。修复前，超过 4 MiB 的完整快照复现上述同文错误，扫描失败也被错误归类；修复后，完整快照逐项指纹比对、普通命令超限拒绝、属主/体积扫描失败的正确阶段/期限及原始原因保留均通过。连同挂载、属主快照、迁移生命周期和体积缓存等定向回归，共 61 项通过，无失败、错误或跳过：
+
+```bash
+./gradlew :container-runtime:desktopTest \
+  --tests 'dev.wawlink.runtime.RuntimeChrootMountTest' \
+  --tests 'dev.wawlink.runtime.RootfsOwnershipTest' \
+  --tests 'dev.wawlink.runtime.RootfsOwnershipLifecycleTest' \
+  --tests 'dev.wawlink.runtime.LocalContainerRuntimeTest' --console=plain
+```
+
+另以生产解压器读取完整 `IDADroid-v0-1-1.tar.zstd`（1,698,120,070 字节），在隔离副本通过未覆盖限额的生产 Root 分发路径扫描。GNU/dash、mksh R59 + Toybox 0.8.9、mksh + BusyBox 的 57,102 项快照均与 JVM 逐项一致，普通文件逻辑体积均为 3,964,834,227 字节；属主标记前有 16 个空白字符，体积标记前有 12 个，三套工具都正确命中扫描类别：
+
+| 宿主工具链 | 完整属主扫描输出（字节） |
+| --- | ---: |
+| GNU/dash | 6,409,180 |
+| mksh + Toybox | 6,409,180 |
+| mksh + BusyBox | 6,315,941 |
+
+三套体积扫描均返回 485,135 字节并通过精确总量比对。原归档未修改，不读取或输出认证正文，不发送模型请求；该烟测的 `su` 仅适配到真实宿主 Shell，不获取 Root，不证明 Android 特权 chroot、SELinux 或 ROM 行为。未使用 Android 模拟器，仍需用户用原容器真机复测；修复本身不要求重新导入 Rootfs。
+

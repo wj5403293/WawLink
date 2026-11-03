@@ -459,29 +459,36 @@ internal class RuntimeEngines(
         """.trimIndent()).lineSequence().filter { it.isNotBlank() }.toList()
     }
 
-    private fun rootCommandStage(command: String): Pair<String, Long> {
-        val timeout = if (command.startsWith(OWNERSHIP_SCAN_MARKER) || command.startsWith(ROOTFS_SIZE_SCAN_MARKER)) 300L else 45L
-        val stage = when {
-            command.startsWith(OWNERSHIP_SCAN_MARKER) -> "属主扫描"
-            command.startsWith(ROOTFS_SIZE_SCAN_MARKER) -> "Rootfs体积扫描"
-            command.startsWith(ROOTFS_OWNERSHIP_MIGRATION_MARKER) -> "属主迁移"
-            command.startsWith(ROOT_PERMISSION_CHECK_MARKER) -> "Root权限检查"
-            command.contains("/proc/self/mountinfo") || command.contains("mountpoint") || command.contains("mount ") || command.contains("umount ") -> "挂载"
-            else -> "其他 Root 操作"
+    private enum class RootCommandStage(val label: String, val timeout: Long = 45, val maxOutputBytes: Int = 4 * 1024 * 1024) {
+        OWNERSHIP_SCAN("属主扫描", 300, 256 * 1024 * 1024),
+        SIZE_SCAN("Rootfs体积扫描", 300, 256 * 1024 * 1024),
+        OWNERSHIP_MIGRATION("属主迁移"),
+        PERMISSION_CHECK("Root权限检查"),
+        MOUNT("挂载"),
+        OTHER("其他 Root 操作"),
+    }
+
+    private fun rootCommandStage(command: String): RootCommandStage {
+        // Interpolated multiline workers can keep indentation before the leading marker.
+        val first = command.indexOfFirst { !it.isWhitespace() }
+        return when {
+            command.startsWith(OWNERSHIP_SCAN_MARKER, first) -> RootCommandStage.OWNERSHIP_SCAN
+            command.startsWith(ROOTFS_SIZE_SCAN_MARKER, first) -> RootCommandStage.SIZE_SCAN
+            command.startsWith(ROOTFS_OWNERSHIP_MIGRATION_MARKER, first) -> RootCommandStage.OWNERSHIP_MIGRATION
+            command.startsWith(ROOT_PERMISSION_CHECK_MARKER, first) -> RootCommandStage.PERMISSION_CHECK
+            command.contains("/proc/self/mountinfo") || command.contains("mountpoint") || command.contains("mount ") || command.contains("umount ") -> RootCommandStage.MOUNT
+            else -> RootCommandStage.OTHER
         }
-        return stage to timeout
     }
 
     fun rootCommand(command: String): String {
-        val (stage, timeout) = rootCommandStage(command)
+        val stage = rootCommandStage(command)
         return try {
             if (runRootCommand != null) runRootCommand.invoke(command)
-            else if (command.startsWith(OWNERSHIP_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = timeout, maxOutputBytes = 256 * 1024 * 1024)
-            else if (command.startsWith(ROOTFS_SIZE_SCAN_MARKER)) HostCommands.run(listOf("su", "-c", command), timeout = timeout, maxOutputBytes = 256 * 1024 * 1024)
-            else HostCommands.run(listOf("su", "-c", command), timeout = timeout)
+            else HostCommands.run(listOf("su", "-c", command), timeout = stage.timeout, maxOutputBytes = stage.maxOutputBytes)
         } catch (failure: Throwable) {
             val reason = failure.message?.takeIf { it.isNotBlank() } ?: failure::class.simpleName.orEmpty()
-            throw IllegalStateException("chroot Root 命令执行失败：阶段=$stage；超时=${timeout}秒；原因=$reason", failure)
+            throw IllegalStateException("chroot Root 命令执行失败：阶段=${stage.label}；超时=${stage.timeout}秒；原因=$reason", failure)
         }
     }
 }

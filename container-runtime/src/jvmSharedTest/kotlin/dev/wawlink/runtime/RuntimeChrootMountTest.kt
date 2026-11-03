@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
+import java.net.URLClassLoader
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -105,6 +106,22 @@ class RuntimeChrootMountTest {
         }
         fun run(command: String, privileged: Boolean = false): String = HostCommands.run(builder(command, privileged), 15)
 
+        fun rootProbe(operation: String): String {
+            // This adapter exercises su dispatch and output collection without claiming Root.
+            intercept("su", "exec ${shellQuote(shell)} \"${'$'}@\"")
+            val classpath = (System.getProperty("java.class.path").split(File.pathSeparator) +
+                generateSequence(javaClass.classLoader) { it.parent }.filterIsInstance<URLClassLoader>()
+                    .flatMap { it.urLs.asSequence() }.map { File(it.toURI()).path }.toList())
+                .distinct().joinToString(File.pathSeparator)
+            return HostCommands.run(ProcessBuilder(
+                File(System.getProperty("java.home"), "bin/java").path, "-cp", classpath,
+                RuntimeChrootMountTest::class.java.name, operation, root.path, data.path,
+            ).apply {
+                environment()["PATH"] = listOf(interceptors.path, tools?.path ?: environment().getValue("PATH"))
+                    .joinToString(":")
+            }, timeout = 30)
+        }
+
         fun mounts(): List<File> = state.listFiles().orEmpty().filter { it.isDirectory }
         fun calls(name: String): List<List<String>> = if (!log.exists()) emptyList() else
             log.readLines().map { it.split('\u0000').dropLast(1) }.filter { it.firstOrNull() == name }
@@ -190,6 +207,31 @@ class RuntimeChrootMountTest {
         assertFalse(process.isAlive)
     }
 
+    @Test fun ownershipScanKeepsTheCompleteSnapshotBeyondOrdinaryRootOutputLimit() = fixture { fixture ->
+        with(fixture) {
+            repeat(1200) { index ->
+                Files.createSymbolicLink(File(root, "large-link-$index").toPath(),
+                    java.nio.file.Path.of("missing-$index/" + "x".repeat(3800)))
+            }
+            val expected = RootfsOwnership.snapshot(config).sortedBy { it.path }.joinToString("\n")
+            assertEquals(RootfsHostFiles.revision(expected.toByteArray()), rootProbe("snapshot").trim())
+        }
+    }
+
+    @Test fun ordinaryRootOutputStillFailsWhenItExceedsItsLimit() = fixture { fixture ->
+        val failure = assertFailsWith<IllegalStateException> { fixture.rootProbe("ordinary") }
+        assertTrue(failure.message.orEmpty().contains("阶段=其他 Root 操作；超时=45秒"))
+        assertTrue(failure.message.orEmpty().contains("系统命令输出超过上限：su"))
+    }
+
+    @Test fun failedGeneratedScansRetainTheirStageDeadlineAndActualCause() {
+        for ((operation, stage) in listOf("snapshot" to "属主扫描", "size" to "Rootfs体积扫描")) fixture { fixture ->
+            fixture.intercept("stat", "echo 'scan metadata denied' >&2; exit 37")
+            val failure = assertFailsWith<IllegalStateException> { fixture.rootProbe(operation) }
+            assertTrue(failure.message.orEmpty().contains("阶段=$stage；超时=300秒"), failure.message)
+            assertTrue(failure.message.orEmpty().contains("scan metadata denied"), failure.message)
+        }
+    }
 
     @Test fun androidPrepareUsesQuotedTwoOperandBindsAndConfirmsReadOnly() = fixture { fixture ->
         with(fixture) {
@@ -545,6 +587,19 @@ class RuntimeChrootMountTest {
     }
 
     companion object {
+        @JvmStatic fun main(arguments: Array<String>) {
+            val config = ContainerConfig("root-output-probe", "Root output probe", arguments[1], engine = ContainerEngineType.CHROOT)
+            val engines = RuntimeEngines(RuntimePaths(File(arguments[2])))
+            when (arguments[0]) {
+                "snapshot" -> {
+                    val snapshot = RootfsOwnership.snapshot(config, engines::rootCommand).sortedBy { it.path }.joinToString("\n")
+                    println(RootfsHostFiles.revision(snapshot.toByteArray()))
+                }
+                "size" -> println(RootfsArchives.privilegedSize(config, engines::rootCommand))
+                "ordinary" -> println(engines.rootCommand("printf '%s\\n' '$OWNERSHIP_SCAN_MARKER'\ndd if=/dev/zero bs=1048576 count=5 2>/dev/null").length)
+                else -> error("Unknown probe operation")
+            }
+        }
         private val MOCK_COMMANDS = """
             record() { printf '%s\000' "${'$'}@" >> "${'$'}MOCK_LOG"; printf '\n' >> "${'$'}MOCK_LOG"; }
             find_mount() {
