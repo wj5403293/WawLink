@@ -108,6 +108,48 @@ class RuntimeEnginesTest {
         assertEquals(original, passwd.readText())
     }
 
+    @Test fun mappedRootValidationRetainsTheActuallyMissingPathWithoutEscalatingToRoot() {
+        for (missing in listOf("etc", "bin/sh")) fixture { _, data, root, _ ->
+            RootfsArchives.deleteTree(File(root, missing))
+            val config = ContainerConfig("missing-entry", "缺失路径", root.path)
+            val engines = RuntimeEngines(RuntimePaths(data)) { error("Missing paths must not request Root") }
+            val failure = assertFailsWith<IllegalArgumentException> { engines.validateRoot(config) }
+            assertTrue(failure.cause is java.nio.file.NoSuchFileException)
+            assertTrue(failure.message.orEmpty().contains(File(root, missing).path))
+            assertFalse(File(root, missing).exists())
+        }
+    }
+
+    @Test fun mappedRootValidationUsesRootOnlyForInaccessibleStructureWithoutChangingItsMode() = fixture { directory, data, root, _ ->
+        val config = ContainerConfig("restricted-entry", "私有根目录", root.path)
+        RestrictedRootShell(directory, root).use { shell ->
+            if (!shell.appTraversalDenied) return@use
+            val engines = RuntimeEngines(RuntimePaths(data), shell::run)
+            assertEquals(root, engines.validateRoot(config))
+            assertEquals(0, shell.mode(root))
+            shell.inspect { assertEquals("fixture only; never executed\n", File(root, "bin/sh").readText()) }
+        }
+    }
+
+    @Test fun rootValidationAcceptsInternalMergedUsrButRejectsHostShellLinksForBothAccessPaths() = fixture { directory, data, root, _ ->
+        val shell = File(root, "usr/bin/sh").apply { parentFile.mkdirs(); writeText("guest shell") }
+        RootfsArchives.deleteTree(File(root, "bin"))
+        Files.createSymbolicLink(File(root, "bin").toPath(), File("usr/bin").toPath())
+        val config = ContainerConfig("linked-entry", "合并 usr", root.path)
+        val engines = RuntimeEngines(RuntimePaths(data)) { command ->
+            HostCommands.run(listOf("/bin/sh", "-c", "id() { printf '0\\n'; };\n$command"))
+        }
+        for (engine in listOf(ContainerEngineType.PROOT, ContainerEngineType.CHROOT)) {
+            assertEquals(root, engines.validateRoot(config.copy(engine = engine)))
+        }
+        val outside = File(directory, "host-shell").apply { writeText("host must remain untouched") }
+        Files.delete(shell.toPath())
+        Files.createSymbolicLink(shell.toPath(), outside.toPath())
+        assertFailsWith<IllegalArgumentException> { engines.validateRoot(config) }
+        assertFailsWith<IllegalStateException> { engines.validateRoot(config.copy(engine = ContainerEngineType.CHROOT)) }
+        assertEquals("host must remain untouched", outside.readText())
+    }
+
     @Test fun prootKeepsIdentityFlagsAndCleanGuestEnvironment() = fixture { _, data, root, _ ->
         val config = ContainerConfig(
             id = "proot-test", name = "PRoot", rootfsPath = root.path,

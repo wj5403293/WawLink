@@ -94,18 +94,16 @@ private fun passwdText(config: ContainerConfig, rootCommand: ((String) -> String
     val passwd = File(lexicalRoot, "etc/passwd").toPath().normalize()
     require(passwd.startsWith(lexicalRoot.toPath()) && passwd != lexicalRoot.toPath()) { "用户数据库路径越界" }
     if (rootCommand == null) {
-        val readable = passwd.toFile()
-        require(!Files.isSymbolicLink(readable.toPath()) && Files.isRegularFile(readable.toPath(), NOFOLLOW_LINKS)) { "用户数据库不是普通文件" }
-        return readable.readText()
+        val attributes = Files.readAttributes(passwd, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        require(!attributes.isSymbolicLink && attributes.isRegularFile) { "用户数据库不是普通文件" }
+        return passwd.toFile().readText()
     }
-    return rootCommand("set -eu\ncd ${shellQuote(lexicalRoot.path)}\n[ ! -L . ] && [ -d . ]\n[ ! -L ./etc ] && [ ! -L ./etc/passwd ] && [ -f ./etc/passwd ]\ncat ./etc/passwd")
+    return RootfsHostFiles(config.copy(engine = ContainerEngineType.CHROOT), rootCommand).read(passwd.toFile(), 1024 * 1024)?.toString(Charsets.UTF_8)
+        ?: error("Rootfs 缺少 /etc/passwd")
 }
 
 private fun loginIdentity(config: ContainerConfig, rootCommand: ((String) -> String)? = null): LoginIdentity {
     if (config.user == "root" || config.user == "0") return LoginIdentity("0", "0", "root", "/root")
-    val root = File(config.rootfsPath).canonicalFile.toPath()
-    val passwd = File(config.rootfsPath, "etc/passwd")
-    require(passwd.canonicalFile.toPath().startsWith(root)) { "用户数据库路径越界" }
     val text = passwdText(config, rootCommand)
     val parts = text.lineSequence().map { it.split(':') }.firstOrNull {
         it.size >= 7 && (it[0] == config.user || it[2] == config.user)
@@ -120,7 +118,12 @@ private fun loginHome(config: ContainerConfig, user: LoginIdentity): String = (c
 }
 
 /** Resolves the configured account and HOME override; Root callers may read a private passwd safely. */
-fun containerHome(config: ContainerConfig, rootCommand: ((String) -> String)?): String = loginHome(config, loginIdentity(config, rootCommand))
+fun containerHome(config: ContainerConfig, rootCommand: ((String) -> String)?): String = try {
+    loginHome(config, loginIdentity(config, rootCommand))
+} catch (failure: java.nio.file.AccessDeniedException) {
+    if (rootCommand != null) throw failure
+    loginHome(config, loginIdentity(config, ::runHostRootCommand))
+}
 fun containerHome(config: ContainerConfig): String = containerHome(config, null)
 
 internal class RuntimeEngines(
@@ -146,28 +149,19 @@ internal class RuntimeEngines(
         "${directory.path}:${native.path}"
     }
 
-    fun validateRoot(config: ContainerConfig, rootCommand: ((String) -> String)? = null): File {
-        val root = File(config.rootfsPath)
-        require(root.isAbsolute && !Files.isSymbolicLink(root.toPath())) { "rootfs 必须是存在的绝对目录，且不能是符号链接" }
-        val canonical = root.canonicalFile
-        require(canonical.path !in setOf("/", "/home", "/root", "/usr", "/etc", "/var", "/tmp", "/dev", "/proc", "/sys", "/data", "/data/data", "/data/user", "/data/user/0")) { "拒绝将宿主系统目录作为 rootfs" }
-        require(!paths.dataDir.canonicalFile.toPath().startsWith(canonical.toPath())) { "rootfs 不能包含应用数据目录" }
-        if (rootCommand == null) {
-            require(root.isDirectory) { "rootfs 必须是存在的绝对目录，且不能是符号链接" }
-            require(File(root, "etc").isDirectory && File(root, "bin/sh").exists()) { "rootfs 不完整：缺少 /etc 或 /bin/sh" }
-        } else {
-            rootCommand("set -eu\n[ ! -L ${shellQuote(root.path)} ] && [ -d ${shellQuote(root.path)} ]\n[ -d ${shellQuote(File(root, "etc").path)} ] && [ -f ${shellQuote(File(root, "bin/sh").path)} ] || { echo 'rootfs 不完整：缺少 /etc 或 /bin/sh' >&2; exit 1; }")
-        }
-        return canonical
+    fun validateRoot(config: ContainerConfig): File {
+        val root = RootfsAccess.validateRoot(config, ::rootCommand)
+        require(!paths.dataDir.canonicalFile.toPath().startsWith(root.toPath())) { "rootfs 不能包含应用数据目录" }
+        return root
     }
 
     /** Same HOME as builder(), without probing engines or launching a guest process. */
-    fun home(config: ContainerConfig): String = containerHome(config)
+    fun home(config: ContainerConfig): String = containerHome(config, filesystemRootRunner(config))
 
     fun validate(config: ContainerConfig) {
-        val rootRunner: ((String) -> String)? = if (config.engine == ContainerEngineType.CHROOT) this::rootCommand else null
+        val rootRunner = filesystemRootRunner(config)
         rootRunner?.let { RootfsOwnership.preflight(it) }
-        val root = validateRoot(config, rootRunner)
+        val root = validateRoot(config)
         require(config.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))) { "容器 ID 只能包含字母、数字、下划线和短横线" }
         require(config.name.isNotBlank()) { "容器名称不能为空" }
         require(config.shell.startsWith('/') && '\u0000' !in config.shell) { "Shell 必须使用容器内绝对路径" }
@@ -273,7 +267,7 @@ internal class RuntimeEngines(
             (ownership != null && ownership.physical != expected)) {
             RootfsOwnership.migrate(config, config, ::rootCommand, onProgress)
         }
-        val root = validateRoot(config, if (config.engine == ContainerEngineType.CHROOT) this::rootCommand else null)
+        val root = validateRoot(config)
         onProgress("准备容器管理目录", null)
         if (config.engine != ContainerEngineType.CHROOT) {
             prepareMappedOwnership(config, root, home(config))
@@ -342,9 +336,9 @@ internal class RuntimeEngines(
     fun builder(config: ContainerConfig, arguments: List<String>, cwd: String, environment: Map<String, String>, mergeError: Boolean, rootPidFile: File? = null): ProcessBuilder {
         require(arguments.isNotEmpty() && arguments.none { '\u0000' in it }) { "容器启动参数无效" }
         require(cwd.startsWith('/') && '\u0000' !in cwd && !cwd.split('/').contains("..")) { "工作目录必须是容器内绝对路径" }
-        val rootRunner: ((String) -> String)? = if (config.engine == ContainerEngineType.CHROOT) this::rootCommand else null
+        val rootRunner = filesystemRootRunner(config)
         rootRunner?.let { RootfsOwnership.preflight(it) }
-        val root = validateRoot(config, rootRunner)
+        val root = validateRoot(config)
         val user = loginIdentity(config, rootRunner)
         val env = linkedMapOf("HOME" to loginHome(config, user), "USER" to user.name, "LOGNAME" to user.name, "TERM" to "xterm-256color", "LANG" to "C.UTF-8", "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         env.putAll(config.environment)
@@ -480,6 +474,9 @@ internal class RuntimeEngines(
             else -> RootCommandStage.OTHER
         }
     }
+
+    private fun filesystemRootRunner(config: ContainerConfig): ((String) -> String)? =
+        if (RootfsAccess.requiresRoot(config)) this::rootCommand else null
 
     fun rootCommand(command: String): String {
         val stage = rootCommandStage(command)

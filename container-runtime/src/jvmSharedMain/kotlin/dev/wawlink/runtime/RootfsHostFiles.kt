@@ -21,7 +21,7 @@ internal class RootfsHostFiles(
     fun read(file: File, maxBytes: Int = MAX_BYTES, replaceSymlink: Boolean = false): ByteArray? {
         require(maxBytes in 1..MAX_BYTES)
         val (root, target) = path(file)
-        if (config.engine == ContainerEngineType.CHROOT) {
+        if (RootfsAccess.requiresRoot(config)) {
             val output = rootCommand(script(root, target, create = false) + "\n" + """
                 if [ "${'$'}missing" = 1 ]; then printf 'MISSING\n'; exit 0; fi
                 entry=${shellQuote("./" + target.fileName)}
@@ -84,7 +84,7 @@ internal class RootfsHostFiles(
         require(bytes.size <= MAX_BYTES) { "容器管理文件过大" }
         require(expectedRevision == null || expectedRevision.matches(Regex("[0-9a-f]{64}")))
         var committedOwner: LogicalOwner? = null
-        if (config.engine == ContainerEngineType.CHROOT) {
+        if (RootfsAccess.requiresRoot(config)) {
             val owner = owner(root, target, defaultMode, false)
             // A private staging directory works on Android and on ordinary JVM hosts, without
             // putting credentials into argv, a public temporary file, or an inherited descriptor.
@@ -175,7 +175,8 @@ internal class RootfsHostFiles(
                 Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } finally { Files.deleteIfExists(temporary) }
         }
-        RootfsOwnership.recordHostWrite(config, target.toFile(), committedOwner)
+        if (committedOwner != null) RootfsOwnership.recordCommittedHostWrite(config, root, target, committedOwner)
+        else RootfsOwnership.recordHostWrite(config, target.toFile())
     }
 
     private fun cleanupStaging(staging: Path, failure: Throwable?) {
@@ -207,7 +208,7 @@ internal class RootfsHostFiles(
             check_parent
             printf 'OWNER:%s:%s:%s\n' '${owner.uid}' '${owner.gid}' "${'$'}mode"
         """.trimIndent())
-        RootfsOwnership.recordHostWrite(config, target.toFile(), parseOwner(output))
+        RootfsOwnership.recordCommittedHostWrite(config, root, target, parseOwner(output))
     }
 
     /** Finalize an already fully written independent file, not a pre-write permission grant. */
@@ -234,7 +235,7 @@ internal class RootfsHostFiles(
             check_parent
             printf 'OWNER:%s:%s:%s\n' '${owner.uid}' '${owner.gid}' "${'$'}mode"
         """.trimIndent())
-        RootfsOwnership.recordHostWrite(config, target.toFile(), parseOwner(output))
+        RootfsOwnership.recordCommittedHostWrite(config, root, target, parseOwner(output))
     }
 
     private fun parseOwner(output: String): LogicalOwner {
@@ -246,8 +247,8 @@ internal class RootfsHostFiles(
             val directory = line.split(':')
             require(directory.size == 5 && directory[0] == "DIRECTORY") { "Root 离线目录提交返回无效结果" }
             val file = File(Base64.getDecoder().decode(directory[1]).toString(Charsets.UTF_8))
-            path(file) // The privileged walk checked the actual directory; retain lexical bounds too.
-            RootfsOwnership.recordHostWrite(config, file,
+            val (root, target) = path(file) // Keep lexical bounds after the privileged directory walk.
+            RootfsOwnership.recordCommittedHostWrite(config, root, target,
                 LogicalOwner(directory[2].toLong(), directory[3].toLong(), directory[4].toInt(8) and 0xFFF))
         }
         return owner
@@ -270,8 +271,7 @@ internal class RootfsHostFiles(
         RootfsOwnership.managedOwner(config, "/" + root.relativize(path).joinToString("/"), mode, directory, rootCommand)
 
     private fun path(file: File): Pair<Path, Path> {
-        val root = File(config.rootfsPath).canonicalFile.toPath()
-        require(Files.isDirectory(root, NOFOLLOW_LINKS) && !Files.isSymbolicLink(File(config.rootfsPath).toPath())) { "容器 Rootfs 无效" }
+        val root = RootfsAccess.canonicalRoot(config, rootCommand).toPath()
         val lexical = File(config.rootfsPath).absoluteFile.normalize().toPath()
         val requested = file.absoluteFile.normalize().toPath()
         val target = if (requested.startsWith(lexical)) root.resolve(lexical.relativize(requested)) else requested

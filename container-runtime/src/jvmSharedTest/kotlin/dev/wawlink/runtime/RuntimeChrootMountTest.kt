@@ -107,8 +107,9 @@ class RuntimeChrootMountTest {
         fun run(command: String, privileged: Boolean = false): String = HostCommands.run(builder(command, privileged), 15)
 
         fun rootProbe(operation: String): String {
-            // This adapter exercises su dispatch and output collection without claiming Root.
+            // Simulate only Root identity for su dispatch/output checks, not privileged-kernel behavior.
             intercept("su", "exec ${shellQuote(shell)} \"${'$'}@\"")
+            intercept("id", "if [ \"${'$'}1\" = -u ]; then printf '0\\n'; else exec ${shellQuote(tool("id"))} \"${'$'}@\"; fi")
             val classpath = (System.getProperty("java.class.path").split(File.pathSeparator) +
                 generateSequence(javaClass.classLoader) { it.parent }.filterIsInstance<URLClassLoader>()
                     .flatMap { it.urLs.asSequence() }.map { File(it.toURI()).path }.toList())
@@ -226,7 +227,12 @@ class RuntimeChrootMountTest {
 
     @Test fun failedGeneratedScansRetainTheirStageDeadlineAndActualCause() {
         for ((operation, stage) in listOf("snapshot" to "属主扫描", "size" to "Rootfs体积扫描")) fixture { fixture ->
-            fixture.intercept("stat", "echo 'scan metadata denied' >&2; exit 37")
+            fixture.intercept("stat", """
+                # Root validation uses absolute paths; fail metadata reads in the actual scan worker.
+                for entry do :; done
+                case "${'$'}entry" in .|./*) echo 'scan metadata denied' >&2; exit 37;; esac
+                exec ${shellQuote(fixture.tool("stat"))} "${'$'}@"
+            """.trimIndent())
             val failure = assertFailsWith<IllegalStateException> { fixture.rootProbe(operation) }
             assertTrue(failure.message.orEmpty().contains("阶段=$stage；超时=300秒"), failure.message)
             assertTrue(failure.message.orEmpty().contains("scan metadata denied"), failure.message)

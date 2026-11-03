@@ -8,9 +8,9 @@ internal object RuntimeDns {
         root: File, content: String, config: ContainerConfig? = null,
         rootCommand: (String) -> String = ::runHostRootCommand,
     ) {
-        val active = config ?: ContainerConfig("dns-offline", "dns-offline", root.canonicalPath)
+        val active = config ?: ContainerConfig("dns-offline", "dns-offline", root.absoluteFile.normalize().path)
         val files = RootfsHostFiles(active, rootCommand)
-        val file = File(root.canonicalFile, "etc/resolv.conf")
+        val file = File(root, "etc/resolv.conf")
         val previous = files.read(file, replaceSymlink = true)
         val bytes = content.toByteArray(Charsets.UTF_8)
         if (previous != null && previous.contentEquals(bytes)) return

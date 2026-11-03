@@ -2,7 +2,11 @@ package dev.wawlink.runtime
 
 import java.io.File
 import java.io.RandomAccessFile
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -116,6 +120,93 @@ class LocalContainerRuntimeTest {
 
     @Test fun oldConfigurationWithoutASizeCacheLoadsAndRefreshesOffline() = startup(null)
 
+    private fun restrictedStartup(engine: ContainerEngineType, pending: Boolean = false) = fixture { directory, data, config -> runBlocking {
+        val root = File(config.rootfsPath)
+        val home = File(root, "srv/private-home")
+        File(root, "etc/passwd").writeText("root:x:0:0::/root:/bin/sh\nalice:x:1001:1002::/srv/private-home:/bin/sh\n")
+        val document = File(home, ".wawlink/container.json").apply {
+            parentFile.mkdirs()
+            writeText("""{"title":"Read from the guest","description":"cold startup","version":"13"}""")
+        }
+        Files.setPosixFilePermissions(home.toPath(), PosixFilePermissions.fromString("rwx------"))
+        Files.setPosixFilePermissions(document.toPath(), PosixFilePermissions.fromString("rw-------"))
+        val active = config.copy(engine = engine, user = "alice")
+        if (engine == ContainerEngineType.PROOT) RootfsOwnership.save(root, OwnershipManifest(
+            entries = emptyMap(), physical = ContainerEngineType.CHROOT,
+            pending = if (pending) OwnershipMigration(ContainerEngineType.CHROOT, ContainerEngineType.PROOT) else null,
+        ))
+        saved(data, active, 111L)
+        RestrictedRootShell(directory, root).use { shell ->
+            val runtime = LocalContainerRuntime(RuntimePaths(data, hostProot = "/missing-engine-must-not-be-launched"),
+                RootfsArchives::size, runRootCommand = shell::run)
+            try {
+                val initial = runtime.containers.value.single()
+                assertEquals(null, initial.error)
+                assertEquals(null, initial.metadataError)
+                assertEquals(ContainerMetadata("Read from the guest", "cold startup", "13"), initial.config.metadata)
+                assertEquals(engine, initial.config.engine)
+                assertFalse(initial.running)
+                assertEquals(0L, initial.runGeneration)
+                val snapshot = runtime.readMetadata(active.id)
+                assertEquals(initial.config.metadata, snapshot.value)
+                assertTrue(snapshot.revision != null)
+                assertEquals(0, shell.mode(root))
+                shell.inspect {
+                    assertEquals(448, shell.mode(home))
+                    assertEquals(384, shell.mode(document))
+                    assertTrue(document.readText().contains("Read from the guest"))
+                }
+            } finally { runtime.close(); awaitSizeWork(runtime) }
+        }
+    } }
+
+    @Test fun savedChrootLoadsActualMetadataThroughAnAppInaccessibleRoot() = restrictedStartup(ContainerEngineType.CHROOT)
+
+    @Test fun savedProotWithPhysicalChrootLoadsActualMetadataWithoutFalseStructureErrors() = restrictedStartup(ContainerEngineType.PROOT)
+
+    @Test fun savedProotWithPendingChrootMigrationLoadsActualMetadataOffline() = restrictedStartup(ContainerEngineType.PROOT, pending = true)
+
+    @Test fun coldStartupRetainsRootRefusalInsteadOfReportingAnEmptyMetadataSuccess() = fixture { directory, data, config -> runBlocking {
+        val root = File(config.rootfsPath)
+        val document = File(root, "root/.wawlink/container.json").apply {
+            parentFile.mkdirs(); writeText("""{"title":"Must not disappear"}""")
+        }
+        saved(data, config.copy(engine = ContainerEngineType.CHROOT), 111L)
+        RestrictedRootShell(directory, root).use { shell ->
+            val refusal = IllegalStateException("Root authorization refused by test host")
+            val runtime = LocalContainerRuntime(RuntimePaths(data), RootfsArchives::size, runRootCommand = { throw refusal })
+            try {
+                val initial = runtime.containers.value.single()
+                assertTrue(initial.error.orEmpty().contains(refusal.message!!))
+                assertTrue(initial.metadataError.orEmpty().contains(refusal.message!!))
+                val failure = assertFailsWith<IllegalStateException> { runtime.readMetadata(config.id) }
+                assertTrue(failure.message.orEmpty().contains(refusal.message!!))
+                assertFalse(runtime.containers.value.single().running)
+                assertEquals(0, shell.mode(root))
+                shell.inspect { assertEquals("""{"title":"Must not disappear"}""", document.readText()) }
+            } finally { runtime.close(); awaitSizeWork(runtime) }
+        }
+    } }
+
+    @Test fun coldStartupRetainsARealMissingShellBehindTheRestrictedRoot() = fixture { directory, data, config -> runBlocking {
+        val root = File(config.rootfsPath)
+        assertTrue(File(root, "bin/sh").delete())
+        saved(data, config.copy(engine = ContainerEngineType.CHROOT), 111L)
+        RestrictedRootShell(directory, root).use { shell ->
+            val runtime = LocalContainerRuntime(RuntimePaths(data), RootfsArchives::size, runRootCommand = shell::run)
+            try {
+                val initial = runtime.containers.value.single()
+                assertTrue(initial.error.orEmpty().contains("bin/sh"))
+                assertTrue(initial.error.orEmpty().contains("No such file"))
+                assertTrue(initial.metadataError.orEmpty().contains("bin/sh"))
+                val failure = assertFailsWith<IllegalStateException> { runtime.readMetadata(config.id) }
+                assertTrue(failure.message.orEmpty().contains("bin/sh"))
+                assertEquals(0, shell.mode(root))
+                shell.inspect { assertFalse(File(root, "bin/sh").exists()) }
+            } finally { runtime.close(); awaitSizeWork(runtime) }
+        }
+    } }
+
     @Test fun chrootSizeCountsLogicalBytesPerPathAndPrunesMountsWithoutFollowingLinks() = fixture { directory, data, config -> runBlocking {
         val root = File(config.rootfsPath)
         var expected = File(root, "bin/sh").length() + File(root, "etc/passwd").length() + File(root, "payload").length()
@@ -143,7 +234,7 @@ class LocalContainerRuntimeTest {
         val mountPath = File(root, actualMount).path.replace(" ", "\\040")
         val runtime = LocalContainerRuntime(RuntimePaths(data), RootfsArchives::size, runRootCommand = { command ->
             if (command == "cat /proc/self/mountinfo") "1 0 0:1 / $mountPath rw - tmpfs tmpfs rw\n"
-            else HostCommands.run(listOf("/bin/sh", "-c", command))
+            else HostCommands.run(listOf("/bin/sh", "-c", "id() { printf '0\\n'; };\n$command"))
         })
         try {
             awaitSizeWork(runtime)
@@ -420,4 +511,52 @@ class LocalContainerRuntimeTest {
             assertEquals("keep existing bytes", existing.readText())
         } finally { runtime.close(); awaitSizeWork(runtime) }
     } }
+}
+
+/**
+ * Models only Root identity/traversal: each injected Root call opens owner traversal, executes
+ * the production shell against real files, and restores mode 000. This is not privileged-kernel
+ * acceptance. A Root JVM can bypass 000, so only non-Root JVMs assert actual App AccessDenied.
+ */
+internal class RestrictedRootShell(directory: File, private val root: File) : AutoCloseable {
+    private val originalPermissions = Files.getPosixFilePermissions(root.toPath())
+    private val tools = Files.createTempDirectory(directory.toPath(), "root-access-tools-").toFile()
+    val appTraversalDenied: Boolean
+
+    init {
+        File(tools, "id").apply {
+            writeText("#!/bin/sh\nif [ \"\$1\" = -u ]; then echo 0; else exec /usr/bin/id \"\$@\"; fi\n")
+            setExecutable(true)
+        }
+        // Keep physical files owned by the test process, while exercising the real chown operation.
+        File(tools, "chown").apply {
+            writeText("#!/bin/sh\n[ \"\$1\" != -h ] || shift\nshift\nexec /usr/bin/chown -h '${ChrootHostIdentity.uid}:${ChrootHostIdentity.gid}' \"\$@\"\n")
+            setExecutable(true)
+        }
+        Files.setPosixFilePermissions(root.toPath(), emptySet())
+        appTraversalDenied = try {
+            Files.readAttributes(File(root, ".").toPath(), BasicFileAttributes::class.java)
+            false
+        } catch (_: AccessDeniedException) { true }
+        if (ChrootHostIdentity.uid != 0) assertTrue(appTraversalDenied, "mode 000 must deny this non-Root JVM traversal")
+    }
+
+    @Synchronized fun <T> inspect(block: () -> T): T {
+        Files.setPosixFilePermissions(root.toPath(), PosixFilePermissions.fromString("rwx------"))
+        return try { block() } finally { Files.setPosixFilePermissions(root.toPath(), emptySet()) }
+    }
+
+    fun run(command: String): String = inspect {
+        HostCommands.run(ProcessBuilder("/bin/sh", "-c", command).apply {
+            environment()["PATH"] = tools.path + ":" + environment()["PATH"]
+            environment()["LC_ALL"] = "C"
+        })
+    }
+
+    @Synchronized fun mode(file: File) = (Files.getAttribute(file.toPath(), "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and 0xFFF
+
+    override fun close() {
+        Files.setPosixFilePermissions(root.toPath(), originalPermissions)
+        RootfsArchives.deleteTree(tools)
+    }
 }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -158,6 +159,58 @@ class ContainerMetadataTest {
         }
         for (home in listOf("/", "/proc/self", "/sys", "/dev", "/host-rootfs", "/home/../root", "relative")) {
             assertFails { store.read(config.copy(environment = mapOf("HOME" to home))) }
+        }
+    }
+
+    @Test fun mappedSelectionReadsAndUpdatesOriginalChineseMetadataBehindPhysicalRootOffline() {
+        val journals = listOf(
+            OwnershipManifest(emptyMap(), physical = ContainerEngineType.CHROOT),
+            OwnershipManifest(emptyMap(), physical = ContainerEngineType.PROOT,
+                pending = OwnershipMigration(ContainerEngineType.PROOT, ContainerEngineType.CHROOT)),
+            OwnershipManifest(emptyMap(), physical = ContainerEngineType.CHROOT,
+                pending = OwnershipMigration(ContainerEngineType.CHROOT, ContainerEngineType.PROOT)),
+        )
+        for (journal in journals) RootfsHostFilesTest.Fixture().use { f ->
+            val home = "srv/账户家"
+            f.put("etc/passwd", "root:x:0:0::/root:/bin/sh\nalice:x:1001:1002::/$home:/bin/sh\n")
+            f.put("bin/sh", "#!/bin/sh\n")
+            val file = f.put("$home/.wawlink/container.json", "{\"title\":\"原有中文标题\",\"future\":{\"保留\":true}}\n")
+            Files.setAttribute(file.parentFile.toPath(), "unix:mode", 0x1C0)
+            Files.setAttribute(file.toPath(), "unix:mode", 0x180)
+            RootfsOwnership.save(f.root, journal)
+            val config = f.config.copy(engine = ContainerEngineType.PROOT)
+            val data = File(f.directory, "data").apply { mkdir() }
+            val engines = RuntimeEngines(RuntimePaths(data, hostProot = "/missing-engine-must-not-be-launched"), f::runWithRootTraversal)
+            val store = ContainerMetadataStore(engines)
+            val rootMode = f.mode(f.root)
+            Files.setAttribute(f.root.toPath(), "unix:mode", 0)
+            try {
+                val original = store.read(config)
+                assertEquals("原有中文标题", original.value.title)
+                assertEquals("/$home", engines.home(config))
+                assertNotEquals(null, original.revision)
+                val updated = ContainerMetadata("离线更新后的中文标题", "账户 HOME 保持原位", "2026.11", "home")
+                val saved = store.save(config, updated, original.revision)
+                assertEquals(updated, saved.value)
+                assertEquals(saved, store.read(config))
+                assertNotEquals(original.revision, saved.revision)
+                assertFailsWith<IllegalStateException> { store.save(config, ContainerMetadata("过期草稿"), original.revision) }
+                assertEquals(saved, store.read(config))
+                assertEquals(0, f.mode(f.root))
+                val committed = RootfsOwnership.load(f.root)!!
+                assertEquals(journal.physical, committed.physical)
+                assertEquals(journal.pending, committed.pending)
+                assertEquals(LogicalOwner(1001, 1002, 0x180), committed.entries["/$home/.wawlink/container.json"])
+                val denied = ContainerMetadataStore(RuntimeEngines(RuntimePaths(data)) { throw IllegalStateException("su: SELinux denial") })
+                assertTrue(assertFailsWith<IllegalStateException> { denied.read(config) }.message.orEmpty().contains("su: SELinux denial"))
+            } finally { Files.setAttribute(f.root.toPath(), "unix:mode", rootMode) }
+            assertEquals("离线更新后的中文标题", Json.parseToJsonElement(file.readText()).jsonObject["title"]?.jsonPrimitive?.content)
+            assertEquals(Json.parseToJsonElement("{\"保留\":true}"), Json.parseToJsonElement(file.readText()).jsonObject["future"])
+            assertEquals(0x180, f.mode(file))
+            assertEquals(0x1C0, f.mode(file.parentFile))
+            assertFalse(File(f.root, "home/alice/.wawlink/container.json").exists())
+            assertFalse(File(f.root, "root/.wawlink/container.json").exists())
+            f.noTemporaryFiles()
         }
     }
 

@@ -124,18 +124,25 @@ internal object RootfsOwnership {
         }
         return RootfsOwnershipRules(text, config.user, managedHome(config, rootCommand)).infer(guestPath, mode and MODE_MASK, directory)
     }
-    fun recordHostWrite(config: ContainerConfig, file: File, owner: LogicalOwner? = null) = synchronized(storeLock) {
+    fun recordHostWrite(config: ContainerConfig, file: File) = synchronized(storeLock) {
         val root = File(config.rootfsPath)
         val manifest = load(root) ?: return@synchronized
         val (base, target) = containerHostPath(config, file)
         val path = "/" + base.relativize(target).toString()
-        // A supplied owner comes from the privileged pinned-parent commit; App cannot stat private HOME children.
-        val committed = owner ?: run {
-            require(Files.exists(target, NOFOLLOW_LINKS) && !Files.isSymbolicLink(target)) { "宿主提交的文件不存在或为链接：$target" }
-            val mode = (Files.getAttribute(target, "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and MODE_MASK
-            managedOwner(config, path, mode, Files.isDirectory(target, NOFOLLOW_LINKS))
-        }
+        require(Files.exists(target, NOFOLLOW_LINKS) && !Files.isSymbolicLink(target)) { "宿主提交的文件不存在或为链接：$target" }
+        val mode = (Files.getAttribute(target, "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and MODE_MASK
+        val committed = managedOwner(config, path, mode, Files.isDirectory(target, NOFOLLOW_LINKS))
         save(root, manifest.copy(entries = manifest.entries + (path to committed)))
+    }
+
+    /** The privileged pinned-parent commit already verified the inode; never probe it as App. */
+    fun recordCommittedHostWrite(config: ContainerConfig, root: Path, target: Path, owner: LogicalOwner) = synchronized(storeLock) {
+        require(root.isAbsolute && target == target.normalize() && target.startsWith(root) && target != root) { "容器管理路径越出 Rootfs" }
+        val path = "/" + root.relativize(target).toString()
+        require(validPath(path)) { "容器逻辑路径无效：$path" }
+        val storageRoot = File(config.rootfsPath)
+        val manifest = load(storageRoot) ?: return@synchronized
+        save(storageRoot, manifest.copy(entries = manifest.entries + (path to owner)))
     }
 
     internal data class Entry(val path: String, val uid: Long, val gid: Long, val mode: Int, val device: Long, val inode: Long, val links: Long, val kind: Int, val linkTarget: String? = null, val size: Long = 0L) {
@@ -143,7 +150,8 @@ internal object RootfsOwnership {
         val symbolicLink: Boolean get() = kind == 0xA000
         val identity: String get() = "$device:$inode"
     }
-    private fun root(config: ContainerConfig): File {
+    private fun root(config: ContainerConfig, rootCommand: ((String) -> String)? = null): File {
+        if (rootCommand != null) return RootfsAccess.canonicalRoot(config, rootCommand)
         val requested = File(config.rootfsPath).absoluteFile.normalize()
         require(requested.isAbsolute && !Files.isSymbolicLink(requested.toPath()) && Files.isDirectory(requested.toPath(), NOFOLLOW_LINKS)) { "属主迁移的 Rootfs 必须是实际目录" }
         val real = requested.canonicalFile
@@ -157,7 +165,7 @@ internal object RootfsOwnership {
         } catch (failure: Exception) { throw IllegalStateException("跨引擎属主迁移需要真实 Root 权限和系统文件工具，当前无法执行；原引擎配置未更改：${failure.message}", failure) }
     }
     fun exclusions(config: ContainerConfig, rootCommand: ((String) -> String)? = null): Set<String> {
-        val base = root(config).toPath()
+        val base = root(config, rootCommand).toPath()
         val excluded = (virtual + config.mounts.map { it.target }).onEach { require(validPath(it.trimEnd('/').ifEmpty { "/" }) && it != "/") { "挂载目标无效：$it" } }.map { it.trimEnd('/') }.toMutableSet()
         val text = if (rootCommand != null) rootCommand("cat /proc/self/mountinfo") else File("/proc/self/mountinfo").readText()
         val escaped = Regex("""\\([0-7]{3})""")
@@ -174,7 +182,7 @@ internal object RootfsOwnership {
     private fun prune(exclusions: Set<String>): String = exclusions.joinToString(" -o ") { "-path " + shellQuote("." + it.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?").replace("[", "\\[")) }
 
     fun snapshot(config: ContainerConfig, rootCommand: ((String) -> String)? = null): List<Entry> {
-        val base = root(config)
+        val base = root(config, rootCommand)
         val excluded = exclusions(config, rootCommand)
         if (rootCommand != null) {
             // Native find can collect link targets without one readlink process per link.
@@ -305,7 +313,7 @@ internal object RootfsOwnership {
         return names.flatMap { path -> listOf(path.trimStart('/'), resolveGuest(path, index).trimStart('/')) }.toSet()
     }
     private fun passwd(config: ContainerConfig, rootCommand: ((String) -> String)?): String {
-        val base = root(config)
+        val base = root(config, rootCommand)
         val file = File(base, "etc/passwd")
         if (rootCommand == null) {
             containerHostPath(config, file)
@@ -345,7 +353,7 @@ internal object RootfsOwnership {
     }
     fun refresh(config: ContainerConfig, rootCommand: ((String) -> String)? = null, scanned: List<Entry>? = null): OwnershipManifest {
         requireStable(config)
-        val base = root(config)
+        val base = root(config, rootCommand)
         val previous = load(base)
         val entries = scanned ?: snapshot(config, rootCommand)
         val manifest = plan(config, entries, previous, rootCommand, real = previous?.physical == ContainerEngineType.CHROOT)
@@ -366,10 +374,10 @@ internal object RootfsOwnership {
 
     /** Entire plan is validated and journaled before the first mutation. Re-running resumes it. */
     fun migrate(previous: ContainerConfig, target: ContainerConfig, rootCommand: (String) -> String, onProgress: (String, Float?) -> Unit = { _, _ -> }, checkActive: () -> Unit = {}) {
-        val base = root(target)
+        val base = root(target, rootCommand)
         onProgress("检查 Root 权限", null)
         preflight(rootCommand)
-        require(root(previous) == base) { "属主迁移不能更换 Rootfs" }
+        require(root(previous, rootCommand) == base) { "属主迁移不能更换 Rootfs" }
         val stored = load(base)
         val from = stored?.pending?.from ?: stored?.physical ?: mapped(previous.engine)
         val to = mapped(target.engine)
@@ -456,7 +464,7 @@ internal object RootfsOwnership {
             deleteManifest(lexical)
             return
         }
-        val base = root(config)
+        val base = root(config, rootCommand)
         preflight(rootCommand)
         val rootPath = base.toPath()
         val escaped = Regex("""\\([0-7]{3})""")

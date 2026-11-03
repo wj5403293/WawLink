@@ -8,9 +8,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
 
-/** Production shell/files/modes. Only root identity and cross-UID chown are explicitly modelled. */
+/** Production shell/files/modes; Root identity, cross-UID chown and opt-in DAC bypass are modelled. */
 class RootfsHostFilesTest {
-    private class Fixture : AutoCloseable {
+    internal class Fixture : AutoCloseable {
         val directory = Files.createTempDirectory("wawlink-host-files-").toFile()
         val root = File(directory, "root ' space").apply { mkdir() }
         val config = ContainerConfig("host", "Host", root.path, engine = ContainerEngineType.CHROOT, user = "alice")
@@ -49,6 +49,13 @@ class RootfsHostFilesTest {
                 environment()["PATH"] = tools.path + ":" + environment()["PATH"]
             }, 90,
         )
+        /** Only the injected Root call bypasses DAC; this is not real-Root acceptance. */
+        fun runWithRootTraversal(command: String): String {
+            val original = mode(root)
+            Files.setAttribute(root.toPath(), "unix:mode", original or 0x140)
+            return try { run(command) }
+            finally { Files.setAttribute(root.toPath(), "unix:mode", original) }
+        }
         fun store(prefix: String = "") = RootfsHostFiles(config) { run(it, prefix) }
         fun mode(file: File) = (Files.getAttribute(file.toPath(), "unix:mode", NOFOLLOW_LINKS) as Number).toInt() and 0xFFF
         fun noTemporaryFiles() = assertFalse(root.walkTopDown().any { it.name.startsWith(".wawlink-write") })
@@ -240,19 +247,24 @@ class RootfsHostFilesTest {
         f.noTemporaryFiles()
     }
 
-    @Test fun missingRootIsRejectedBeforeExecutingPrivilegedCommands() = Fixture().use { f ->
-        var calls = 0
+    @Test fun missingRootRetainsPrivilegedFilesystemErrorWithoutCreatingIt() = Fixture().use { f ->
         val config = f.config.copy(rootfsPath = File(f.directory, "missing-root").path)
-        val files = RootfsHostFiles(config) { calls++; f.run(it) }
-        assertFailsWith<IllegalArgumentException> { files.read(File(config.rootfsPath, "document")) }
-        assertFailsWith<IllegalArgumentException> { files.write(File(config.rootfsPath, "document"), byteArrayOf(1), null) }
-        assertEquals(0, calls)
+        val files = RootfsHostFiles(config) { f.run(it) }
+        val target = File(config.rootfsPath, "document")
+        for (operation in listOf<() -> Unit>(
+            { files.read(target); Unit },
+            { files.write(target, byteArrayOf(1), null) },
+        )) {
+            val failure = assertFailsWith<IllegalStateException>(block = operation)
+            assertTrue(failure.message.orEmpty().contains("missing-root"))
+        }
+        assertFalse(File(config.rootfsPath).exists())
     }
 
     @Test fun kernelMountBoundaryIsRejectedByProductionShell() = Fixture().use { f ->
-        // /proc is a real existing kernel mount; no mount command or mount-success fake is used.
-        val files = RootfsHostFiles(f.config.copy(rootfsPath = "/proc")) { f.run(it) }
-        val failure = assertFailsWith<IllegalStateException> { files.read(File("/proc/uptime")) }
+        // /dev/shm is an actual kernel mount, not a reserved system root or a mocked mount.
+        val files = RootfsHostFiles(f.config.copy(rootfsPath = "/dev/shm")) { f.run(it) }
+        val failure = assertFailsWith<IllegalStateException> { files.read(File("/dev/shm/document")) }
         assertTrue(failure.message.orEmpty().contains("容器管理路径位于内核挂载内"))
     }
 
@@ -391,5 +403,83 @@ class RootfsHostFilesTest {
         assertTrue(failure.message.orEmpty().contains("injected byte read I/O failure"))
         assertTrue(failure.message.orEmpty().contains("injected cleanup I/O failure"))
         assertEquals("original", file.readText())
+    }
+
+    @Test fun mappedTargetUsesPhysicalRootAndPendingJournalForPrivateAtomicWrites() = Fixture().use { f ->
+        val config = f.config.copy(engine = ContainerEngineType.PROOT)
+        val file = f.put("home/alice/.wawlink/container.json", "原始标题")
+        Files.setAttribute(file.parentFile.toPath(), "unix:mode", 0x1C0, NOFOLLOW_LINKS)
+        Files.setAttribute(file.toPath(), "unix:mode", 0xFA0, NOFOLLOW_LINKS)
+        val journals = listOf(
+            OwnershipManifest(emptyMap(), physical = ContainerEngineType.CHROOT),
+            OwnershipManifest(emptyMap(), physical = ContainerEngineType.PROOT,
+                pending = OwnershipMigration(ContainerEngineType.PROOT, ContainerEngineType.CHROOT)),
+            OwnershipManifest(emptyMap(), physical = ContainerEngineType.CHROOT,
+                pending = OwnershipMigration(ContainerEngineType.CHROOT, ContainerEngineType.PROOT)),
+        )
+        for ((index, journal) in journals.withIndex()) {
+            RootfsOwnership.save(f.root, journal)
+            val files = RootfsHostFiles(config) { f.run(it) }
+            val previous = files.read(file)!!
+            val replacement = "中文标题-$index".toByteArray()
+            files.write(file, replacement, RootfsHostFiles.revision(previous))
+            assertContentEquals(replacement, files.read(file))
+            assertEquals(0xFA0, f.mode(file))
+            assertEquals(0x1C0, f.mode(file.parentFile))
+            val committed = RootfsOwnership.load(f.root)!!
+            assertEquals(journal.physical, committed.physical)
+            assertEquals(journal.pending, committed.pending)
+            assertEquals(LogicalOwner(1001, 1002, 0xFA0), committed.entries["/home/alice/.wawlink/container.json"])
+            assertFailsWith<IllegalStateException> { files.write(file, "stale".toByteArray(), RootfsHostFiles.revision(previous)) }
+            assertContentEquals(replacement, file.readBytes())
+        }
+        f.noTemporaryFiles()
+    }
+
+    @Test fun inaccessibleMappedRootUsesRootWithoutRelaxingItsMode() = Fixture().use { f ->
+        // A real UID 0 runner cannot model App EACCES with owner permission bits alone.
+        if (ChrootHostIdentity.uid == 0) return@use
+        val config = f.config.copy(engine = ContainerEngineType.PROOT)
+        val file = f.put("home/alice/.wawlink/container.json", "不可穿透的原件")
+        val previous = file.readBytes()
+        Files.setAttribute(file.toPath(), "unix:mode", 0x180, NOFOLLOW_LINKS)
+        val original = f.mode(f.root)
+        Files.setAttribute(f.root.toPath(), "unix:mode", 0, NOFOLLOW_LINKS)
+        try {
+            assertFailsWith<java.nio.file.AccessDeniedException> { Files.readAllBytes(file.toPath()) }
+            val files = RootfsHostFiles(config, f::runWithRootTraversal)
+            assertContentEquals(previous, files.read(file))
+            files.write(file, "Root 离线更新".toByteArray(), RootfsHostFiles.revision(previous))
+            assertEquals("Root 离线更新", files.read(file)!!.toString(Charsets.UTF_8))
+            assertEquals(0, f.mode(f.root))
+            val denied = RootfsHostFiles(config) { throw IllegalStateException("su: denied by policy") }
+            assertEquals("su: denied by policy", assertFailsWith<IllegalStateException> { denied.read(file) }.message)
+        } finally { Files.setAttribute(f.root.toPath(), "unix:mode", original) }
+        assertEquals(0x180, f.mode(file))
+        assertEquals("Root 离线更新", file.readText())
+        f.noTemporaryFiles()
+    }
+
+    @Test fun physicalRootFinalizersRecordOwnersBehindUntraversableRootWithoutChangingModes() = Fixture().use { f ->
+        val config = f.config.copy(engine = ContainerEngineType.PROOT)
+        RootfsOwnership.save(f.root, OwnershipManifest(emptyMap(), physical = ContainerEngineType.CHROOT))
+        val file = f.put("home/alice/.wawlink/credential", "私有凭据")
+        Files.setAttribute(file.parentFile.toPath(), "unix:mode", 0x1C0, NOFOLLOW_LINKS)
+        Files.setAttribute(file.toPath(), "unix:mode", 0x1A0, NOFOLLOW_LINKS)
+        val original = f.mode(f.root)
+        Files.setAttribute(f.root.toPath(), "unix:mode", 0, NOFOLLOW_LINKS)
+        try {
+            val files = RootfsHostFiles(config, f::runWithRootTraversal)
+            files.prepareDirectory(file.parentFile)
+            files.prepareFile(file)
+            assertEquals("私有凭据", files.read(file)!!.toString(Charsets.UTF_8))
+            assertEquals(0, f.mode(f.root))
+            val manifest = RootfsOwnership.load(f.root)!!
+            assertEquals(LogicalOwner(1001, 1002, 0x1C0), manifest.entries["/home/alice/.wawlink"])
+            assertEquals(LogicalOwner(1001, 1002, 0x1A0), manifest.entries["/home/alice/.wawlink/credential"])
+        } finally { Files.setAttribute(f.root.toPath(), "unix:mode", original) }
+        assertEquals(0x1C0, f.mode(file.parentFile))
+        assertEquals(0x1A0, f.mode(file))
+        f.noTemporaryFiles()
     }
 }

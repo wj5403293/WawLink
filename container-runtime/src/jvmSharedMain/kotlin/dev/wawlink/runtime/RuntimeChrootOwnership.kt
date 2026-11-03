@@ -19,7 +19,7 @@ fun prepareContainerHostDirectory(
     config: ContainerConfig, directory: File,
     rootCommand: (String) -> String = ::runHostRootCommand,
 ) {
-    if (config.engine == ContainerEngineType.CHROOT) RootfsHostFiles(config, rootCommand).prepareDirectory(directory)
+    if (RootfsAccess.requiresRoot(config)) RootfsHostFiles(config, rootCommand).prepareDirectory(directory)
     else {
         prepareMappedHostDirectory(config, directory)
         RootfsOwnership.recordHostWrite(config, directory)
@@ -31,7 +31,7 @@ fun prepareContainerHostFile(
     config: ContainerConfig, file: File,
     rootCommand: (String) -> String = ::runHostRootCommand,
 ) {
-    if (config.engine == ContainerEngineType.CHROOT) RootfsHostFiles(config, rootCommand).prepareFile(file)
+    if (RootfsAccess.requiresRoot(config)) RootfsHostFiles(config, rootCommand).prepareFile(file)
     else {
         prepareMappedHostFile(config, file)
         RootfsOwnership.recordHostWrite(config, file)
