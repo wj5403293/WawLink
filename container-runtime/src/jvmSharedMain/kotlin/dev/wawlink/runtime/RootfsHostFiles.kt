@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
@@ -288,7 +289,7 @@ internal class RootfsHostFiles(
         val mounts = File("/proc/self/mountinfo").readLines().map { line ->
             val fields = line.split(' ')
             require(fields.size > 6) { "无法解析内核挂载信息" }
-            Path.of(Regex("""\\([0-7]{3})""").replace(fields[4]) { it.groupValues[1].toInt(8).toChar().toString() })
+            Paths.get(Regex("""\\([0-7]{3})""").replace(fields[4]) { it.groupValues[1].toInt(8).toChar().toString() })
         }
         require(mounts.none { it.startsWith(root) && target.startsWith(it) }) { "容器管理路径位于内核挂载内" }
         var current = root

@@ -5,6 +5,7 @@ import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.BasicFileAttributes
@@ -50,7 +51,7 @@ internal class RootfsOverlay(
     private fun mergedLink(path: Path): Path? {
         val name = relative(path)
         when (name) { "bin", "sbin", "lib", "lib32", "lib64", "libx32" -> Unit; else -> return null }
-        val link = snapshot?.let { Path.of(requireNotNull(metadata(path)?.linkTarget)) } ?: Files.readSymbolicLink(path)
+        val link = snapshot?.let { Paths.get(requireNotNull(metadata(path)?.linkTarget)) } ?: Files.readSymbolicLink(path)
         if (link.isAbsolute) return null
         val resolved = path.parent.resolve(link).normalize()
         if (resolved != root.resolve("usr/$name")) return null

@@ -6,6 +6,7 @@ import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
@@ -172,7 +173,7 @@ internal object RootfsOwnership {
         for (line in text.lineSequence().filter(String::isNotBlank)) {
             val fields = line.split(' ')
             require(fields.size >= 7) { "无法解析实际挂载边界" }
-            val mount = Path.of(escaped.replace(fields[4]) { it.groupValues[1].toInt(8).toChar().toString() }).normalize()
+            val mount = Paths.get(escaped.replace(fields[4]) { it.groupValues[1].toInt(8).toChar().toString() }).normalize()
             require(mount != base) { "Rootfs 根本身是外部挂载，无法安全迁移" }
             if (mount.startsWith(base)) excluded += "/" + base.relativize(mount).toString()
         }
@@ -477,7 +478,7 @@ internal object RootfsOwnership {
         rootCommand("cat /proc/self/mountinfo").lineSequence().filter(String::isNotBlank).forEach { line ->
             val fields = line.split(' ')
             require(fields.size >= 7) { "无法解析实际挂载边界" }
-            val mount = Path.of(escaped.replace(fields[4]) { it.groupValues[1].toInt(8).toChar().toString() }).normalize()
+            val mount = Paths.get(escaped.replace(fields[4]) { it.groupValues[1].toInt(8).toChar().toString() }).normalize()
             require(mount != rootPath && !mount.startsWith(rootPath)) { "Rootfs 或其子目录仍有实际挂载，拒绝删除" }
         }
         val parent = base.parentFile.canonicalFile
