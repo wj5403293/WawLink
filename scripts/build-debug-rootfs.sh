@@ -124,6 +124,7 @@ SOURCES
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+dpkg --configure -a
 apt-get update
 apt-get install -y --no-install-recommends git curl ca-certificates ripgrep fd-find jq unzip xz-utils zstd libatomic1 libstdc++6 python3 build-essential pkg-config
 # HTTPS is available after the authenticated apt bootstrap.

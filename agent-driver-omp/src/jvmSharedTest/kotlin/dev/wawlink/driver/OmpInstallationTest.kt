@@ -70,6 +70,15 @@ class OmpInstallationTest {
         }
     }
 
+    @Test fun bundledInstallerRepairsDpkgBeforeAptPrerequisites() {
+        val installer = OmpInstallation.command()
+        val repair = installer.indexOf("DEBIAN_FRONTEND=noninteractive dpkg --configure -a")
+        val aptBranch = installer.indexOf("apt-get -o APT::Update::Error-Mode=any update")
+        assertTrue(repair >= 0)
+        assertTrue(aptBranch > repair)
+        assertTrue(installer.indexOf("repair_dpkg", repair) < aptBranch)
+    }
+
     @Test fun staleInspectionAndRunningOnlyInspectionNeverOpenStoppedContainer() = runBlocking {
         fixture { base ->
             val containerState = MutableStateFlow(base.containers.value.map { it.copy(running = false, stopGeneration = 1) })

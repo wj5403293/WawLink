@@ -9,6 +9,12 @@ fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 progress() { printf '\n==> %s\n' "$*"; }
 exists() { [ -e "$1" ] || [ -L "$1" ]; }
 
+repair_dpkg() {
+    command -v dpkg >/dev/null 2>&1 || fail 'APT guest is missing dpkg'
+    progress 'Repairing any interrupted dpkg transaction'
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a
+}
+
 # A real native import and RPC round trip, with no user configuration, model call,
 # credentials or extensions. The same probe gates both staged and published trees.
 write_probe() {
@@ -192,6 +198,7 @@ progress "Installing $ID $VERSION_ID prerequisites ($source_mode downloads)"
 case "$ID" in
     ubuntu|debian|kali)
         export DEBIAN_FRONTEND=noninteractive
+        repair_dpkg
         if [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
             progress 'Bootstrapping CA certificates with signed distribution packages'
             bootstrap_apt_certificates

@@ -1159,19 +1159,7 @@ class LocalContainerRuntime internal constructor(
         val distro = mutex.withLock { config(id).distro }
         val manager = manager(distro)
         val packages = tool.packages.getValue(manager)
-        val command = when (manager) {
-            "apt" -> if (install) "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y $packages" else """
-                selected=''
-                for package in $packages; do
-                    if dpkg-query -W -f='${'$'}{Status}' "${'$'}package" 2>/dev/null | grep -q '^install ok installed${'$'}'; then selected="${'$'}selected ${'$'}package"; fi
-                done
-                if [ -n "${'$'}selected" ]; then DEBIAN_FRONTEND=noninteractive apt-get purge -y ${'$'}selected && DEBIAN_FRONTEND=noninteractive apt-get autoremove -y; fi
-            """.trimIndent()
-            "apk" -> "apk ${if (install) "add --no-cache" else "del"} $packages"
-            "pacman" -> "pacman ${if (install) "-Syu --needed" else "-Rns"} --noconfirm $packages"
-            "dnf" -> "dnf ${if (install) "install" else "remove"} -y $packages"
-            else -> error("不支持的软件包管理器")
-        }
+        val command = PackageManagerCommands.toolchain(manager, packages, install)
         val result = StringBuilder(execute(id, command, "/"))
         if (toolId == "node" && !install) {
             result.append(execute(id, """
@@ -1198,7 +1186,7 @@ class LocalContainerRuntime internal constructor(
         ids.forEach { id -> packageLocks.getOrPut(id) { Mutex() }.withLock {
             val manager = manager(mutex.withLock { config(id).distro })
             val cache = when (manager) { "apt" -> "/var/cache/apt/archives"; "apk" -> "/var/cache/apk"; "pacman" -> "/var/cache/pacman/pkg"; else -> "/var/cache/dnf" }
-            val clean = when (manager) { "apt" -> "apt-get clean"; "apk" -> "apk cache clean"; "pacman" -> "pacman -Scc --noconfirm"; else -> "dnf clean all" }
+            val clean = PackageManagerCommands.clean(manager)
             val result = execute(id, "before=\$(du -sk $cache 2>/dev/null | cut -f1); $clean && after=\$(du -sk $cache 2>/dev/null | cut -f1) && printf '\\n__WAWLINK_FREED__%s\\n' \"\$(( (\${before:-0} - \${after:-0}) * 1024 ))\"", "/")
             val freed = Regex("__WAWLINK_FREED__(-?[0-9]+)").find(result)?.groupValues?.get(1)?.toLongOrNull() ?: error("无法读取实际缓存清理结果")
             total += freed.coerceAtLeast(0)
