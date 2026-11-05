@@ -159,7 +159,7 @@ Output: `app-android/build/outputs/apk/debug/app-android-debug.apk`.
 
 ### 3. Build Production Release APK
 ```bash
-./scripts/build-release.sh v0.1.2
+./scripts/build-release.sh v0.1.5
 ```
 Outputs are verified and placed in `app-android/build/outputs/apk/release/`.
 

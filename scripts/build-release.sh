@@ -12,7 +12,7 @@ if (( $# > 1 )); then
     printf 'Usage: %s [--unsigned] [vMAJOR.MINOR.PATCH]\n' "$0" >&2
     exit 2
 fi
-VERSION="${1:-0.1.2}"
+VERSION="${1:-0.1.5}"
 VERSION="${VERSION#v}"
 if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]]; then
     printf 'ERROR: expected MAJOR.MINOR.PATCH; minor and patch must be 0..999.\n' >&2

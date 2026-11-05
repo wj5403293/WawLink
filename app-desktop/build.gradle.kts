@@ -41,7 +41,7 @@ compose.desktop {
         jvmArgs += listOf("-Dwawlink.projectDir=${rootProject.projectDir.absolutePath}")
         nativeDistributions {
             packageName = "WawLink"
-            packageVersion = "1.0.0"
+            packageVersion = "0.1.5"
         }
     }
 }

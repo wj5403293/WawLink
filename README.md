@@ -162,7 +162,7 @@ host-exec pm install -r -S "$(stat -c %s "$apk")" - < "$apk"
 
 ### 3. 构建生产 Release APK
 ```bash
-./scripts/build-release.sh v0.1.2
+./scripts/build-release.sh v0.1.5
 ```
 签名脚本会校验证书指纹与 ZIP 对齐，产出固定位于 `app-android/build/outputs/apk/release/`。
 
