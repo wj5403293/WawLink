@@ -29,6 +29,8 @@ data class ContainerConfig(
     /** Explicit engine switches may leave physical ownership unchanged until a later conversion. */
     val ownershipMigrationDeferred: Boolean = false,
     @kotlinx.serialization.Transient val metadata: ContainerMetadata = ContainerMetadata(),
+    /** Provides host commands and shared storage to an already privileged chroot; not a sandbox boundary. */
+    val hostRootAccess: Boolean = false,
 ) {
     val displayName: String get() = metadata.title.ifBlank { name }
 }
@@ -56,6 +58,8 @@ data class RuntimePaths(
     val debugRootfs: File? = null,
     /** Active host resolver configuration; null values mean the network has no DNS configuration. */
     val resolvConf: StateFlow<String?>? = null,
+    /** Current Android user's primary shared storage, checked by the Root process rather than the App UID. */
+    val primaryExternalStorage: File? = null,
 )
 interface TerminalSession : AutoCloseable {
     /** Raw PTY transport; terminal emulators consume bytes without line conversion. */

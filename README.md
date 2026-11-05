@@ -112,6 +112,26 @@ Rootfs 路径构造使用 Android 8.0 / API 26 已提供的 `Paths.get(...)`，�
 
 在容器详情页切换 PRoot/Proroot 与 chroot 时，会先解释物理属主转换及可能的长耗时。“开始转换”会停止容器、检查并转换权限后再保存引擎；“暂不转换”保留文件物理属主，只保存目标引擎及暂缓状态，后续启动不会自动补做转换。暂缓可能导致启动或文件访问失败，可在详情页再次选择开始转换；关闭提示则保持原配置。未完成的迁移不能通过暂缓绕过。
 
+### Android chroot 宿主机 Root 访问
+
+在容器详情的“运行引擎”下开启“宿主机 Root 访问”。配置字段 `hostRootAccess` 默认关闭并独立持久化，仅在 chroot 下生效；PRoot/Proroot 不增加宿主权限。开关沿用现有配置应用流程，运行中的容器会先停止再应用。
+
+开启后将当前 Android 主要共享存储递归挂载到容器 `/sdcard`，并安装 `/usr/local/bin/host-exec`。它使用容器自己的 `chroot` 经 `/proc/1/root` 执行宿主 `/system/bin/sh`，不启动代理服务；需要容器以真实 Root 登录，不会给普通用户提权。命令参数、标准输入/输出、错误输出和退出码直接透传；不带参数进入宿主交互 Shell。
+
+```bash
+host-exec id
+host-exec cmd package list packages
+host-exec /system/bin/sh -c 'getprop ro.build.version.release'
+
+# 容器内 APK 通过 stdin 交给 Android，避免把客体路径当成宿主路径。
+apk=/workspace/app.apk
+host-exec pm install -r -S "$(stat -c %s "$apk")" - < "$apk"
+```
+
+宿主命令使用 Android `PATH`、`ANDROID_ROOT=/system` 与 `ANDROID_DATA=/data`，清除客体动态库注入变量；不修改原始共享存储权限，也不额外申请应用存储权限。实际访问和静默安装仍受 Root 授权、登录身份、FUSE/sdcardfs、SELinux 与设备策略限制，拒绝会保留真实命令错误。
+
+停止、启动失败和注销时，递归子挂载先于父挂载卸载；传播隔离或卸载失败保留清理记录供重试，不用 lazy unmount 冒充完成。关闭开关或切离 chroot 时仅移除本应用原样安装的 `host-exec`，不覆盖、删除用户同名文件。这个开关提供便利入口，不是 chroot Root 的安全隔离或权限撤销边界。
+
 ## 从源码构建
 
 项目采用标准 Gradle 构建系统，预置免 Docker 与免 Root 自动化准备脚本。

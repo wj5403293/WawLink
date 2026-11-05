@@ -78,6 +78,43 @@ internal class RootfsHostFiles(
         }
     }
 
+    /** Remove only an independent file whose exact bytes still match the caller's snapshot. */
+    fun delete(file: File, expectedRevision: String) {
+        require(expectedRevision.matches(Regex("[0-9a-f]{64}")))
+        val (root, target) = path(file)
+        withWriteLock(root) {
+            if (RootfsAccess.requiresRoot(config)) {
+                rootCommand(script(root, target, create = false) + "\n" + """
+                    [ "${'$'}missing" = 0 ] || fail '$CONFLICT'
+                    entry=${shellQuote("./" + target.fileName)}
+                    ${verifyEntry(false)}
+                    [ -f "${'$'}entry" ] || fail '$CONFLICT'
+                    identity=${'$'}(stat -c '%d:%i:%h:%s:%y:%z' "${'$'}entry")
+                    ${temporaryDirectory()}
+                    (
+                        trap - EXIT
+                        cd -P "${'$'}temporary"
+                        [ "${'$'}(stat -c '%d:%i' .)" = "${'$'}temporary_id" ] || fail '离线暂存目录已改变'
+                        cp -P "../${'$'}{entry#./}" ./previous
+                        [ ! -L ./previous ] && [ -f ./previous ] && [ "${'$'}(stat -c '%h' ./previous)" = 1 ] || fail '容器管理文件不是独立普通文件'
+                        value=${'$'}(sha256sum ./previous)
+                        [ "${'$'}{value%% *}" = ${shellQuote(expectedRevision)} ] || fail '$CONFLICT'
+                    )
+                    check_parent
+                    ${verifyEntry(false)}
+                    [ "${'$'}(stat -c '%d:%i:%h:%s:%y:%z' "${'$'}entry")" = "${'$'}identity" ] || fail '$CONFLICT'
+                    rm -- "${'$'}entry"
+                    check_parent
+                """.trimIndent())
+            } else {
+                checkPath(root, target, false)
+                check(revisionOrNull(read(file)) == expectedRevision) { CONFLICT }
+                checkPath(root, target, false)
+                Files.delete(target)
+            }
+        }
+    }
+
     private fun writeLocked(
         root: Path, target: Path, file: File, bytes: ByteArray, expectedRevision: String?, defaultMode: Int,
         preserveOwner: Boolean, replaceSymlink: Boolean,

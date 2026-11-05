@@ -12,6 +12,16 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
@@ -26,6 +36,9 @@ class RuntimeChrootMountTest {
         val root = File(directory, "root ' quoted \\ path").apply { mkdirs() }
         val source = File(directory, "host ' files \\ literal \$HOME").apply { mkdirs() }
         val target = File(root, "mnt/shared ' files \\ literal \$HOME")
+        val external = File(directory, "storage ' shared \\ files").apply { mkdirs() }
+        val sdcard = File(root, "sdcard")
+        val nestedStoragePaths = listOf("Android", "Android/data ' quoted \\ files", "Music")
         val state = File(directory, "mount state").apply { mkdirs() }
         private val shell = System.getenv("WAWLINK_TEST_HOST_SHELL") ?: "/bin/sh"
         private val tools = System.getenv("WAWLINK_TEST_HOST_TOOLS")?.let { executable ->
@@ -60,12 +73,13 @@ class RuntimeChrootMountTest {
         var failure = ""
         var confirmReadOnly = true
         var uid = "0"
+        var busyTarget = ""
         val config = ContainerConfig(
             "chroot-mount-test", "Chroot", root.path, arch = System.getProperty("os.arch"),
             engine = ContainerEngineType.CHROOT, shell = "/bin/sh",
             mounts = listOf(ContainerMount(source.path, "/mnt/${target.name}", readWrite = false)),
         )
-        val engines = RuntimeEngines(RuntimePaths(data, isAndroid = android)) { command ->
+        val engines = RuntimeEngines(RuntimePaths(data, isAndroid = android, primaryExternalStorage = external)) { command ->
             val builder = builder(MOCK_COMMANDS + "\n" + command, privileged = true)
             builder.environment().apply {
                 put("MOCK_STATE", state.path)
@@ -74,6 +88,7 @@ class RuntimeChrootMountTest {
                 put("MOCK_FAILURE", failure)
                 put("MOCK_RO", if (confirmReadOnly) "ro" else "rw")
                 put("MOCK_UID", uid)
+                put("MOCK_BUSY", busyTarget)
                 put("MOCK_MOUNTINFO", mounts().joinToString("\n") { entry ->
                     val path = File(entry, "target").readText().trimEnd('\n')
                         .replace("\\", "\\134").replace(" ", "\\040")
@@ -124,11 +139,18 @@ class RuntimeChrootMountTest {
         }
 
         fun mounts(): List<File> = state.listFiles().orEmpty().filter { it.isDirectory }
+        fun mountedTargets(): Set<String> = mounts().map { File(it, "target").readText().trimEnd('\n') }.toSet()
+        fun addMount(target: File) {
+            val entry = File(state, "mount-seeded-${mounts().size}").apply { mkdir() }
+            File(entry, "target").writeText(target.path + "\n")
+            File(entry, "options").writeText("rw\n")
+        }
+        fun unmountedTargets(): List<String> = calls("umount").map { it.last() }
         fun calls(name: String): List<List<String>> = if (!log.exists()) emptyList() else
             log.readLines().map { it.split('\u0000').dropLast(1) }.filter { it.firstOrNull() == name }
         fun assertRolledBack(vararg relativeTargets: String) {
             assertTrue(mounts().isEmpty(), "失败后不应遗留模拟挂载")
-            assertEquals(relativeTargets.map { listOf("umount", "-l", File(root, it).path) }, calls("umount"))
+            assertEquals(relativeTargets.map { File(root, it).path }, unmountedTargets())
             val count = calls("umount").size
             engines.unmount(config.id)
             assertEquals(count, calls("umount").size, "成功回滚后必须释放所有权记录")
@@ -243,6 +265,8 @@ class RuntimeChrootMountTest {
         with(fixture) {
             failure = "private"
             engines.prepare(config)
+            assertFalse(File(root, "usr/local/bin/host-exec").exists())
+            assertFalse(sdcard.exists())
             val calls = calls("mount")
             assertEquals(listOf(
                 listOf("mount", "-t", "proc", "proc", File(root, "proc").path),
@@ -258,6 +282,224 @@ class RuntimeChrootMountTest {
             assertEquals(before, calls("mount").size, "重复 prepare 不得重复挂载")
             engines.unmount(config.id)
             assertRolledBack("mnt/${target.name}", "dev/pts", "dev", "sys", "proc")
+        }
+    }
+
+    @Test fun oldConfigurationDefaultsOffAndProductionUpdatesPersistHostAccessAcrossReloads() = fixture { fixture ->
+        with(fixture) { runBlocking {
+            val saved = config.copy(mounts = emptyList())
+            val encoded = Json.encodeToJsonElement(saved)
+            assertFalse("hostRootAccess" in encoded.jsonObject)
+            File(data, "containers.json").writeText(buildJsonObject {
+                put("containers", Json.encodeToJsonElement(listOf(saved)))
+            }.toString())
+            fun open() = LocalContainerRuntime(RuntimePaths(data, isAndroid = true, primaryExternalStorage = external),
+                measureRootfs = RootfsArchives::size, runRootCommand = engines::rootCommand)
+            suspend fun close(runtime: LocalContainerRuntime) {
+                runtime.close()
+                val field = LocalContainerRuntime::class.java.getDeclaredField("scope").apply { isAccessible = true }
+                val scope = field.get(runtime) as CoroutineScope
+                withTimeout(10_000) {
+                    while (true) {
+                        val jobs = scope.coroutineContext[Job]!!.children.toList()
+                        if (jobs.isEmpty()) break
+                        jobs.joinAll()
+                    }
+                }
+            }
+            val first = open()
+            try {
+                assertFalse(first.containers.value.single().config.hostRootAccess)
+                first.update(first.containers.value.single().config.copy(hostRootAccess = true), migrateOwnership = false)
+                assertTrue(first.containers.value.single().config.hostRootAccess)
+                assertFalse(first.containers.value.single().running)
+            } finally { close(first) }
+            val second = open()
+            try {
+                val reloaded = second.containers.value.single().config
+                assertTrue(reloaded.hostRootAccess)
+                second.update(reloaded.copy(environment = mapOf("HOST_ACCESS_SETTING_TEST" to "retained")), migrateOwnership = false)
+                assertTrue(second.containers.value.single().config.hostRootAccess)
+                assertFalse(second.containers.value.single().running)
+            } finally { close(second) }
+            val third = open()
+            try {
+                val state = third.containers.value.single()
+                assertTrue(state.config.hostRootAccess)
+                assertEquals("retained", state.config.environment["HOST_ACCESS_SETTING_TEST"])
+                assertFalse(state.running)
+                assertEquals(0L, state.runGeneration)
+                assertFalse(File(root, "usr/local/bin/host-exec").exists())
+                assertFalse(sdcard.exists())
+                assertTrue(calls("mount").isEmpty())
+                val helper = File(root, "usr/local/bin/host-exec")
+                synchronizeHostExec(state.config, root, true, engines::rootCommand)
+                assertTrue(helper.canExecute())
+                third.update(state.config.copy(hostRootAccess = false), migrateOwnership = false)
+                assertFalse(helper.exists(), "停止状态关闭开关也必须撤销受管理 helper")
+                assertFalse(third.containers.value.single().running)
+            } finally { close(third) }
+            val fourth = open()
+            try {
+                assertFalse(fourth.containers.value.single().config.hostRootAccess)
+                val helper = File(root, "usr/local/bin/host-exec").apply { writeText("user helper\n") }
+                fourth.update(fourth.containers.value.single().config.copy(environment = emptyMap()), migrateOwnership = false)
+                assertEquals("user helper\n", helper.readText(), "普通配置保存不能删除用户同名文件")
+                assertFalse(fourth.containers.value.single().running)
+                assertTrue(calls("mount").isEmpty())
+            } finally { close(fourth) }
+        } }
+    }
+
+    @Test fun prootFlagDoesNotChangeProcessPrivilegesOrCreateHostArtifacts() = fixture(android = false) { fixture ->
+        with(fixture) {
+            RootfsOwnership.save(root, OwnershipManifest(emptyMap(), physical = ContainerEngineType.PROOT))
+            val selected = config.copy(engine = ContainerEngineType.PROOT, mounts = emptyList(), link2symlink = false)
+            val ordinary = engines.builder(selected, listOf("/bin/sh"), "/", emptyMap(), true)
+            val enabled = engines.builder(selected.copy(hostRootAccess = true), listOf("/bin/sh"), "/", emptyMap(), true)
+            assertEquals(ordinary.command(), enabled.command())
+            assertEquals(ordinary.environment(), enabled.environment())
+            assertFalse(File(root, "usr/local/bin/host-exec").exists())
+            assertFalse(sdcard.exists())
+            assertTrue(calls("mount").isEmpty())
+        }
+    }
+
+    @Test fun disabledHostAccessDoesNotProbeStorageOrReplaceUserHelper() = fixture { fixture ->
+        with(fixture) {
+            assertTrue(external.delete())
+            val helper = File(root, "usr/local/bin/host-exec").apply { parentFile.mkdirs(); writeText("user helper\n") }
+            engines.prepare(config)
+            assertEquals("user helper\n", helper.readText())
+            assertFalse(sdcard.exists())
+            engines.unmount(config.id)
+            assertTrue(mounts().isEmpty())
+        }
+    }
+
+    @Test fun recursiveHostStorageMountCleansChildrenBeforeParentsAndLeavesOtherTrees() = fixture { fixture ->
+        with(fixture) {
+            failure = "private"
+            val neighbor = File(root, "sdcard-neighbor")
+            addMount(neighbor)
+            addMount(external)
+            addMount(File(external, "Android"))
+            val untouched = mountedTargets()
+            engines.prepare(config.copy(hostRootAccess = true))
+            assertTrue(sdcard.isDirectory)
+            assertEquals(sdcard.path, sdcard.canonicalPath)
+            val children = nestedStoragePaths.map { File(sdcard, it).path }
+            assertTrue(mountedTargets().containsAll(children), "rbind 必须保留多层子挂载")
+            assertTrue(File(root, "usr/local/bin/host-exec").canExecute())
+            engines.unmount(config.id)
+            assertEquals(untouched, mountedTargets())
+            val order = unmountedTargets()
+            for (child in children) assertTrue(order.indexOf(child) < order.indexOf(sdcard.path))
+            assertTrue(order.indexOf(children[1]) < order.indexOf(children[0]))
+            assertTrue(untouched.none { it in order })
+            val before = order.size
+            engines.unmount(config.id)
+            assertEquals(before, unmountedTargets().size)
+        }
+    }
+
+    @Test fun recursiveBindAndLaterPreparationFailuresRollbackAllOwnedMounts() {
+        for ((reason, detail) in listOf("rbind" to "recursive bind denied", "ownership" to "ownership denied",
+            "rbind-partial" to "partial recursive bind denied")) fixture { fixture ->
+            with(fixture) {
+                failure = reason
+                val error = assertFails { engines.prepare(config.copy(hostRootAccess = true)) }
+                assertTrue(error.message.orEmpty().contains(detail), error.message)
+                assertTrue(mounts().isEmpty(), "失败必须回收全部递归子挂载")
+                val before = unmountedTargets().size
+                engines.unmount(config.id)
+                assertEquals(before, unmountedTargets().size)
+            }
+        }
+    }
+
+    @Test fun failedRecursiveIsolationRetainsTreeUntilItCanBeSafelyUnmounted() = fixture { fixture ->
+        with(fixture) {
+            failure = "recursive-private"
+            val error = assertFails { engines.prepare(config.copy(hostRootAccess = true)) }
+            assertTrue(error.message.orEmpty().contains("recursive propagation isolation denied"), error.message)
+            val tree = nestedStoragePaths.map { File(sdcard, it).path }.toSet() + sdcard.path
+            assertEquals(tree, mountedTargets(), "无法隔离时只保留递归树，其他已知挂载仍回收")
+            assertTrue(unmountedTargets().none { it in tree }, "不允许把卸载事件传播到宿主源")
+            failure = ""
+            engines.unmount(config.id)
+            assertTrue(mounts().isEmpty())
+        }
+    }
+
+    @Test fun busyRecursiveChildRetainsOwnershipAndDoesNotAttemptItsParentsUntilRetry() = fixture { fixture ->
+        with(fixture) {
+            engines.prepare(config.copy(hostRootAccess = true))
+            busyTarget = File(sdcard, nestedStoragePaths[1]).path
+            runCatching { engines.unmount(config.id) }
+            assertTrue(busyTarget in mountedTargets())
+            assertTrue(sdcard.path in mountedTargets())
+            assertFalse(sdcard.path in unmountedTargets(), "忙碌子挂载失败时不能尝试父挂载")
+            assertFalse(File(sdcard, "Android").path in unmountedTargets())
+            busyTarget = ""
+            engines.unmount(config.id)
+            assertTrue(mounts().isEmpty(), "必须保留失败记录供重试")
+        }
+    }
+
+    @Test fun ordinaryUnmountFailureAlsoRetainsOwnershipForRetry() = fixture { fixture ->
+        with(fixture) {
+            engines.prepare(config)
+            busyTarget = target.path
+            runCatching { engines.unmount(config.id) }
+            assertTrue(target.path in mountedTargets())
+            busyTarget = ""
+            engines.unmount(config.id)
+            assertTrue(mounts().isEmpty())
+        }
+    }
+
+    @Test fun explicitStorageTargetConflictsAreRejectedBeforeAnyMount() {
+        for (destination in listOf("/sdcard", "/sdcard/Download", "/")) fixture { fixture ->
+            with(fixture) {
+                val conflicting = config.copy(hostRootAccess = true,
+                    mounts = listOf(ContainerMount(source.path, destination)))
+                assertFails { engines.prepare(conflicting) }
+                assertTrue(calls("mount").isEmpty(), "冲突必须在挂载前拒绝：$destination")
+                assertTrue(mounts().isEmpty())
+                assertFalse(File(root, "usr/local/bin/host-exec").exists())
+            }
+        }
+    }
+
+    @Test fun enabledHostAccessRejectsMissingStorageAndRollsBack() = fixture { fixture ->
+        with(fixture) {
+            assertTrue(external.delete())
+            assertFails { engines.prepare(config.copy(hostRootAccess = true)) }
+            assertTrue(mounts().isEmpty())
+        }
+    }
+
+    @Test fun sharedStorageAliasIsResolvedByTheRootProcessBeforeRecursiveMounting() = fixture { fixture ->
+        with(fixture) {
+            val actual = File(directory, "actual ' storage \\ path").apply { mkdirs() }
+            assertTrue(external.delete())
+            Files.createSymbolicLink(external.toPath(), actual.toPath())
+            val probe = File(directory, "privileged storage probe")
+            intercept("readlink", """
+                for argument do
+                    if [ "${'$'}argument" = ${shellQuote(external.path)} ]; then
+                        printf '%s\n' "${'$'}MOCK_UID" > ${shellQuote(probe.path)}
+                    fi
+                done
+                exec ${shellQuote(tool("readlink"))} "${'$'}@"
+            """.trimIndent())
+            engines.prepare(config.copy(hostRootAccess = true))
+            assertEquals("0\n", probe.readText(), "共享存储探测须位于 Root 命令进程")
+            val mounted = mounts().single { File(it, "target").readText().trimEnd('\n') == sdcard.path }
+            assertEquals(actual.canonicalPath, File(mounted, "source").readText().trimEnd('\n'))
+            engines.unmount(config.id)
+            assertTrue(mounts().isEmpty())
         }
     }
 
@@ -630,15 +872,21 @@ class RuntimeChrootMountTest {
             chroot() { echo 'test must never execute chroot' >&2; return 99; }
             mount() {
                 record mount "${'$'}@"
-                if [ "${'$'}1" = --make-private ]; then
+                if [ "${'$'}1" = --make-private ] || [ "${'$'}1" = --make-rprivate ]; then
                     [ "${'$'}#" = 2 ] || return 64
-                    if [ "${'$'}MOCK_FAILURE" = private ]; then
-                        echo "mount: unknown option '--make-private'" >&2; return 32
+                    if [ "${'$'}MOCK_FAILURE" = private ] || { [ "${'$'}MOCK_FAILURE" = recursive-private ] && [ "${'$'}1" = --make-rprivate ]; }; then
+                        printf "mount: unknown option '%s'\n" "${'$'}1" >&2; return 32
                     fi
                     return 0
                 fi
                 [ "${'$'}#" = 4 ] || { echo 'mount requires source and target' >&2; return 64; }
                 source="${'$'}3"; target="${'$'}4"
+                if [ "${'$'}1:${'$'}2" = -o:rprivate ]; then
+                    if [ "${'$'}MOCK_FAILURE" = recursive-private ]; then
+                        echo 'mount: recursive propagation isolation denied' >&2; return 32
+                    fi
+                    return 0
+                fi
                 case "${'$'}1:${'$'}2" in
                     -o:remount,bind,ro)
                         if [ "${'$'}MOCK_FAILURE" = remount ]; then
@@ -651,18 +899,42 @@ class RuntimeChrootMountTest {
                         if [ "${'$'}MOCK_FAILURE" = bind ] && [ "${'$'}target" = "${'$'}MOCK_TARGET" ]; then
                             printf 'mount: bind denied for %s\n' "${'$'}source" >&2; return 32
                         fi ;;
+                    -o:rbind)
+                        if [ "${'$'}MOCK_FAILURE" = rbind ]; then
+                            echo 'mount: recursive bind denied' >&2; return 32
+                        fi ;;
                     -t:proc|-t:sysfs|-t:devpts) ;;
                     *) echo 'unexpected mount invocation' >&2; return 64 ;;
                 esac
-                entry="${'$'}MOCK_STATE/mount-${'$'}${'$'}"
-                /bin/mkdir "${'$'}entry" || return
-                printf '%s\n' "${'$'}target" > "${'$'}entry/target"
-                printf 'rw\n' > "${'$'}entry/options"
+                new_mount() {
+                    index=0
+                    while [ -e "${'$'}MOCK_STATE/mount-${'$'}index" ]; do index=${'$'}((index + 1)); done
+                    entry="${'$'}MOCK_STATE/mount-${'$'}index"
+                    /bin/mkdir "${'$'}entry" || return
+                    printf '%s\n' "${'$'}1" > "${'$'}entry/target"
+                    printf '%s\n' "${'$'}source" > "${'$'}entry/source"
+                    printf 'rw\n' > "${'$'}entry/options"
+                }
+                new_mount "${'$'}target" || return
+                if [ "${'$'}1:${'$'}2" = -o:rbind ]; then
+                    new_mount "${'$'}target/Android" || return
+                    new_mount "${'$'}target/Android/data ' quoted \\ files" || return
+                    new_mount "${'$'}target/Music" || return
+                    if [ "${'$'}MOCK_FAILURE" = rbind-partial ]; then
+                        echo 'mount: partial recursive bind denied' >&2; return 32
+                    fi
+                fi
             }
             umount() {
                 record umount "${'$'}@"
-                [ "${'$'}#" = 2 ] && [ "${'$'}1" = -l ] || return 64
-                find_mount "${'$'}2" || return 32
+                [ "${'$'}#" = 1 ] || { echo 'only non-lazy single-target umount is supported' >&2; return 64; }
+                [ "${'$'}1" != "${'$'}MOCK_BUSY" ] || { echo 'umount: target busy' >&2; return 16; }
+                for entry in "${'$'}MOCK_STATE"/mount-*; do
+                    [ -d "${'$'}entry" ] || continue
+                    IFS= read -r mounted < "${'$'}entry/target"
+                    case "${'$'}mounted" in "${'$'}1"/*) echo 'umount: child still mounted' >&2; return 16;; esac
+                done
+                find_mount "${'$'}1" || return 32
                 /bin/rm -r -- "${'$'}found"
             }
             cat() {

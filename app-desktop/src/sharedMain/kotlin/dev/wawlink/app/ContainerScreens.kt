@@ -304,6 +304,11 @@ internal fun EngineOwnershipConversionDialog(
             DetailSegments(ContainerEngineType.entries, c.engine, { it.name.lowercase() }, { selectEngine(it) }, enabled = { engineEnabled && pendingEngine == null && (app.isAndroid || it != ContainerEngineType.PROROOT) })
             if (c.ownershipMigrationDeferred) TextButton({ selectEngine(c.engine) }, enabled = engineEnabled && pendingEngine == null) { Text("权限转换已暂缓 · 开始转换") }
             Text("切换引擎或配置会停止相关进程并应用新配置。chroot 需要 Root 权限。${if (!app.isAndroid) "proroot 仅支持 Android。" else "proroot 支持 root 与普通用户。"}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
+            if (c.engine == ContainerEngineType.CHROOT) {
+                DetailRow("宿主机 Root 访问", "挂载 /sdcard 并提供 host-exec；需以 Root 登录", "admin_panel_settings") {
+                    Switch(c.hostRootAccess, { update(c.copy(hostRootAccess = it)) }, enabled = engineEnabled && pendingEngine == null)
+                }
+            }
             SectionLabel("预装工具链", "construction", action = { TextButton({ uiScope.launch { probe() } }, enabled = toolBusy == null) { Text("重新探测") } })
             if (tools == null && probeError == null) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在容器内探测实际工具版本", Modifier.padding(12.dp)) }
             probeError?.let { ErrorMessage(it) }

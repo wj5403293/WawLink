@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import dev.wawlink.driver.OmpProcessPool
@@ -41,7 +42,8 @@ class WawLinkApplication : Application() {
                 if (network == current) { current = null; resolvConf.value = null }
             }
         })
-        val runtime = LocalContainerRuntime(RuntimePaths(data, nativeLibraryDir = File(applicationInfo.nativeLibraryDir), isAndroid = true, resolvConf = resolvConf))
+        val runtime = LocalContainerRuntime(RuntimePaths(data, nativeLibraryDir = File(applicationInfo.nativeLibraryDir), isAndroid = true,
+            resolvConf = resolvConf, primaryExternalStorage = Environment.getExternalStorageDirectory()))
         coordinator = AppCoordinator(runtime, OmpProcessPool(runtime, data, resolvConf = resolvConf), data, isAndroid = true)
         scope.launch {
             // AppCoordinator.active already includes Android keep-alive demand.

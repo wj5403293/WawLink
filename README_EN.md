@@ -112,6 +112,26 @@ Rootfs path construction uses `Paths.get(...)`, available since Android 8.0 / AP
 
 Switching between PRoot/Proroot and chroot from container details first explains physical ownership conversion and its potentially long duration. Starting conversion stops the container, checks and converts ownership, then saves the engine. Deferring saves the target engine while retaining physical ownership; later starts do not silently perform the conversion. The target engine may fail to start or access files until you explicitly resume conversion from container details. Dismissing the dialog leaves the configuration unchanged. An unfinished migration cannot be bypassed by deferring.
 
+### Android chroot Host Root Access
+
+Enable **宿主机 Root 访问** (Host Root Access) below the engine selector in container details. The independently persisted `hostRootAccess` field defaults to `false` and only takes effect with chroot; PRoot/Proroot gain no host privileges. Changes follow the existing configuration-application flow, stopping a running container before applying them.
+
+When enabled, Android's current primary shared storage is recursively bound to the guest `/sdcard`, and `/usr/local/bin/host-exec` is installed. It uses the guest's own `chroot` through `/proc/1/root` to execute the host `/system/bin/sh`, without an agent service. The guest must be logged in as real Root; this does not elevate ordinary users. Arguments, stdin, stdout, stderr, and exit status pass through directly. Running it without arguments opens an interactive host shell.
+
+```bash
+host-exec id
+host-exec cmd package list packages
+host-exec /system/bin/sh -c 'getprop ro.build.version.release'
+
+# Stream a guest APK to Android rather than treating its guest path as a host path.
+apk=/workspace/app.apk
+host-exec pm install -r -S "$(stat -c %s "$apk")" - < "$apk"
+```
+
+Host commands use Android's `PATH`, `ANDROID_ROOT=/system`, and `ANDROID_DATA=/data`, with guest dynamic-loader injection variables cleared. The feature does not change shared-storage permissions or request additional app storage permissions. Root authorization, login identity, FUSE/sdcardfs, SELinux, and device policies still determine access and silent-install outcomes; denials retain their real command errors.
+
+Stop, failed startup, and unregister tear down recursive child mounts before their parents. Propagation-isolation or unmount failures retain cleanup records for retry instead of claiming success with lazy unmounts. Disabling the option or leaving chroot only removes the exact app-managed `host-exec`; user-owned files with that name are not overwritten or deleted. This is a convenience interface, not a security-isolation or privilege-revocation boundary for chroot Root.
+
 ## Build from Source
 
 WawLink uses a standard Gradle build system with Docker-free preparation scripts.

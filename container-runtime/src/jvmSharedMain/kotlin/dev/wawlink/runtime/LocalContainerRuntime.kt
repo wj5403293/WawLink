@@ -328,7 +328,7 @@ class LocalContainerRuntime internal constructor(
         RootfsOwnership.requireStable(config)
         paths.resolvConf?.value?.let { updateDns(config, it) }
         if (keepers[id]?.let { !it.stopping && it.process.isAlive } == true) return
-        if (keepers.containsKey(id)) stopLocked(id, intentional = false)
+        if (keepers.containsKey(id) || engines.hasOwnedMounts(id)) stopLocked(id, intentional = false)
         val report = progressReporter(id, config.displayName)
         try {
             engines.prepare(config, report)
@@ -355,8 +355,8 @@ class LocalContainerRuntime internal constructor(
             errors.remove(id)
             publish()
         } catch (failure: Throwable) {
+            try { stopLocked(id, intentional = false) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
             errors[id] = failure.message ?: "容器启动失败"
-            try { engines.unmount(id) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
             publish()
             throw failure
         } finally {
@@ -429,6 +429,7 @@ class LocalContainerRuntime internal constructor(
         if (migration) {
             var committedGeneration: Long? = null
             withStoppedRootfs(config.id, restore = false) { previous ->
+                revokeHostRootAccess(previous, target)
                 val operation = mutex.withLock { rootfsOperations.getValue(config.id) }
                 val context = currentCoroutineContext()
                 RootfsOwnership.migrate(previous, target, engines::rootCommand, report) {
@@ -456,11 +457,19 @@ class LocalContainerRuntime internal constructor(
             val previous = config(config.id)
             RootfsOwnership.requireStable(previous)
             val running = keepers[config.id]?.process?.isAlive == true
-            if (running) stopLocked(config.id)
+            if (running || engines.hasOwnedMounts(config.id)) stopLocked(config.id)
+            revokeHostRootAccess(previous, target)
             if (!migrateOwnership) RootfsOwnership.retainPhysicalIdentity(previous)
             commitConfiguration(target, previous)
             if (running) startLocked(config.id)
         }
+        }
+    }
+
+    private fun revokeHostRootAccess(previous: ContainerConfig, next: ContainerConfig) {
+        if (previous.engine == ContainerEngineType.CHROOT && previous.hostRootAccess &&
+            (next.engine != ContainerEngineType.CHROOT || !next.hostRootAccess)) {
+            synchronizeHostExec(previous, engines.validateRoot(previous), false, engines::rootCommand)
         }
     }
 
